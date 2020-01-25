@@ -2,7 +2,6 @@
  * rss.c : rss/atom feed display video plugin for vlc
  *****************************************************************************
  * Copyright (C) 2003-2006 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Antoine Cellerier <dionoea -at- videolan -dot- org>
  *          Rémi Duraffort <ivoire -at- videolan -dot- org>
@@ -52,7 +51,7 @@
  *****************************************************************************/
 static int  CreateFilter ( vlc_object_t * );
 static void DestroyFilter( vlc_object_t * );
-static subpicture_t *Filter( filter_t *, mtime_t );
+static subpicture_t *Filter( filter_t *, vlc_tick_t );
 
 static struct rss_feed_t *FetchRSS( filter_t * );
 static void FreeRSS( struct rss_feed_t *, int );
@@ -96,7 +95,7 @@ typedef struct rss_feed_t
     rss_item_t *p_items;
 } rss_feed_t;
 
-struct filter_sys_t
+typedef struct
 {
     vlc_mutex_t lock;
     vlc_timer_t timer;  /* Timer to refresh the rss feeds */
@@ -104,14 +103,14 @@ struct filter_sys_t
 
     int i_xoff, i_yoff;  /* offsets for the display string in the video window */
     int i_pos; /* permit relative positioning (top, bottom, left, right, center) */
-    int i_speed;
+    vlc_tick_t i_speed;
     int i_length;
 
     char *psz_marquee;    /* marquee string */
 
     text_style_t *p_style; /* font control */
 
-    mtime_t last_date;
+    vlc_tick_t last_date;
 
     int i_feeds;
     rss_feed_t *p_feeds;
@@ -122,7 +121,7 @@ struct filter_sys_t
     int i_cur_feed;
     int i_cur_item;
     int i_cur_char;
-};
+} filter_sys_t;
 
 #define MSG_TEXT N_("Feed URLs")
 #define MSG_LONGTEXT N_("RSS/Atom feed '|' (pipe) separated URLs.")
@@ -205,8 +204,7 @@ vlc_module_begin ()
     /* 5 sets the default to top [1] left [4] */
     add_integer_with_range( CFG_PREFIX "opacity", 255, 0, 255,
         OPACITY_TEXT, OPACITY_LONGTEXT, false )
-    add_rgb( CFG_PREFIX "color", 0xFFFFFF, COLOR_TEXT, COLOR_LONGTEXT,
-                  false )
+    add_rgb(CFG_PREFIX "color", 0xFFFFFF, COLOR_TEXT, COLOR_LONGTEXT)
         change_integer_list( pi_color_values, ppsz_color_descriptions )
     add_integer( CFG_PREFIX "size", 0, SIZE_TEXT, SIZE_LONGTEXT, false )
         change_integer_range( 0, 4096)
@@ -265,7 +263,7 @@ static int CreateFilter( vlc_object_t *p_this )
     p_sys->i_cur_char = 0;
     p_sys->i_feeds = 0;
     p_sys->p_feeds = NULL;
-    p_sys->i_speed = var_CreateGetInteger( p_filter, CFG_PREFIX "speed" );
+    p_sys->i_speed = VLC_TICK_FROM_US( var_CreateGetInteger( p_filter, CFG_PREFIX "speed" ) );
     p_sys->i_length = var_CreateGetInteger( p_filter, CFG_PREFIX "length" );
     p_sys->b_images = var_CreateGetBool( p_filter, CFG_PREFIX "images" );
 
@@ -305,7 +303,7 @@ static int CreateFilter( vlc_object_t *p_this )
     /* Misc init */
     vlc_mutex_init( &p_sys->lock );
     p_filter->pf_sub_source = Filter;
-    p_sys->last_date = (mtime_t)0;
+    p_sys->last_date = (vlc_tick_t)0;
     p_sys->b_fetched = false;
 
     /* Create and arm the timer */
@@ -314,8 +312,7 @@ static int CreateFilter( vlc_object_t *p_this )
         vlc_mutex_destroy( &p_sys->lock );
         goto error;
     }
-    vlc_timer_schedule( p_sys->timer, false, 1,
-                        (mtime_t)(i_ttl)*1000000 );
+    vlc_timer_schedule_asap( p_sys->timer, vlc_tick_from_sec(i_ttl) );
 
     free( psz_urls );
     return VLC_SUCCESS;
@@ -350,7 +347,7 @@ static void DestroyFilter( vlc_object_t *p_this )
  ****************************************************************************
  * This function outputs subpictures at regular time intervals.
  ****************************************************************************/
-static subpicture_t *Filter( filter_t *p_filter, mtime_t date )
+static subpicture_t *Filter( filter_t *p_filter, vlc_tick_t date )
 {
     filter_sys_t *p_sys = p_filter->p_sys;
     subpicture_t *p_spu;
@@ -359,8 +356,6 @@ static subpicture_t *Filter( filter_t *p_filter, mtime_t date )
 
     int i_feed, i_item;
     rss_feed_t *p_feed;
-
-    memset( &fmt, 0, sizeof(video_format_t) );
 
     vlc_mutex_lock( &p_sys->lock );
 
@@ -408,7 +403,7 @@ static subpicture_t *Filter( filter_t *p_filter, mtime_t date )
         return NULL;
     }
 
-    fmt.i_chroma = VLC_CODEC_TEXT;
+    video_format_Init( &fmt, VLC_CODEC_TEXT );
 
     p_spu->p_region = subpicture_region_New( &fmt );
     if( !p_spu->p_region )
@@ -507,9 +502,8 @@ static subpicture_t *Filter( filter_t *p_filter, mtime_t date )
         picture_t *p_pic = p_feed->p_pic;
         video_format_t fmt_out;
 
-        memset( &fmt_out, 0, sizeof(video_format_t) );
+        video_format_Init( &fmt_out, VLC_CODEC_YUVA );
 
-        fmt_out.i_chroma = VLC_CODEC_YUVA;
         fmt_out.i_sar_num = fmt_out.i_sar_den = 1;
         fmt_out.i_width =
             fmt_out.i_visible_width = p_pic->p[Y_PLANE].i_visible_pitch;
@@ -553,17 +547,14 @@ static subpicture_t *Filter( filter_t *p_filter, mtime_t date )
 static picture_t *LoadImage( filter_t *p_filter, const char *psz_url )
 {
     filter_sys_t *p_sys = p_filter->p_sys;
-    video_format_t fmt_in;
     video_format_t fmt_out;
     picture_t *p_orig;
     picture_t *p_pic = NULL;
     image_handler_t *p_handler = image_HandlerCreate( p_filter );
 
-    memset( &fmt_in, 0, sizeof(video_format_t) );
-    memset( &fmt_out, 0, sizeof(video_format_t) );
+    video_format_Init( &fmt_out, VLC_CODEC_YUVA );
 
-    fmt_out.i_chroma = VLC_CODEC_YUVA;
-    p_orig = image_ReadUrl( p_handler, psz_url, &fmt_in, &fmt_out );
+    p_orig = image_ReadUrl( p_handler, psz_url, &fmt_out );
 
     if( !p_orig )
     {
@@ -571,8 +562,9 @@ static picture_t *LoadImage( filter_t *p_filter, const char *psz_url )
     }
     else if( p_sys->p_style->i_font_size > 0 )
     {
+        video_format_t fmt_in;
+        video_format_Copy( &fmt_in, &fmt_out );
 
-        fmt_in.i_chroma = VLC_CODEC_YUVA;
         fmt_in.i_height = p_orig->p[Y_PLANE].i_visible_lines;
         fmt_in.i_width = p_orig->p[Y_PLANE].i_visible_pitch;
         fmt_out.i_width = p_orig->p[Y_PLANE].i_visible_pitch
@@ -581,6 +573,7 @@ static picture_t *LoadImage( filter_t *p_filter, const char *psz_url )
 
         p_pic = image_Convert( p_handler, p_orig, &fmt_in, &fmt_out );
         picture_Release( p_orig );
+        video_format_Clean( &fmt_in );
         if( !p_pic )
         {
             msg_Warn( p_filter, "Error while converting %s", psz_url );
@@ -591,6 +584,7 @@ static picture_t *LoadImage( filter_t *p_filter, const char *psz_url )
         p_pic = p_orig;
     }
 
+    video_format_Clean( &fmt_out );
     image_HandlerDelete( p_handler );
 
     return p_pic;
@@ -642,7 +636,7 @@ static int ParseUrls( filter_t *p_filter, char *psz_urls )
     }
 
     /* Allocate the structure */
-    p_sys->p_feeds = malloc( p_sys->i_feeds * sizeof( rss_feed_t ) );
+    p_sys->p_feeds = vlc_alloc( p_sys->i_feeds, sizeof( rss_feed_t ) );
     if( !p_sys->p_feeds )
         return VLC_ENOMEM;
 
@@ -896,7 +890,7 @@ static rss_feed_t* FetchRSS( filter_t *p_filter )
     bool b_images = p_sys->b_images;
 
     /* Allocate a new structure */
-    rss_feed_t *p_feeds = malloc( i_feeds * sizeof( rss_feed_t ) );
+    rss_feed_t *p_feeds = vlc_alloc( i_feeds, sizeof( rss_feed_t ) );
     if( !p_feeds )
         return NULL;
 

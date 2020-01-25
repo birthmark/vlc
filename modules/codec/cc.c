@@ -1,7 +1,9 @@
 /*****************************************************************************
  * cc.c : CC 608/708 subtitles decoder
  *****************************************************************************
- * Copyright © 2007-2010 Laurent Aimar, 2011 VLC authors and VideoLAN
+ * Copyright © 2007-2011 Laurent Aimar, VLC authors and VideoLAN
+ *             2011-2016 VLC authors and VideoLAN
+ *             2016-2017 VideoLabs, VLC authors and VideoLAN
  *
  * Authors: Laurent Aimar < fenrir # via.ecp.fr>
  *
@@ -26,12 +28,6 @@
 /* The EIA 608 decoder part has been initialy based on ccextractor (GPL)
  * and rewritten */
 
-/* TODO:
- *  On discontinuity reset the decoder state
- *  Check parity
- *  708 decoding
- */
-
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
@@ -44,6 +40,13 @@
 #include <vlc_charset.h>
 
 #include "substext.h"
+#include "cea708.h"
+
+#if 0
+#define Debug(code) code
+#else
+#define Debug(code)
+#endif
 
 /*****************************************************************************
  * Module descriptor.
@@ -58,7 +61,7 @@ static void Close( vlc_object_t * );
 vlc_module_begin ()
     set_shortname( N_("CC 608/708"))
     set_description( N_("Closed Captions decoder") )
-    set_capability( "decoder", 50 )
+    set_capability( "spu decoder", 50 )
     set_category( CAT_INPUT )
         set_subcategory( SUBCAT_INPUT_SCODEC )
     set_callbacks( Open, Close )
@@ -102,6 +105,10 @@ typedef enum
 
 #define EIA608_SCREEN_ROWS 15
 #define EIA608_SCREEN_COLUMNS 32
+
+#define EIA608_MARGIN  0.10
+#define EIA608_VISIBLE (1.0 - EIA608_MARGIN * 2)
+#define FONT_TO_LINE_HEIGHT_RATIO 1.06
 
 struct eia608_screen // A CC buffer
 {
@@ -205,28 +212,40 @@ typedef struct
 
 static void         Eia608Init( eia608_t * );
 static eia608_status_t Eia608Parse( eia608_t *h, int i_channel_selected, const uint8_t data[2] );
-static void         Eia608FillUpdaterRegions( subpicture_updater_sys_t *p_updater, eia608_t *h );
+static void         Eia608FillUpdaterRegions( subtext_updater_sys_t *p_updater, eia608_t *h );
 
 /* It will be enough up to 63 B frames, which is far too high for
  * broadcast environment */
 #define CC_MAX_REORDER_SIZE (64)
-struct decoder_sys_t
+typedef struct
 {
-    int     i_block;
-    block_t *pp_block[CC_MAX_REORDER_SIZE];
-    block_t *p_block; /* currently processed block (if incomplely) */
+    int      i_queue;
+    block_t *p_queue;
 
     int i_field;
     int i_channel;
 
-    mtime_t i_display_time;
+    int i_reorder_depth;
 
-    eia608_t eia608;
+    cea708_demux_t *p_dtvcc;
+
+    cea708_t *p_cea708;
+    eia608_t *p_eia608;
     bool b_opaque;
-};
+} decoder_sys_t;
 
-static subpicture_t *Decode( decoder_t *, block_t ** );
+static int Decode( decoder_t *, block_t * );
 static void Flush( decoder_t * );
+
+static void DTVCC_ServiceData_Handler( void *priv, uint8_t i_sid, vlc_tick_t i_time,
+                                       const uint8_t *p_data, size_t i_data )
+{
+    decoder_t *p_dec = priv;
+    decoder_sys_t *p_sys = p_dec->p_sys;
+    //msg_Err( p_dec, "DTVCC_ServiceData_Handler sid %d bytes %ld", i_sid, i_data );
+    if( i_sid == 1 )
+        CEA708_Decoder_Push( p_sys->p_cea708, i_time, p_data, i_data );
+}
 
 /*****************************************************************************
  * Open: probe the decoder and return score
@@ -238,44 +257,61 @@ static int Open( vlc_object_t *p_this )
 {
     decoder_t     *p_dec = (decoder_t*)p_this;
     decoder_sys_t *p_sys;
-    int i_field;
-    int i_channel;
 
-    switch( p_dec->fmt_in.i_codec )
-    {
-        case VLC_CODEC_EIA608_1:
-            i_field = 0; i_channel = 1;
-            break;
-        case VLC_CODEC_EIA608_2:
-            i_field = 0; i_channel = 2;
-            break;
-        case VLC_CODEC_EIA608_3:
-            i_field = 1; i_channel = 1;
-            break;
-        case VLC_CODEC_EIA608_4:
-            i_field = 1; i_channel = 2;
-            break;
+    if( ( p_dec->fmt_in.i_codec != VLC_CODEC_CEA608 ||
+          p_dec->fmt_in.subs.cc.i_channel > 3 ) &&
+        ( p_dec->fmt_in.i_codec != VLC_CODEC_CEA708 ||
+          p_dec->fmt_in.subs.cc.i_channel > 63 ) )
+        return VLC_EGENERIC;
 
-        default:
-            return VLC_EGENERIC;
-    }
-
-    p_dec->pf_decode_sub = Decode;
-    p_dec->pf_flush      = Flush;
+    p_dec->pf_decode = Decode;
+    p_dec->pf_flush  = Flush;
 
     /* Allocate the memory needed to store the decoder's structure */
     p_dec->p_sys = p_sys = calloc( 1, sizeof( *p_sys ) );
     if( p_sys == NULL )
         return VLC_ENOMEM;
 
-    /* init of p_sys */
-    p_sys->i_field = i_field;
-    p_sys->i_channel = i_channel;
+    if( p_dec->fmt_in.i_codec == VLC_CODEC_CEA608 )
+    {
+        /*  0 -> i_field = 0; i_channel = 1;
+            1 -> i_field = 0; i_channel = 2;
+            2 -> i_field = 1; i_channel = 1;
+            3 -> i_field = 1; i_channel = 2; */
+        p_sys->i_field = p_dec->fmt_in.subs.cc.i_channel >> 1;
+        p_sys->i_channel = 1 + (p_dec->fmt_in.subs.cc.i_channel & 1);
 
-    Eia608Init( &p_sys->eia608 );
+        p_sys->p_eia608 = malloc(sizeof(*p_sys->p_eia608));
+        if( !p_sys->p_eia608 )
+        {
+            free( p_sys );
+            return VLC_ENOMEM;
+        }
+        Eia608Init( p_sys->p_eia608 );
+    }
+    else
+    {
+        p_sys->p_dtvcc = CEA708_DTVCC_Demuxer_New( p_dec, DTVCC_ServiceData_Handler );
+        if( !p_sys->p_dtvcc )
+        {
+            free( p_sys );
+            return VLC_ENOMEM;
+        }
+
+        p_sys->p_cea708 = CEA708_Decoder_New( p_dec );
+        if( !p_sys->p_cea708 )
+        {
+            CEA708_DTVCC_Demuxer_Release( p_sys->p_dtvcc );
+            free( p_sys );
+            return VLC_ENOMEM;
+        }
+
+         p_sys->i_channel = p_dec->fmt_in.subs.cc.i_channel;
+    }
+
     p_sys->b_opaque = var_InheritBool( p_dec, "cc-opaque" );
+    p_sys->i_reorder_depth = p_dec->fmt_in.subs.cc.i_reorder_depth;
 
-    p_dec->fmt_out.i_cat = SPU_ES;
     p_dec->fmt_out.i_codec = VLC_CODEC_TEXT;
 
     return VLC_SUCCESS;
@@ -288,8 +324,19 @@ static void Flush( decoder_t *p_dec )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
 
-    Eia608Init( &p_sys->eia608 );
-    p_sys->i_display_time = VLC_TS_INVALID;
+    if( p_sys->p_eia608 )
+    {
+        Eia608Init( p_sys->p_eia608 );
+    }
+    else
+    {
+        CEA708_DTVCC_Demuxer_Flush( p_sys->p_dtvcc );
+        CEA708_Decoder_Flush( p_sys->p_cea708 );
+    }
+
+    block_ChainRelease( p_sys->p_queue );
+    p_sys->p_queue = NULL;
+    p_sys->i_queue = 0;
 }
 
 /****************************************************************************
@@ -298,42 +345,69 @@ static void Flush( decoder_t *p_dec )
  *
  ****************************************************************************/
 static void     Push( decoder_t *, block_t * );
-static block_t *Pop( decoder_t * );
-static subpicture_t *Convert( decoder_t *, block_t ** );
+static block_t *Pop( decoder_t *, bool );
+static void     Convert( decoder_t *, vlc_tick_t, const uint8_t *, size_t );
 
-static subpicture_t *Decode( decoder_t *p_dec, block_t **pp_block )
+static bool DoDecode( decoder_t *p_dec, bool b_drain )
+{
+    block_t *p_block = Pop( p_dec, b_drain );
+    if( !p_block )
+        return false;
+
+    Convert( p_dec, p_block->i_pts, p_block->p_buffer, p_block->i_buffer );
+    block_Release( p_block );
+
+    return true;
+}
+
+static int Decode( decoder_t *p_dec, block_t *p_block )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
 
-    if( pp_block && *pp_block )
+    if( p_block )
     {
-        Push( p_dec, *pp_block );
-        *pp_block = NULL;
-    }
-
-    for( ;; )
-    {
-        if( !p_sys->p_block )
-            p_sys->p_block = Pop( p_dec );
-
         /* Reset decoder if needed */
-        if( p_sys->p_block &&
-           (p_sys->p_block->i_flags & (BLOCK_FLAG_DISCONTINUITY | BLOCK_FLAG_CORRUPTED)) )
+        if( p_block->i_flags & (BLOCK_FLAG_DISCONTINUITY | BLOCK_FLAG_CORRUPTED) )
         {
-            Flush( p_dec );
-            /* clear flags, as we might process it more than once */
-            p_sys->p_block->i_flags &= ~(BLOCK_FLAG_DISCONTINUITY | BLOCK_FLAG_CORRUPTED);
-            continue;
+            /* Drain */
+            for( ; DoDecode( p_dec, true ) ; );
+            if( p_sys->p_eia608 )
+            {
+                Eia608Init( p_sys->p_eia608 );
+            }
+            else
+            {
+                CEA708_DTVCC_Demuxer_Flush( p_sys->p_dtvcc );
+                CEA708_Decoder_Flush( p_sys->p_cea708 );
+            }
+
+            if( (p_block->i_flags & BLOCK_FLAG_CORRUPTED) || p_block->i_buffer < 1 )
+            {
+                block_Release( p_block );
+                return VLCDEC_SUCCESS;
+            }
         }
 
-        if( !p_sys->p_block )
-            break;
+        /* XXX Cc captions data are OUT OF ORDER (because we receive them in the bitstream
+         * order (ie ordered by video picture dts) instead of the display order.
+         *  We will simulate a simple IPB buffer scheme
+         * and reorder with pts.
+         * XXX it won't work with H264 which use non out of order B picture or MMCO */
+        if( p_sys->i_reorder_depth == 0 )
+        {
+            /* Wait for a P and output all *previous* picture by pts order (for
+             * hierarchical B frames) */
+            if( (p_block->i_flags & BLOCK_FLAG_TYPE_B) == 0 )
+                for( ; DoDecode( p_dec, true ); );
+        }
 
-        subpicture_t *p_spu = Convert( p_dec, &p_sys->p_block );
-        if( p_spu )
-            return p_spu;
+        Push( p_dec, p_block );
     }
-    return NULL;
+
+    const bool b_no_reorder = (p_dec->fmt_in.subs.cc.i_reorder_depth < 0);
+    for( ; DoDecode( p_dec, (p_block == NULL) || b_no_reorder ); );
+
+    return VLCDEC_SUCCESS;
 }
 
 /*****************************************************************************
@@ -344,8 +418,14 @@ static void Close( vlc_object_t *p_this )
     decoder_t *p_dec = (decoder_t *)p_this;
     decoder_sys_t *p_sys = p_dec->p_sys;
 
-    for( int i = 0; i < p_sys->i_block; i++ )
-        block_Release( p_sys->pp_block[i] );
+    free( p_sys->p_eia608 );
+    if( p_sys->p_cea708 )
+    {
+        CEA708_Decoder_Release( p_sys->p_cea708 );
+        CEA708_DTVCC_Demuxer_Release( p_sys->p_dtvcc );
+    }
+
+    block_ChainRelease( p_sys->p_queue );
     free( p_sys );
 }
 
@@ -356,62 +436,65 @@ static void Push( decoder_t *p_dec, block_t *p_block )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
 
-    if( p_sys->i_block >= CC_MAX_REORDER_SIZE )
+    if( p_sys->i_queue >= CC_MAX_REORDER_SIZE )
     {
+        block_Release( Pop( p_dec, true ) );
         msg_Warn( p_dec, "Trashing a CC entry" );
-        memmove( &p_sys->pp_block[0], &p_sys->pp_block[1], sizeof(*p_sys->pp_block) * (CC_MAX_REORDER_SIZE-1) );
-        p_sys->i_block--;
     }
-    p_sys->pp_block[p_sys->i_block++] = p_block;
+
+    block_t **pp_block;
+    /* find insertion point */
+    for( pp_block = &p_sys->p_queue; *pp_block ; pp_block = &((*pp_block)->p_next) )
+    {
+        if( p_block->i_pts == VLC_TICK_INVALID || (*pp_block)->i_pts == VLC_TICK_INVALID )
+            continue;
+        if( p_block->i_pts < (*pp_block)->i_pts )
+        {
+            if( p_sys->i_reorder_depth > 0 &&
+                p_sys->i_queue < p_sys->i_reorder_depth &&
+                pp_block == &p_sys->p_queue )
+            {
+                msg_Info( p_dec, "Increasing reorder depth to %d", ++p_sys->i_reorder_depth );
+            }
+            break;
+        }
+    }
+    /* Insert, keeping a pts and/or fifo ordered list */
+    p_block->p_next = *pp_block ? *pp_block : NULL;
+    *pp_block = p_block;
+    p_sys->i_queue++;
 }
-static block_t *Pop( decoder_t *p_dec )
+
+static block_t *Pop( decoder_t *p_dec, bool b_forced )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
     block_t *p_block;
-    int i_index;
-    /* XXX Cc captions data are OUT OF ORDER (because we receive them in the bitstream
-     * order (ie ordered by video picture dts) instead of the display order.
-     *  We will simulate a simple IPB buffer scheme
-     * and reorder with pts.
-     * XXX it won't work with H264 which use non out of order B picture or MMCO
-     */
 
-    if( p_sys->i_block && (p_sys->pp_block[0]->i_flags & BLOCK_FLAG_PRIVATE_MASK) )
-    {
-        p_sys->i_block--;
-        return p_sys->pp_block[0];
-    }
+     if( p_sys->i_queue == 0 )
+         return NULL;
 
-    /* Wait for a P and output all *previous* picture by pts order (for
-     * hierarchical B frames) */
-    if( p_sys->i_block <= 1 ||
-        ( p_sys->pp_block[p_sys->i_block-1]->i_flags & BLOCK_FLAG_TYPE_B ) )
-        return NULL;
+     if( !b_forced && p_sys->i_queue < CC_MAX_REORDER_SIZE )
+     {
+        if( p_sys->i_queue < p_sys->i_reorder_depth || p_sys->i_reorder_depth == 0 )
+            return NULL;
+     }
 
-    p_block = p_sys->pp_block[i_index = 0];
-    if( p_block->i_pts > VLC_TS_INVALID )
-    {
-        for( int i = 1; i < p_sys->i_block-1; i++ )
-        {
-            if( p_sys->pp_block[i]->i_pts > VLC_TS_INVALID && p_block->i_pts > VLC_TS_INVALID &&
-                p_sys->pp_block[i]->i_pts < p_block->i_pts )
-                p_block = p_sys->pp_block[i_index = i];
-        }
-    }
-    assert( i_index+1 < p_sys->i_block );
-    memmove( &p_sys->pp_block[i_index], &p_sys->pp_block[i_index+1], sizeof(*p_sys->pp_block) * ( p_sys->i_block - i_index - 1 ) );
-    p_sys->i_block--;
+     /* dequeue head */
+     p_block = p_sys->p_queue;
+     p_sys->p_queue = p_block->p_next;
+     p_block->p_next = NULL;
+     p_sys->i_queue--;
 
     return p_block;
 }
 
-static subpicture_t *Subtitle( decoder_t *p_dec, eia608_t *h, mtime_t i_pts )
+static subpicture_t *Subtitle( decoder_t *p_dec, eia608_t *h, vlc_tick_t i_pts )
 {
     //decoder_sys_t *p_sys = p_dec->p_sys;
     subpicture_t *p_spu = NULL;
 
     /* We cannot display a subpicture with no date */
-    if( i_pts <= VLC_TS_INVALID )
+    if( i_pts == VLC_TICK_INVALID )
         return NULL;
 
     /* Create the subpicture unit */
@@ -420,28 +503,33 @@ static subpicture_t *Subtitle( decoder_t *p_dec, eia608_t *h, mtime_t i_pts )
         return NULL;
 
     p_spu->i_start    = i_pts;
-    p_spu->i_stop     = i_pts + 10000000;   /* 10s max */
+    p_spu->i_stop     = i_pts + VLC_TICK_FROM_SEC(10);   /* 10s max */
     p_spu->b_ephemer  = true;
     p_spu->b_absolute = false;
 
-    subpicture_updater_sys_t *p_spu_sys = p_spu->updater.p_sys;
+    subtext_updater_sys_t *p_spu_sys = p_spu->updater.p_sys;
+    decoder_sys_t *p_dec_sys = p_dec->p_sys;
 
+    /* Set first region defaults */
     /* The "leavetext" alignment is a special mode where the subpicture
        region itself gets aligned, but the text inside it does not */
-    p_spu_sys->region.align = SUBPICTURE_ALIGN_TOP;
-    p_spu_sys->region.inner_align = SUBPICTURE_ALIGN_LEAVETEXT;
+    p_spu_sys->region.align = SUBPICTURE_ALIGN_TOP|SUBPICTURE_ALIGN_LEFT;
+    p_spu_sys->region.inner_align = SUBPICTURE_ALIGN_BOTTOM|SUBPICTURE_ALIGN_LEFT;
     p_spu_sys->region.flags = UPDT_REGION_IGNORE_BACKGROUND | UPDT_REGION_USES_GRID_COORDINATES;
+
     /* Set style defaults (will be added to segments if none set) */
     p_spu_sys->p_default_style->i_style_flags |= STYLE_MONOSPACED;
-    if( p_dec->p_sys->b_opaque )
+    if( p_dec_sys->b_opaque )
     {
         p_spu_sys->p_default_style->i_background_alpha = STYLE_ALPHA_OPAQUE;
         p_spu_sys->p_default_style->i_features |= STYLE_HAS_BACKGROUND_ALPHA;
         p_spu_sys->p_default_style->i_style_flags |= STYLE_BACKGROUND;
     }
+    p_spu_sys->margin_ratio = EIA608_MARGIN;
     p_spu_sys->p_default_style->i_font_color = rgi_eia608_colors[EIA608_COLOR_DEFAULT];
     /* FCC defined "safe area" for EIA-608 captions is 80% of the height of the display */
-    p_spu_sys->p_default_style->f_font_relsize = 100 * 8 / 10 / EIA608_SCREEN_ROWS;
+    p_spu_sys->p_default_style->f_font_relsize = EIA608_VISIBLE * 100 / EIA608_SCREEN_ROWS /
+                                                 FONT_TO_LINE_HEIGHT_RATIO;
     p_spu_sys->p_default_style->i_features |= (STYLE_HAS_FONT_COLOR | STYLE_HAS_FLAGS);
 
     Eia608FillUpdaterRegions( p_spu_sys, h );
@@ -449,54 +537,50 @@ static subpicture_t *Subtitle( decoder_t *p_dec, eia608_t *h, mtime_t i_pts )
     return p_spu;
 }
 
-static subpicture_t *Convert( decoder_t *p_dec, block_t **pp_block )
+static void Convert( decoder_t *p_dec, vlc_tick_t i_pts,
+                     const uint8_t *p_buffer, size_t i_buffer )
 {
-    assert( pp_block && *pp_block );
-
-    block_t *p_block = *pp_block;
-
     decoder_sys_t *p_sys = p_dec->p_sys;
 
-    if( p_sys->i_display_time == VLC_TS_INVALID )
-        p_sys->i_display_time = p_block->i_pts;
-
-    eia608_status_t i_status = EIA608_STATUS_DEFAULT;
-
-    /* TODO do the real decoding here */
-    while( p_block->i_buffer >= 3 && !(i_status & EIA608_STATUS_DISPLAY) )
+    unsigned i_ticks = 0;
+    while( i_buffer >= 3 )
     {
-        /* Mask off the specific i_field bit, else some sequences can be lost. */
-        if ( (p_block->p_buffer[0] & 0x03) == p_sys->i_field &&
-             (p_block->p_buffer[0] & 0x04) /* Valid bit */ )
+        if( (p_buffer[0] & 0x04) /* Valid bit */ )
         {
-            i_status = Eia608Parse( &p_sys->eia608, p_sys->i_channel, &p_block->p_buffer[1] );
-            p_sys->i_display_time += CLOCK_FREQ / 30;
+            const vlc_tick_t i_spupts = i_pts + vlc_tick_from_samples(i_ticks, 1200/3);
+            /* Mask off the specific i_field bit, else some sequences can be lost. */
+            if ( p_sys->p_eia608 &&
+                (p_buffer[0] & 0x03) == p_sys->i_field )
+            {
+                eia608_status_t i_status = Eia608Parse( p_sys->p_eia608,
+                                                        p_sys->i_channel, &p_buffer[1] );
+
+                /* a caption is ready or removed, process its screen */
+                /*
+                 * In case of rollup/painton with 1 packet/frame, we need
+                 * to update on Changed status.
+                 * Batch decoding might be incorrect if those in
+                 * large number of commands (mp4, ...) then.
+                 * see CEAv1.2zero.trp tests */
+                if( i_status & (EIA608_STATUS_DISPLAY | EIA608_STATUS_CHANGED) )
+                {
+                    Debug(printf("\n"));
+                    subpicture_t *p_spu = Subtitle( p_dec, p_sys->p_eia608, i_spupts );
+                    if( p_spu )
+                        decoder_QueueSub( p_dec, p_spu );
+                }
+            }
+            else if( p_sys->p_cea708 && (p_buffer[0] & 0x03) >= 2 )
+            {
+                CEA708_DTVCC_Demuxer_Push( p_sys->p_dtvcc, i_spupts, p_buffer );
+            }
         }
 
-        p_block->i_buffer -= 3;
-        p_block->p_buffer += 3;
-    }
+        i_ticks++;
 
-    const mtime_t i_pts = p_sys->i_display_time;
-
-    if( p_block->i_buffer < 3 )
-    {
-        block_Release( p_block );
-        p_sys->i_display_time = VLC_TS_INVALID;
-        *pp_block = NULL;
+        i_buffer -= 3;
+        p_buffer += 3;
     }
-
-    /* a caption is ready or removed, process its screen */
-    /*
-     * In case of rollup/painton with 1 packet/frame, we need to update on Changed status.
-     * Batch decoding might be incorrect if those in large number of commands (mp4, ...) then.
-     * see CEAv1.2zero.trp tests
-     */
-    if( i_status & (EIA608_STATUS_DISPLAY | EIA608_STATUS_CHANGED) )
-    {
-        return Subtitle( p_dec, &p_sys->eia608, i_pts );
-    }
-    return NULL;
 }
 
 
@@ -686,6 +770,7 @@ static eia608_status_t Eia608ParseTextAttribute( eia608_t *h, uint8_t d2 )
     const int i_index = d2 - 0x20;
     assert( d2 >= 0x20 && d2 <= 0x2f );
 
+    Debug(printf("[TA %d]", i_index));
     h->color = pac2_attribs[i_index].i_color;
     h->font  = pac2_attribs[i_index].i_font;
     Eia608Cursor( h, 1 );
@@ -701,6 +786,7 @@ static eia608_status_t Eia608ParseSingle( eia608_t *h, const uint8_t dx )
 static eia608_status_t Eia608ParseDouble( eia608_t *h, uint8_t d2 )
 {
     assert( d2 >= 0x30 && d2 <= 0x3f );
+    Debug(printf("\033[0;33m%s\033[0m", d2 + 0x50));
     Eia608Write( h, d2 + 0x50 ); /* We use charaters 0x80...0x8f */
     return EIA608_STATUS_CHANGED;
 }
@@ -713,6 +799,7 @@ static eia608_status_t Eia608ParseExtended( eia608_t *h, uint8_t d1, uint8_t d2 
     else
         d2 += 0x90; /* We use charaters 0xb0-0xcf */
 
+    Debug(printf("[EXT %x->'%c']", d2, d2));
     /* The extended characters replace the previous one with a more
      * advanced one */
     Eia608Cursor( h, -1 );
@@ -722,25 +809,31 @@ static eia608_status_t Eia608ParseExtended( eia608_t *h, uint8_t d1, uint8_t d2 
 static eia608_status_t Eia608ParseCommand0x14( eia608_t *h, uint8_t d2 )
 {
     eia608_status_t i_status = EIA608_STATUS_DEFAULT;
+    eia608_mode_t proposed_mode;
 
     switch( d2 )
     {
     case 0x20:  /* Resume caption loading */
+        Debug(printf("[RCL]"));
         h->mode = EIA608_MODE_POPUP;
         break;
     case 0x21:  /* Backspace */
+        Debug(printf("[BS]"));
         Eia608Erase( h );
         i_status = EIA608_STATUS_CHANGED;
         break;
     case 0x22:  /* Reserved */
     case 0x23:
+        Debug(printf("[ALARM %d]", d2 - 0x22));
         break;
     case 0x24:  /* Delete to end of row */
+        Debug(printf("[DER]"));
         Eia608EraseToEndOfRow( h );
         break;
     case 0x25:  /* Rollup 2 */
     case 0x26:  /* Rollup 3 */
     case 0x27:  /* Rollup 4 */
+        Debug(printf("[RU%d]", d2 - 0x23));
         if( h->mode == EIA608_MODE_POPUP || h->mode == EIA608_MODE_PAINTON )
         {
             Eia608EraseScreen( h, true );
@@ -749,41 +842,53 @@ static eia608_status_t Eia608ParseCommand0x14( eia608_t *h, uint8_t d2 )
         }
 
         if( d2 == 0x25 )
-            h->mode = EIA608_MODE_ROLLUP_2;
+            proposed_mode = EIA608_MODE_ROLLUP_2;
         else if( d2 == 0x26 )
-            h->mode = EIA608_MODE_ROLLUP_3;
+            proposed_mode = EIA608_MODE_ROLLUP_3;
         else
-            h->mode = EIA608_MODE_ROLLUP_4;
+            proposed_mode = EIA608_MODE_ROLLUP_4;
 
-        h->cursor.i_column = 0;
-        h->cursor.i_row = h->i_row_rollup;
+        if ( proposed_mode != h->mode )
+        {
+            h->mode = proposed_mode;
+            h->cursor.i_column = 0;
+            h->cursor.i_row = h->i_row_rollup;
+        }
         break;
     case 0x28:  /* Flash on */
+        Debug(printf("[FON]"));
         /* TODO */
         break;
     case 0x29:  /* Resume direct captionning */
+        Debug(printf("[RDC]"));
         h->mode = EIA608_MODE_PAINTON;
         break;
     case 0x2a:  /* Text restart */
+        Debug(printf("[TR]"));
         /* TODO */
         break;
 
     case 0x2b: /* Resume text display */
+        Debug(printf("[RTD]"));
         h->mode = EIA608_MODE_TEXT;
         break;
 
     case 0x2c: /* Erase displayed memory */
+        Debug(printf("[EDM]"));
         Eia608EraseScreen( h, true );
         i_status = EIA608_STATUS_CHANGED | EIA608_STATUS_CAPTION_CLEARED;
         break;
     case 0x2d: /* Carriage return */
+        Debug(printf("[CR]"));
         Eia608RollUp(h);
         i_status = EIA608_STATUS_CHANGED;
         break;
     case 0x2e: /* Erase non displayed memory */
+        Debug(printf("[ENM]"));
         Eia608EraseScreen( h, false );
         break;
     case 0x2f: /* End of caption (flip screen if not paint on) */
+        Debug(printf("[EOC]"));
         if( h->mode != EIA608_MODE_PAINTON )
             h->i_screen = 1 - h->i_screen;
         h->mode = EIA608_MODE_POPUP;
@@ -801,13 +906,10 @@ static bool Eia608ParseCommand0x17( eia608_t *h, uint8_t d2 )
     switch( d2 )
     {
     case 0x21:  /* Tab offset 1 */
-        Eia608Cursor( h, 1 );
-        break;
     case 0x22:  /* Tab offset 2 */
-        Eia608Cursor( h, 2 );
-        break;
     case 0x23:  /* Tab offset 3 */
-        Eia608Cursor( h, 3 );
+        Debug(printf("[TO%d]", d2 - 0x20));
+        Eia608Cursor( h, d2 - 0x20 );
         break;
     }
     return false;
@@ -819,6 +921,7 @@ static bool Eia608ParsePac( eia608_t *h, uint8_t d1, uint8_t d2 )
     };
     const int i_row_index = ( (d1<<1) & 0x0e) | ( (d2>>5) & 0x01 );
 
+    Debug(printf("[PAC,%d]", i_row_index));
     assert( d2 >= 0x40 && d2 <= 0x7f );
 
     if( pi_row[i_row_index] <= 0 )
@@ -872,9 +975,14 @@ static eia608_status_t Eia608ParseData( eia608_t *h, uint8_t d1, uint8_t d2 )
 #undef ON
     if( d1 >= 0x20 )
     {
+        Debug(printf("\033[0;33m%c", d1));
         i_status = Eia608ParseSingle( h, d1 );
         if( d2 >= 0x20 )
+        {
+            Debug(printf("%c", d2));
             i_status |= Eia608ParseSingle( h, d2 );
+        }
+        Debug(printf("\033[0m"));
     }
 
     /* Ignore changes occuring to doublebuffer */
@@ -1127,10 +1235,10 @@ static text_segment_t * Eia608TextLine( struct eia608_screen *screen, int i_row 
     return p_segments_head;
 }
 
-static void Eia608FillUpdaterRegions( subpicture_updater_sys_t *p_updater, eia608_t *h )
+static void Eia608FillUpdaterRegions( subtext_updater_sys_t *p_updater, eia608_t *h )
 {
     struct eia608_screen *screen = &h->screen[h->i_screen];
-    subpicture_updater_sys_region_t *p_region = &p_updater->region;
+    substext_updater_region_t *p_region = &p_updater->region;
     text_segment_t **pp_last = &p_region->p_segments;
     bool b_newregion = false;
 
@@ -1144,13 +1252,17 @@ static void Eia608FillUpdaterRegions( subpicture_updater_sys_t *p_updater, eia60
         {
             if( b_newregion )
             {
-                subpicture_updater_sys_region_t *p_newregion;
+                substext_updater_region_t *p_newregion;
                 p_newregion = SubpictureUpdaterSysRegionNew();
                 if( !p_newregion )
                 {
                     text_segment_ChainDelete( p_segments );
                     return;
                 }
+                /* Copy defaults */
+                p_newregion->align = p_region->align;
+                p_newregion->inner_align = p_region->inner_align;
+                p_newregion->flags = p_region->flags;
                 SubpictureUpdaterSysRegionAdd( p_region, p_newregion );
                 p_region = p_newregion;
                 pp_last = &p_region->p_segments;
@@ -1159,7 +1271,9 @@ static void Eia608FillUpdaterRegions( subpicture_updater_sys_t *p_updater, eia60
 
             if( p_region->p_segments == NULL ) /* First segment in the [new] region */
             {
-                p_region->origin.y = i; /* set start line number */
+                p_region->origin.y = (float) i /* start line number */
+                                     / (EIA608_SCREEN_ROWS * FONT_TO_LINE_HEIGHT_RATIO);
+                p_region->flags |= UPDT_REGION_ORIGIN_Y_IS_RATIO;
             }
             else /* Insert line break between region lines */
             {

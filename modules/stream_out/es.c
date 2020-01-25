@@ -2,7 +2,6 @@
  * es.c: Elementary stream output module
  *****************************************************************************
  * Copyright (C) 2003-2004 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
@@ -31,9 +30,9 @@
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
-#include <vlc_input.h>
 #include <vlc_sout.h>
 #include <vlc_dialog.h>
+#include <vlc_memstream.h>
 
 /*****************************************************************************
  * Module descriptor
@@ -119,11 +118,11 @@ static const char *const ppsz_sout_options[] = {
     NULL
 };
 
-static sout_stream_id_sys_t *Add( sout_stream_t *, const es_format_t * );
-static void              Del ( sout_stream_t *, sout_stream_id_sys_t * );
-static int               Send( sout_stream_t *, sout_stream_id_sys_t *, block_t* );
+static void *Add( sout_stream_t *, const es_format_t * );
+static void  Del( sout_stream_t *, void * );
+static int   Send( sout_stream_t *, void *, block_t * );
 
-struct sout_stream_sys_t
+typedef struct
 {
     int  i_count_audio;
     int  i_count_video;
@@ -140,7 +139,7 @@ struct sout_stream_sys_t
     char *psz_dst;
     char *psz_dst_audio;
     char *psz_dst_video;
-};
+} sout_stream_sys_t;
 
 /*****************************************************************************
  * Open:
@@ -202,74 +201,61 @@ static void Close( vlc_object_t * p_this )
     free( p_sys );
 }
 
-struct sout_stream_id_sys_t
+typedef struct
 {
     sout_input_t *p_input;
     sout_mux_t   *p_mux;
-};
+} sout_stream_id_sys_t;
 
 static char * es_print_url( const char *psz_fmt, vlc_fourcc_t i_fourcc, int i_count,
                             const char *psz_access, const char *psz_mux )
 {
-    char *psz_dst, *p;
+    struct vlc_memstream stream;
+    unsigned char c;
+
+    if (vlc_memstream_open(&stream))
+        return NULL;
 
     if( psz_fmt == NULL || !*psz_fmt )
-    {
-        psz_fmt = (char*)"stream-%n-%c.%m";
-    }
+        psz_fmt = "stream-%n-%c.%m";
 
-    p = psz_dst = malloc( 4096 );
-    if( !psz_dst )
-        return NULL;
-    memset( p, 0, 4096 );
-    for( ;; )
+    while ((c = *(psz_fmt++)) != '\0')
     {
-        if( *psz_fmt == '\0' )
+        if (c != '%')
         {
-            *p = '\0';
-            break;
+            vlc_memstream_putc(&stream, c);
+            continue;
         }
 
-        if( *psz_fmt != '%' )
+        switch (c = *(psz_fmt++))
         {
-            *p++ = *psz_fmt++;
-        }
-        else
-        {
-            if( psz_fmt[1] == 'n' )
-            {
-                p += sprintf( p, "%d", i_count );
-            }
-            else if( psz_fmt[1] == 'c' )
-            {
-                p += sprintf( p, "%4.4s", (char*)&i_fourcc );
-            }
-            else if( psz_fmt[1] == 'm' )
-            {
-                p += sprintf( p, "%s", psz_mux );
-            }
-            else if( psz_fmt[1] == 'a' )
-            {
-                p += sprintf( p, "%s", psz_access );
-            }
-            else if( psz_fmt[1] != '\0' )
-            {
-                p += sprintf( p, "%c%c", psz_fmt[0], psz_fmt[1] );
-            }
-            else
-            {
-                p += sprintf( p, "%c", psz_fmt[0] );
-                *p++ = '\0';
+            case 'n':
+                vlc_memstream_printf(&stream, "%d", i_count);
                 break;
-            }
-            psz_fmt += 2;
+            case 'c':
+                vlc_memstream_printf(&stream, "%4.4s", (char *)&i_fourcc);
+                break;
+            case 'm':
+                vlc_memstream_puts(&stream, psz_mux);
+                break;
+            case 'a':
+                vlc_memstream_puts(&stream, psz_access);
+                break;
+            case '\0':
+                vlc_memstream_putc(&stream, '%');
+                goto out;
+            default:
+                vlc_memstream_printf(&stream, "%%%c", (int) c);
+                break;
         }
     }
-
-    return( psz_dst );
+out:
+    if (vlc_memstream_close(&stream))
+        return NULL;
+    return stream.ptr;
 }
 
-static sout_stream_id_sys_t *Add( sout_stream_t *p_stream, const es_format_t *p_fmt )
+static void *Add( sout_stream_t *p_stream, const es_format_t *p_fmt )
 {
     sout_stream_sys_t *p_sys = p_stream->p_sys;
     sout_stream_id_sys_t  *id;
@@ -404,9 +390,10 @@ static sout_stream_id_sys_t *Add( sout_stream_t *p_stream, const es_format_t *p_
     return id;
 }
 
-static void Del( sout_stream_t *p_stream, sout_stream_id_sys_t *id )
+static void Del( sout_stream_t *p_stream, void *_id )
 {
     VLC_UNUSED(p_stream);
+    sout_stream_id_sys_t *id = (sout_stream_id_sys_t *)_id;
     sout_access_out_t *p_access = id->p_mux->p_access;
 
     sout_MuxDeleteStream( id->p_mux, id->p_input );
@@ -418,10 +405,10 @@ static void Del( sout_stream_t *p_stream, sout_stream_id_sys_t *id )
     free( id );
 }
 
-static int Send( sout_stream_t *p_stream, sout_stream_id_sys_t *id,
-                 block_t *p_buffer )
+static int Send( sout_stream_t *p_stream, void *_id, block_t *p_buffer )
 {
     VLC_UNUSED(p_stream);
+    sout_stream_id_sys_t *id = (sout_stream_id_sys_t *)_id;
     return sout_MuxSendBuffer( id->p_mux, id->p_input, p_buffer );
 }
 

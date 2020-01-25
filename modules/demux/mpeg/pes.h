@@ -20,38 +20,48 @@
 #ifndef VLC_MPEG_PES_H
 #define VLC_MPEG_PES_H
 
-static inline bool ExtractPESTimestamp( const uint8_t *p_data, uint8_t i_flags, mtime_t *ret )
+#include "timestamps.h"
+
+static inline stime_t GetPESTimestamp( const uint8_t *p_data )
 {
-    i_flags = (i_flags << 4) | 0x01; /* check marker bits, and i_flags = b 0010, 0011 or 0001 */
-    if((p_data[0] & 0xF1) != i_flags ||
+    return  ((int64_t)(p_data[ 0]&0x0e ) << 29)|
+             (int64_t)(p_data[1] << 22)|
+            ((int64_t)(p_data[2]&0xfe) << 14)|
+             (int64_t)(p_data[3] << 7)|
+             (int64_t)(p_data[4] >> 1);
+}
+
+static inline bool ExtractPESTimestamp( const uint8_t *p_data, uint8_t i_flags, stime_t *ret )
+{
+    /* !warn broken muxers set incorrect flags. see #17773 and #19140 */
+    /* check marker bits, and i_flags = b 0010, 0011 or 0001 */
+    if((p_data[0] & 0xC1) != 0x01 ||
        (p_data[2] & 0x01) != 0x01 ||
-       (p_data[4] & 0x01) != 0x01)
+       (p_data[4] & 0x01) != 0x01 ||
+       (p_data[0] & 0x30) == 0 || /* at least needs one bit */
+       (p_data[0] >> 5) > i_flags ) /* needs flags 1x => 1x or flags 01 => 01 */
         return false;
 
 
-    *ret =  ((mtime_t)(p_data[ 0]&0x0e ) << 29)|
-             (mtime_t)(p_data[1] << 22)|
-            ((mtime_t)(p_data[2]&0xfe) << 14)|
-             (mtime_t)(p_data[3] << 7)|
-             (mtime_t)(p_data[4] >> 1);
+    *ret =  GetPESTimestamp( p_data );
     return true;
 }
 
 /* PS SCR timestamp as defined in H222 2.5.3.2 */
-static inline mtime_t ExtractPackHeaderTimestamp( const uint8_t *p_data )
+static inline stime_t ExtractPackHeaderTimestamp( const uint8_t *p_data )
 {
-    return ((mtime_t)(p_data[ 0]&0x38 ) << 27)|
-            ((mtime_t)(p_data[0]&0x03 ) << 28)|
-             (mtime_t)(p_data[1] << 20)|
-            ((mtime_t)(p_data[2]&0xf8 ) << 12)|
-            ((mtime_t)(p_data[2]&0x03 ) << 13)|
-             (mtime_t)(p_data[3] << 5) |
-             (mtime_t)(p_data[4] >> 3);
+    return ((int64_t)(p_data[ 0]&0x38 ) << 27)|
+            ((int64_t)(p_data[0]&0x03 ) << 28)|
+             (int64_t)(p_data[1] << 20)|
+            ((int64_t)(p_data[2]&0xf8 ) << 12)|
+            ((int64_t)(p_data[2]&0x03 ) << 13)|
+             (int64_t)(p_data[3] << 5) |
+             (int64_t)(p_data[4] >> 3);
 }
 
 inline
 static int ParsePESHeader( vlc_object_t *p_object, const uint8_t *p_header, size_t i_header,
-                           unsigned *pi_skip, mtime_t *pi_dts, mtime_t *pi_pts,
+                           unsigned *pi_skip, stime_t *pi_dts, stime_t *pi_pts,
                            uint8_t *pi_stream_id, bool *pb_pes_scambling )
 {
     unsigned i_skip;
@@ -105,8 +115,6 @@ static int ParsePESHeader( vlc_object_t *p_object, const uint8_t *p_header, size
             if( pb_pes_scambling )
                 *pb_pes_scambling = false;
 
-            if( i_header < i_skip + 1 )
-                return VLC_EGENERIC;
             while( i_skip < 23 && p_header[i_skip] == 0xff )
             {
                 i_skip++;

@@ -26,7 +26,6 @@
 
 #include <vlc_common.h>
 #include <vlc_atomic.h>
-#include <vlc_events.h>
 #include <vlc_renderer_discovery.h>
 #include <vlc_probe.h>
 #include <vlc_modules.h>
@@ -40,7 +39,7 @@ struct vlc_renderer_item_t
     char *psz_icon_uri;
     char *psz_demux_filter;
     int i_flags;
-    atomic_uint refs;
+    vlc_atomic_rc_t rc;
 };
 
 static void
@@ -83,20 +82,20 @@ vlc_renderer_item_new(const char *psz_type, const char *psz_name,
     if (p_item->psz_name == NULL)
         goto error;
 
-    if (asprintf(&p_item->psz_sout, "%s{ip=%s,port=%d%s%s}",
+    if (asprintf(&p_item->psz_sout, "%s{ip=%s,port=%u%s%s}",
                  url.psz_protocol, url.psz_host, url.i_port,
                  psz_extra_sout != NULL ? "," : "",
                  psz_extra_sout != NULL ? psz_extra_sout : "") == -1)
         goto error;
 
-    if ((p_item->psz_icon_uri = strdup(psz_icon_uri)) == NULL)
+    if (psz_icon_uri && (p_item->psz_icon_uri = strdup(psz_icon_uri)) == NULL)
         goto error;
 
-    if ((p_item->psz_demux_filter = strdup(psz_demux_filter)) == NULL)
+    if (psz_demux_filter && (p_item->psz_demux_filter = strdup(psz_demux_filter)) == NULL)
         goto error;
 
     p_item->i_flags = i_flags;
-    atomic_init(&p_item->refs, 1);
+    vlc_atomic_rc_init(&p_item->rc);
     vlc_UrlClean(&url);
     return p_item;
 
@@ -160,7 +159,7 @@ vlc_renderer_item_hold(vlc_renderer_item_t *p_item)
 {
     assert(p_item != NULL);
 
-    atomic_fetch_add(&p_item->refs, 1);
+    vlc_atomic_rc_inc(&p_item->rc);
     return p_item;
 }
 
@@ -169,9 +168,8 @@ vlc_renderer_item_release(vlc_renderer_item_t *p_item)
 {
     assert(p_item != NULL);
 
-    if (atomic_fetch_sub(&p_item->refs, 1) != 1)
-        return;
-    item_free(p_item);
+    if (vlc_atomic_rc_dec(&p_item->rc))
+        item_free(p_item);
 }
 
 struct vlc_rd_probe
@@ -210,8 +208,8 @@ vlc_rd_get_names(vlc_object_t *p_obj, char ***pppsz_names,
         return VLC_EGENERIC;
     }
 
-    char **ppsz_names = malloc(sizeof(char *) * (i_count + 1));
-    char **ppsz_longnames = malloc(sizeof(char *) * (i_count + 1));
+    char **ppsz_names = vlc_alloc(i_count + 1, sizeof(char *));
+    char **ppsz_longnames = vlc_alloc(i_count + 1, sizeof(char *));
 
     if (unlikely(ppsz_names == NULL || ppsz_longnames == NULL))
     {
@@ -233,19 +231,17 @@ vlc_rd_get_names(vlc_object_t *p_obj, char ***pppsz_names,
     return VLC_SUCCESS;
 }
 
-static void
-rd_destructor(vlc_object_t *p_obj)
+void vlc_rd_release(vlc_renderer_discovery_t *p_rd)
 {
-    vlc_renderer_discovery_t * p_rd =(vlc_renderer_discovery_t *)p_obj;
-    assert(!p_rd->p_module); /* Forgot to call Stop */
-
+    module_unneed(p_rd, p_rd->p_module);
     config_ChainDestroy(p_rd->p_cfg);
     free(p_rd->psz_name);
-    vlc_event_manager_fini(&p_rd->event_manager);
+    vlc_object_delete(p_rd);
 }
 
 vlc_renderer_discovery_t *
-vlc_rd_new(vlc_object_t *p_obj, const char *psz_name)
+vlc_rd_new(vlc_object_t *p_obj, const char *psz_name,
+           const struct vlc_renderer_discovery_owner *restrict owner)
 {
     vlc_renderer_discovery_t *p_rd;
 
@@ -254,60 +250,18 @@ vlc_rd_new(vlc_object_t *p_obj, const char *psz_name)
         return NULL;
     free(config_ChainCreate(&p_rd->psz_name, &p_rd->p_cfg, psz_name));
 
-    vlc_event_manager_t *p_em = &p_rd->event_manager;
-    vlc_event_manager_init(p_em, p_rd);
-    vlc_event_manager_register_event_type(p_em, vlc_RendererDiscoveryItemAdded);
-    vlc_event_manager_register_event_type(p_em, vlc_RendererDiscoveryItemRemoved);
-
-    vlc_object_set_destructor(p_rd, rd_destructor);
-    return p_rd;
-}
-
-VLC_API vlc_event_manager_t *
-vlc_rd_event_manager(vlc_renderer_discovery_t *p_rd)
-{
-    return &p_rd->event_manager;
-}
-
-int
-vlc_rd_start(vlc_renderer_discovery_t *p_rd)
-{
-    assert(!p_rd->p_module);
-
+    p_rd->owner = *owner;
     p_rd->p_module = module_need(p_rd, "renderer_discovery",
                                  p_rd->psz_name, true);
     if (p_rd->p_module == NULL)
     {
-        msg_Err(p_rd, "no suitable renderer discovery module");
-        return VLC_EGENERIC;
+        msg_Err(p_rd, "no suitable renderer discovery module for '%s'",
+            psz_name);
+        free(p_rd->psz_name);
+        config_ChainDestroy(p_rd->p_cfg);
+        vlc_object_delete(p_rd);
+        p_rd = NULL;
     }
 
-    return VLC_SUCCESS;
-}
-
-void
-vlc_rd_stop(vlc_renderer_discovery_t * p_rd)
-{
-    module_unneed(p_rd, p_rd->p_module);
-    p_rd->p_module = NULL;
-}
-
-void
-vlc_rd_add_item(vlc_renderer_discovery_t * p_rd, vlc_renderer_item_t * p_item)
-{
-    vlc_event_t event;
-    event.type = vlc_RendererDiscoveryItemAdded;
-    event.u.renderer_discovery_item_added.p_new_item = p_item;
-
-    vlc_event_send(&p_rd->event_manager, &event);
-}
-
-void
-vlc_rd_remove_item(vlc_renderer_discovery_t * p_rd, vlc_renderer_item_t * p_item)
-{
-    vlc_event_t event;
-    event.type = vlc_RendererDiscoveryItemRemoved;
-    event.u.renderer_discovery_item_removed.p_item = p_item;
-
-    vlc_event_send(&p_rd->event_manager, &event);
+    return p_rd;
 }

@@ -1,6 +1,12 @@
+!include "StrFunc.nsh"
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; 1. File type associations ;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; "Initialize" string functions
+${StrRep}
+${StrCase}
 
 ;; Function that associates one extension with VLC
 Function AssociateExtension
@@ -15,9 +21,15 @@ FunctionEnd
 
 ;; Function that registers one extension for VLC
 Function RegisterExtension
-  WriteRegStr HKCR "VLC$R0" "" "VLC media file"
+  ; R0 contains the extension, R1 contains the type (Audio/Video)
+  ; Remove the leading dot from the filetype string
+  ${StrRep} $R2 $R0 "." ""
+  ; And capitalize the extension
+  ${StrCase} $R2 $R2 "U"
+  ; for instance: MKV Video File (VLC)
+  WriteRegStr HKCR "VLC$R0" "" "$R2 $R1 File (VLC)"
   WriteRegStr HKCR "VLC$R0\shell" "" "Open"
-  WriteRegStr HKCR "VLC$R0\shell\Open" "" $ShellAssociation_Play
+  WriteRegStr HKCR "VLC$R0\shell\Open" "" "$(ShellAssociation_Play)"
   WriteRegStr HKCR "VLC$R0\shell\Open" "MultiSelectModel" "Player"
   WriteRegStr HKCR "VLC$R0\shell\Open\command" "" '"$INSTDIR\vlc.exe" --started-from-file "%1"'
   WriteRegStr HKCR "VLC$R0\DefaultIcon" "" '"$INSTDIR\vlc.exe",0'
@@ -92,7 +104,10 @@ FunctionEnd
 !macro RegisterExtensionMacro TYPE EXT
   Push $R0
   StrCpy $R0 ${EXT}
+  Push $R1
+  StrCpy $R1 ${TYPE}
   Call RegisterExtension
+  Pop $R1
   Pop $R0
 !macroend
 
@@ -133,6 +148,8 @@ FunctionEnd
   !insertmacro ${_action} Audio ".caf"
   !insertmacro ${_action} Audio ".cda"
   !insertmacro ${_action} Audio ".dts"
+  !insertmacro ${_action} Audio ".dsf"
+  !insertmacro ${_action} Audio ".dff"
   !insertmacro ${_action} Audio ".flac"
   !insertmacro ${_action} Audio ".it"
   !insertmacro ${_action} Audio ".m4a"
@@ -175,9 +192,11 @@ FunctionEnd
   !insertmacro ${_action} Video ".asf"
   !insertmacro ${_action} Video ".avi"
   !insertmacro ${_action} Video ".bik"
+  !insertmacro ${_action} Video ".dav"
   !insertmacro ${_action} Video ".divx"
   !insertmacro ${_action} Video ".drc"
   !insertmacro ${_action} Video ".dv"
+  !insertmacro ${_action} Video ".dvr-ms"
   !insertmacro ${_action} Video ".evo"
   !insertmacro ${_action} Video ".f4v"
   !insertmacro ${_action} Video ".flv"
@@ -223,6 +242,7 @@ FunctionEnd
   !insertmacro ${_action} Video ".vro"
   !insertmacro ${_action} Video ".webm"
   !insertmacro ${_action} Video ".wmv"
+  !insertmacro ${_action} Video ".wtv"
   !insertmacro ${_action} Video ".xesc"
 !macroend
 
@@ -239,10 +259,14 @@ FunctionEnd
   !insertmacro ${_action} Other ".vlc"
   !insertmacro ${_action} Other ".wvx"
   !insertmacro ${_action} Other ".xspf"
+  !insertmacro ${_action} Other ".wpl"
+  !insertmacro ${_action} Other ".zpl"
 !macroend
 
 !macro MacroUnassociatedExtensions _action
   !insertmacro ${_action} Other ".iso"
+  !insertmacro ${_action} Other ".zip"
+  !insertmacro ${_action} Other ".rar"
 !macroend
 
 !macro MacroSkinExtensions _action
@@ -260,11 +284,13 @@ FunctionEnd
 
 ; Generic function for adding the context menu for one ext.
 !macro AddContextMenuExt EXT
-  WriteRegStr HKCR ${EXT}\shell\PlayWithVLC "" $ContextMenuEntry_PlayWith
+  WriteRegStr HKCR ${EXT}\shell\PlayWithVLC "" "$(ContextMenuEntry_PlayWith)"
+  WriteRegStr HKCR ${EXT}\shell\PlayWithVLC "Icon" '"$INSTDIR\vlc.exe",0'
   WriteRegStr HKCR ${EXT}\shell\PlayWithVLC "MultiSelectModel" "Player"
   WriteRegStr HKCR ${EXT}\shell\PlayWithVLC\command "" '"$INSTDIR\vlc.exe" --started-from-file --no-playlist-enqueue "%1"'
 
-  WriteRegStr HKCR ${EXT}\shell\AddToPlaylistVLC "" $ContextMenuEntry_AddToPlaylist
+  WriteRegStr HKCR ${EXT}\shell\AddToPlaylistVLC "" "$(ContextMenuEntry_AddToPlaylist)"
+  WriteRegStr HKCR ${EXT}\shell\AddToPlaylistVLC "Icon" '"$INSTDIR\vlc.exe",0'
   WriteRegStr HKCR ${EXT}\shell\AddToPlaylistVLC "MultiSelectModel" "Player"
   WriteRegStr HKCR ${EXT}\shell\AddToPlaylistVLC\command "" '"$INSTDIR\vlc.exe" --started-from-file --playlist-enqueue "%1"'
 !macroend

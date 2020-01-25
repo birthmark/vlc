@@ -2,7 +2,6 @@
  * darwin.c : Put text on the video, using freetype2
  *****************************************************************************
  * Copyright (C) 2015 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Felix Paul Kühne <fkuehne@videolan.org>
  *          Jean-Baptiste Kempf <jb@videolan.org>
@@ -33,24 +32,24 @@
 
 #include <vlc_common.h>
 #include <vlc_filter.h>                                      /* filter_sys_t */
+#include <vlc_charset.h>                                     /* FromCFString */
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreText/CoreText.h>
 
 #include "../platform_fonts.h"
 
-char* getPathForFontDescription(CTFontDescriptorRef fontDescriptor);
-void addNewFontToFamily(filter_t *p_filter, CTFontDescriptorRef iter, char *path, vlc_family_t *family);
-
 char* getPathForFontDescription(CTFontDescriptorRef fontDescriptor)
 {
     CFURLRef url = CTFontDescriptorCopyAttribute(fontDescriptor, kCTFontURLAttribute);
+    if (url == NULL)
+        return NULL;
     CFStringRef path = CFURLCopyFileSystemPath(url, kCFURLPOSIXPathStyle);
-    char *cpath = (char *)CFStringGetCStringPtr(path, kCFStringEncodingUTF8);
-    char *retPath = NULL;
-    if (cpath) {
-        retPath = strdup(cpath);
+    if (path == NULL) {
+        CFRelease(url);
+        return NULL;
     }
+    char *retPath = FromCFString(path, kCFStringEncodingUTF8);
     CFRelease(path);
     CFRelease(url);
     return retPath;
@@ -132,11 +131,13 @@ const vlc_family_t *CoreText_GetFamily(filter_t *p_filter, const char *psz_famil
 
     coreTextFontCollection = CTFontCollectionCreateWithFontDescriptors(coreTextFontDescriptorsArray, 0);
     if (coreTextFontCollection == NULL) {
+        msg_Warn(p_filter,"CTFontCollectionCreateWithFontDescriptors (1) failed!");
         goto end;
     }
 
     matchedFontDescriptions = CTFontCollectionCreateMatchingFontDescriptors(coreTextFontCollection);
     if (matchedFontDescriptions == NULL) {
+        msg_Warn(p_filter, "CTFontCollectionCreateMatchingFontDescriptors (2) failed!");
         goto end;
     }
 
@@ -155,11 +156,9 @@ const vlc_family_t *CoreText_GetFamily(filter_t *p_filter, const char *psz_famil
         path = getPathForFontDescription(iter);
 
         /* check if the path is empty, which can happen in rare circumstances */
-        if (path != NULL) {
-            if (strcmp("", path) == 0) {
-                FREENULL(path);
-                continue;
-            }
+        if (path == NULL || *path == '\0') {
+            FREENULL(path);
+            continue;
         }
 
         addNewFontToFamily(p_filter, iter, path, p_family);
@@ -180,6 +179,7 @@ end:
 
     CFRelease(coreTextFontDescriptorsArray);
     CFRelease(familyName);
+    free(psz_lc);
 
     return p_family;
 }
@@ -211,15 +211,16 @@ vlc_family_t *CoreText_GetFallbacks(filter_t *p_filter, const char *psz_family, 
     CFStringRef fallbackFontFamilyName = CTFontCopyFamilyName(fallbackFont);
 
     /* create a new family object */
-    const char *psz_fallbackFamilyName = CFStringGetCStringPtr(fallbackFontFamilyName, kCFStringEncodingUTF8);
+    char *psz_fallbackFamilyName = FromCFString(fallbackFontFamilyName, kCFStringEncodingUTF8);
     if (psz_fallbackFamilyName == NULL) {
+        msg_Warn(p_filter, "Failed to convert font family name CFString to C string");
         goto done;
     }
 #ifndef NDEBUG
     msg_Dbg(p_filter, "Will deploy fallback font '%s'", psz_fallbackFamilyName);
 #endif
 
-    psz_lc_fallback = ToLower(strdup(psz_fallbackFamilyName));
+    psz_lc_fallback = ToLower(psz_fallbackFamilyName);
 
     p_family = vlc_dictionary_value_for_key(&p_sys->family_map, psz_lc_fallback);
     if (p_family) {
@@ -236,11 +237,7 @@ vlc_family_t *CoreText_GetFallbacks(filter_t *p_filter, const char *psz_family, 
     psz_fontPath = getPathForFontDescription(fallbackFontDescriptor);
 
     /* check if the path is empty, which can happen in rare circumstances */
-    if (psz_fontPath != NULL) {
-        if (strcmp("", psz_fontPath) == 0) {
-            goto done;
-        }
-    } else {
+    if (psz_fontPath == NULL || *psz_fontPath == '\0') {
         goto done;
     }
 
@@ -252,6 +249,7 @@ done:
     CFRelease(codepointString);
     CFRelease(fallbackFont);
     CFRelease(fallbackFontFamilyName);
+    free(psz_fallbackFamilyName);
     free(psz_lc_fallback);
     free(psz_fontPath);
     if (postScriptFallbackFontname != NULL)

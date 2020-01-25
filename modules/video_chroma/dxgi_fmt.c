@@ -26,10 +26,6 @@
 
 #include <vlc_es.h>
 
-#define COBJMACROS
-#include <initguid.h>
-#include <d3d11.h>
-
 #include "dxgi_fmt.h"
 
 typedef struct
@@ -47,7 +43,7 @@ static const dxgi_format_t dxgi_formats[] = {
     { "BGRX",        DXGI_FORMAT_B8G8R8X8_UNORM,      VLC_CODEC_RGB32    },
     { "BGRA",        DXGI_FORMAT_B8G8R8A8_UNORM,      VLC_CODEC_BGRA     },
     { "BGRA_SRGB",   DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, VLC_CODEC_BGRA     },
-    { "AYUV",        DXGI_FORMAT_AYUV,                VLC_CODEC_YUVA     },
+    { "AYUV",        DXGI_FORMAT_AYUV,                VLC_CODEC_VUYA     },
     { "YUY2",        DXGI_FORMAT_YUY2,                VLC_CODEC_YUYV     },
     { "AI44",        DXGI_FORMAT_AI44,                0                  },
     { "P8",          DXGI_FORMAT_P8,                  0                  },
@@ -55,10 +51,12 @@ static const dxgi_format_t dxgi_formats[] = {
     { "B5G6R5",      DXGI_FORMAT_B5G6R5_UNORM,        VLC_CODEC_RGB16    },
     { "Y416",        DXGI_FORMAT_Y416,                0                  },
     { "P010",        DXGI_FORMAT_P010,                VLC_CODEC_P010     },
-    { "Y210",        DXGI_FORMAT_Y210,                VLC_CODEC_YUYV     }, /* AV_PIX_FMT_YUYV422 */
-    { "Y410",        DXGI_FORMAT_Y410,                0                  },
+    { "P016",        DXGI_FORMAT_P016,                VLC_CODEC_P016     },
+    { "Y210",        DXGI_FORMAT_Y210,                VLC_CODEC_Y210     },
+    { "Y410",        DXGI_FORMAT_Y410,                VLC_CODEC_Y410     },
     { "NV11",        DXGI_FORMAT_NV11,                0                  },
-    { "RGB10A2",     DXGI_FORMAT_R10G10B10A2_UNORM,   0                  },
+    { "RGB10A2",     DXGI_FORMAT_R10G10B10A2_UNORM,   VLC_CODEC_RGBA10   },
+    { "RGB16",       DXGI_FORMAT_R16G16B16A16_UNORM,  VLC_CODEC_RGBA64   },
     { "RGB16_FLOAT", DXGI_FORMAT_R16G16B16A16_FLOAT,  0                  },
     { "UNKNOWN",     DXGI_FORMAT_UNKNOWN,             0                  },
 
@@ -66,28 +64,36 @@ static const dxgi_format_t dxgi_formats[] = {
 };
 
 static const d3d_format_t d3d_formats[] = {
-    { "NV12",     DXGI_FORMAT_NV12,           VLC_CODEC_NV12,              8, 2, 2, DXGI_FORMAT_R8_UNORM,       DXGI_FORMAT_R8G8_UNORM },
-    { "VA_NV12",  DXGI_FORMAT_NV12,           VLC_CODEC_D3D11_OPAQUE,      8, 2, 2, DXGI_FORMAT_R8_UNORM,       DXGI_FORMAT_R8G8_UNORM },
-    { "P010",     DXGI_FORMAT_P010,           VLC_CODEC_P010,             10, 2, 2, DXGI_FORMAT_R16_UNORM,      DXGI_FORMAT_R16G16_UNORM },
-    { "VA_P010",  DXGI_FORMAT_P010,           VLC_CODEC_D3D11_OPAQUE_10B, 10, 2, 2, DXGI_FORMAT_R16_UNORM,      DXGI_FORMAT_R16G16_UNORM },
-    { "YUY2",     DXGI_FORMAT_YUY2,           VLC_CODEC_YUYV,              8, 2, 2, DXGI_FORMAT_R8G8B8A8_UNORM, 0 },
+    { "NV12",     DXGI_FORMAT_NV12,           VLC_CODEC_NV12,              8, 2, 2, { DXGI_FORMAT_R8_UNORM,       DXGI_FORMAT_R8G8_UNORM } },
+    { "VA_NV12",  DXGI_FORMAT_NV12,           VLC_CODEC_D3D11_OPAQUE,      8, 2, 2, { DXGI_FORMAT_R8_UNORM,       DXGI_FORMAT_R8G8_UNORM } },
+    { "P010",     DXGI_FORMAT_P010,           VLC_CODEC_P010,             10, 2, 2, { DXGI_FORMAT_R16_UNORM,      DXGI_FORMAT_R16G16_UNORM } },
+    { "VA_P010",  DXGI_FORMAT_P010,           VLC_CODEC_D3D11_OPAQUE_10B, 10, 2, 2, { DXGI_FORMAT_R16_UNORM,      DXGI_FORMAT_R16G16_UNORM } },
+    { "YUY2",     DXGI_FORMAT_YUY2,           VLC_CODEC_YUYV,              8, 2, 2, { DXGI_FORMAT_R8G8B8A8_UNORM } },
 #ifdef BROKEN_PIXEL
-    { "AYUV",     DXGI_FORMAT_AYUV,           VLC_CODEC_YUVA,          8, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM,     0 },
-    { "Y416",     DXGI_FORMAT_Y416,           VLC_CODEC_I444_16L,     16, 1, 1, DXGI_FORMAT_R16G16B16A16_UINT,  0 },
+    { "Y416",     DXGI_FORMAT_Y416,           VLC_CODEC_I444_16L,     16, 1, 1, { DXGI_FORMAT_R16G16B16A16_UINT } },
 #endif
 #ifdef UNTESTED
-    { "Y210",     DXGI_FORMAT_Y210,           VLC_CODEC_I422_10L,     10, 2, 1, DXGI_FORMAT_R16G16B16A16_UNORM, 0 },
-    { "Y410",     DXGI_FORMAT_Y410,           VLC_CODEC_I444,         10, 1, 1, DXGI_FORMAT_R10G10B10A2_UNORM,  0 },
-    { "NV11",     DXGI_FORMAT_NV11,           VLC_CODEC_I411,          8, 4, 1, DXGI_FORMAT_R8_UNORM,           DXGI_FORMAT_R8G8_UNORM },
+    { "Y210",     DXGI_FORMAT_Y210,           VLC_CODEC_I422_10L,     10, 2, 1, { DXGI_FORMAT_R16G16B16A16_UNORM } },
+    { "Y410",     DXGI_FORMAT_Y410,           VLC_CODEC_I444,         10, 1, 1, { DXGI_FORMAT_R10G10B10A2_UNORM } },
+    { "NV11",     DXGI_FORMAT_NV11,           VLC_CODEC_I411,          8, 4, 1, { DXGI_FORMAT_R8_UNORM,           DXGI_FORMAT_R8G8_UNORM} },
 #endif
-    { "R8G8B8A8", DXGI_FORMAT_R8G8B8A8_UNORM, VLC_CODEC_RGBA,          8, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM,     0 },
-    { "VA_RGBA",  DXGI_FORMAT_R8G8B8A8_UNORM, VLC_CODEC_D3D11_OPAQUE,  8, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM,     0 },
-    { "B8G8R8A8", DXGI_FORMAT_B8G8R8A8_UNORM, VLC_CODEC_BGRA,          8, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM,     0 },
-    { "VA_BGRA",  DXGI_FORMAT_B8G8R8A8_UNORM, VLC_CODEC_D3D11_OPAQUE,  8, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM,     0 },
-    { "R8G8B8X8", DXGI_FORMAT_B8G8R8X8_UNORM, VLC_CODEC_RGB32,         8, 1, 1, DXGI_FORMAT_B8G8R8X8_UNORM,     0 },
-    { "B5G6R5",   DXGI_FORMAT_B5G6R5_UNORM,   VLC_CODEC_RGB16,         5, 1, 1, DXGI_FORMAT_B5G6R5_UNORM,       0 },
+    { "I420",     DXGI_FORMAT_UNKNOWN,        VLC_CODEC_I420,          8, 2, 2, { DXGI_FORMAT_R8_UNORM,      DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UNORM } },
+    { "I420_10",  DXGI_FORMAT_UNKNOWN,        VLC_CODEC_I420_10L,     10, 2, 2, { DXGI_FORMAT_R16_UNORM,     DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_R16_UNORM } },
+    { "YUVA",     DXGI_FORMAT_UNKNOWN,        VLC_CODEC_YUVA,          8, 1, 1, { DXGI_FORMAT_R8_UNORM,      DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UNORM } },
+    { "I444_16",  DXGI_FORMAT_UNKNOWN,        VLC_CODEC_I444_16L,     16, 1, 1, { DXGI_FORMAT_R16_UNORM,     DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_R16_UNORM } },
+    { "B8G8R8A8", DXGI_FORMAT_B8G8R8A8_UNORM, VLC_CODEC_BGRA,          8, 1, 1, { DXGI_FORMAT_B8G8R8A8_UNORM } },
+    { "VA_BGRA",  DXGI_FORMAT_B8G8R8A8_UNORM, VLC_CODEC_D3D11_OPAQUE_BGRA,  8, 1, 1, { DXGI_FORMAT_B8G8R8A8_UNORM } },
+    { "R8G8B8A8", DXGI_FORMAT_R8G8B8A8_UNORM, VLC_CODEC_RGBA,          8, 1, 1, { DXGI_FORMAT_R8G8B8A8_UNORM } },
+    { "VA_RGBA",  DXGI_FORMAT_R8G8B8A8_UNORM, VLC_CODEC_D3D11_OPAQUE_RGBA,  8, 1, 1, { DXGI_FORMAT_R8G8B8A8_UNORM } },
+    { "R8G8B8X8", DXGI_FORMAT_B8G8R8X8_UNORM, VLC_CODEC_RGB32,         8, 1, 1, { DXGI_FORMAT_B8G8R8X8_UNORM } },
+    { "RGBA64",   DXGI_FORMAT_R16G16B16A16_UNORM, VLC_CODEC_RGBA64,   16, 1, 1, { DXGI_FORMAT_R16G16B16A16_UNORM } },
+    { "RGB10A2",  DXGI_FORMAT_R10G10B10A2_UNORM, VLC_CODEC_RGBA10,    10, 1, 1, { DXGI_FORMAT_R10G10B10A2_UNORM } },
+    { "VA_RGB10", DXGI_FORMAT_R10G10B10A2_UNORM, VLC_CODEC_D3D11_OPAQUE_RGBA, 10, 1, 1, { DXGI_FORMAT_R10G10B10A2_UNORM } },
+    { "AYUV",     DXGI_FORMAT_AYUV,           VLC_CODEC_VUYA,          8, 1, 1, { DXGI_FORMAT_R8G8B8A8_UNORM } },
+    { "B5G6R5",   DXGI_FORMAT_B5G6R5_UNORM,   VLC_CODEC_RGB16,         5, 1, 1, { DXGI_FORMAT_B5G6R5_UNORM } },
+    { "I420_OPAQUE", DXGI_FORMAT_420_OPAQUE,  VLC_CODEC_D3D11_OPAQUE,  8, 2, 2, { DXGI_FORMAT_UNKNOWN } },
 
-    { NULL, 0, 0, 0, 0, 0, 0, 0}
+    { NULL, 0, 0, 0, 0, 0, {} }
 };
 
 const char *DxgiFormatToStr(DXGI_FORMAT format)
@@ -110,6 +116,16 @@ vlc_fourcc_t DxgiFormatFourcc(DXGI_FORMAT format)
     return 0;
 }
 
+DXGI_FORMAT DxgiFourccFormat(vlc_fourcc_t fcc)
+{
+    for (const dxgi_format_t *f = dxgi_formats; f->name != NULL; ++f)
+    {
+        if (f->vlc_format == fcc)
+            return f->format;
+    }
+    return DXGI_FORMAT_UNKNOWN;
+}
+
 const d3d_format_t *GetRenderFormatList(void)
 {
     return d3d_formats;
@@ -117,7 +133,7 @@ const d3d_format_t *GetRenderFormatList(void)
 
 void DxgiFormatMask(DXGI_FORMAT format, video_format_t *fmt)
 {
-    if (format == DXGI_FORMAT_B8G8R8X8_UNORM)
+    if (format == DXGI_FORMAT_B8G8R8X8_UNORM || format == DXGI_FORMAT_B8G8R8A8_UNORM)
     {
         fmt->i_rmask = 0x0000ff00;
         fmt->i_gmask = 0x00ff0000;
@@ -125,38 +141,35 @@ void DxgiFormatMask(DXGI_FORMAT format, video_format_t *fmt)
     }
 }
 
-IDXGIAdapter *D3D11DeviceAdapter(ID3D11Device *d3ddev)
+const char *DxgiVendorStr(unsigned int gpu_vendor)
 {
-    IDXGIDevice *pDXGIDevice = NULL;
-    HRESULT hr = ID3D11Device_QueryInterface(d3ddev, &IID_IDXGIDevice, (void **)&pDXGIDevice);
-    if (FAILED(hr)) {
-        return NULL;
-    }
+    static const struct {
+        unsigned   id;
+        const char name[32];
+    } vendors [] = {
+        { GPU_MANUFACTURER_AMD,      "ATI"         },
+        { GPU_MANUFACTURER_NVIDIA,   "NVIDIA"      },
+        { GPU_MANUFACTURER_VIA,      "VIA"         },
+        { GPU_MANUFACTURER_INTEL,    "Intel"       },
+        { GPU_MANUFACTURER_S3,       "S3 Graphics" },
+        { GPU_MANUFACTURER_QUALCOMM, "Qualcomm"    },
+        { 0,                         "Unknown" }
+    };
 
-    IDXGIAdapter *p_adapter;
-    hr = IDXGIDevice_GetAdapter(pDXGIDevice, &p_adapter);
-    IDXGIDevice_Release(pDXGIDevice);
-    if (FAILED(hr)) {
-        return NULL;
+    int i = 0;
+    for (i = 0; vendors[i].id != 0; i++) {
+        if (vendors[i].id == gpu_vendor)
+            break;
     }
-    return p_adapter;
+    return vendors[i].name;
 }
 
-bool isXboxHardware(ID3D11Device *d3ddev)
+UINT DxgiResourceCount(const d3d_format_t *d3d_fmt)
 {
-    IDXGIAdapter *p_adapter = D3D11DeviceAdapter(d3ddev);
-    if (!p_adapter)
-        return NULL;
-
-    bool result = false;
-    DXGI_ADAPTER_DESC adapterDesc;
-    if (SUCCEEDED(IDXGIAdapter_GetDesc(p_adapter, &adapterDesc))) {
-        if (adapterDesc.VendorId == 0 &&
-            adapterDesc.DeviceId == 0 &&
-            !wcscmp(L"ROOT\\SraKmd\\0000", adapterDesc.Description))
-            result = true;
+    for (UINT count=0; count<D3D11_MAX_SHADER_VIEW; count++)
+    {
+        if (d3d_fmt->resourceFormat[count] == DXGI_FORMAT_UNKNOWN)
+            return count;
     }
-
-    IDXGIAdapter_Release(p_adapter);
-    return result;
+    return D3D11_MAX_SHADER_VIEW;
 }

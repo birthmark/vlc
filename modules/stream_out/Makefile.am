@@ -6,6 +6,7 @@ libstream_out_delay_plugin_la_SOURCES = stream_out/delay.c
 libstream_out_stats_plugin_la_SOURCES = stream_out/stats.c
 libstream_out_description_plugin_la_SOURCES = stream_out/description.c
 libstream_out_standard_plugin_la_SOURCES = stream_out/standard.c
+libstream_out_standard_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) $(CPPFLAGS_access_output_srt)
 libstream_out_standard_plugin_la_LIBADD = $(SOCKET_LIBS)
 libstream_out_duplicate_plugin_la_SOURCES = stream_out/duplicate.c
 libstream_out_es_plugin_la_SOURCES = stream_out/es.c
@@ -19,7 +20,13 @@ libstream_out_smem_plugin_la_SOURCES = stream_out/smem.c
 libstream_out_setid_plugin_la_SOURCES = stream_out/setid.c
 libstream_out_transcode_plugin_la_SOURCES = \
 	stream_out/transcode/transcode.c stream_out/transcode/transcode.h \
-	stream_out/transcode/osd.c stream_out/transcode/spu.c \
+	stream_out/transcode/encoder/encoder.c \
+        stream_out/transcode/encoder/encoder.h \
+        stream_out/transcode/encoder/encoder_priv.h \
+        stream_out/transcode/encoder/audio.c \
+        stream_out/transcode/encoder/spu.c \
+        stream_out/transcode/encoder/video.c \
+	stream_out/transcode/spu.c \
 	stream_out/transcode/audio.c stream_out/transcode/video.c
 libstream_out_transcode_plugin_la_CFLAGS = $(AM_CFLAGS)
 libstream_out_transcode_plugin_la_LIBADD = $(LIBM)
@@ -43,27 +50,45 @@ sout_LTLIBRARIES = \
 	libstream_out_setid_plugin.la \
 	libstream_out_transcode_plugin.la
 
+if HAVE_DECKLINK
+libstream_out_sdi_plugin_la_CXXFLAGS = $(AM_CXXFLAGS) $(CPPFLAGS_decklinkoutput)
+libstream_out_sdi_plugin_la_LIBADD = $(LIBS_decklink) $(LIBDL) -lpthread
+libstream_out_sdi_plugin_la_SOURCES = stream_out/sdi/sdiout.cpp \
+        stream_out/sdi/sdiout.hpp \
+        stream_out/sdi/Ancillary.cpp \
+        stream_out/sdi/Ancillary.hpp \
+        stream_out/sdi/AES3Audio.cpp \
+        stream_out/sdi/AES3Audio.hpp \
+        stream_out/sdi/DBMHelper.cpp \
+        stream_out/sdi/DBMHelper.hpp \
+        stream_out/sdi/DBMSDIOutput.cpp \
+        stream_out/sdi/DBMSDIOutput.hpp \
+        stream_out/sdi/SDIAudioMultiplex.cpp \
+        stream_out/sdi/SDIAudioMultiplex.hpp \
+        stream_out/sdi/SDIGenerator.cpp \
+        stream_out/sdi/SDIGenerator.hpp \
+        stream_out/sdi/SDIOutput.cpp \
+        stream_out/sdi/SDIOutput.hpp \
+        stream_out/sdi/SDIStream.cpp \
+        stream_out/sdi/SDIStream.hpp \
+        stream_out/sdi/V210.cpp \
+        stream_out/sdi/V210.hpp
+sout_LTLIBRARIES += libstream_out_sdi_plugin.la
+endif
+
 # RTP plugin
 sout_LTLIBRARIES += libstream_out_rtp_plugin.la
 libstream_out_rtp_plugin_la_SOURCES = \
 	stream_out/rtp.c stream_out/rtp.h stream_out/rtpfmt.c \
 	stream_out/rtcp.c stream_out/rtsp.c stream_out/vod.c
 libstream_out_rtp_plugin_la_CFLAGS = $(AM_CFLAGS)
-libstream_out_rtp_plugin_la_LIBADD = $(SOCKET_LIBS) $(LIBPTHREAD)
+libstream_out_rtp_plugin_la_LIBADD = $(SOCKET_LIBS)
 if HAVE_GCRYPT
 SRTP_CFLAGS = -I$(srcdir)/access/rtp
 SRTP_LIBS = libvlc_srtp.la
 libstream_out_rtp_plugin_la_CFLAGS += -DHAVE_SRTP $(SRTP_CFLAGS) \
 	$(GCRYPT_CFLAGS)
 libstream_out_rtp_plugin_la_LIBADD += $(SRTP_LIBS) $(GCRYPT_LIBS)
-endif
-
-# RAOP plugin
-libstream_out_raop_plugin_la_SOURCES = stream_out/raop.c
-libstream_out_raop_plugin_la_CFLAGS = $(AM_CFLAGS) $(GCRYPT_CFLAGS)
-libstream_out_raop_plugin_la_LIBADD = $(GCRYPT_LIBS) -lgpg-error $(SOCKET_LIBS) $(LIBS_stream_out_raop)
-if HAVE_GCRYPT
-sout_LTLIBRARIES += libstream_out_raop_plugin.la
 endif
 
 # Chromaprint plugin
@@ -86,8 +111,10 @@ libdemux_chromecast_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) -Istream_out/chromecast
 
 libstream_out_chromecast_plugin_la_SOURCES = stream_out/chromecast/cast.cpp stream_out/chromecast/chromecast.h \
                                              stream_out/chromecast/cast_channel.proto \
+                                             stream_out/renderer_common.hpp \
+                                             stream_out/renderer_common.cpp \
                                              stream_out/chromecast/chromecast_common.h stream_out/chromecast/chromecast_ctrl.cpp \
-                                             misc/webservices/json.h misc/webservices/json.c
+                                             misc/webservices/json.h misc/webservices/json.c stream_out/chromecast/chromecast_communication.cpp
 nodist_libstream_out_chromecast_plugin_la_SOURCES = stream_out/chromecast/cast_channel.pb.cc
 libstream_out_chromecast_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) -Istream_out/chromecast $(CHROMECAST_CFLAGS)
 libstream_out_chromecast_plugin_la_LIBADD = $(CHROMECAST_LIBS) $(SOCKET_LIBS)

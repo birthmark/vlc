@@ -82,7 +82,7 @@ int vlc_memstream_putc(struct vlc_memstream *ms, int c)
     return fputc(c, ms->stream);
 }
 
-int vlc_memstream_puts(struct vlc_memstream *ms, const char *str)
+int (vlc_memstream_puts)(struct vlc_memstream *ms, const char *str)
 {
     if (unlikely(ms->stream == NULL))
         return EOF;
@@ -105,9 +105,11 @@ int vlc_memstream_vprintf(struct vlc_memstream *ms, const char *fmt,
 int vlc_memstream_open(struct vlc_memstream *ms)
 {
     ms->error = 0;
-    ms->ptr = NULL;
+    ms->ptr = calloc(1, 1);
+    if (unlikely(ms->ptr == NULL))
+        ms->error = EOF;
     ms->length = 0;
-    return 0;
+    return ms->error;
 }
 
 int vlc_memstream_flush(struct vlc_memstream *ms)
@@ -125,7 +127,13 @@ int vlc_memstream_close(struct vlc_memstream *ms)
 size_t vlc_memstream_write(struct vlc_memstream *ms, const void *ptr,
                            size_t len)
 {
-    char *base = realloc(ms->ptr, ms->length + len + 1u);
+    size_t newlen;
+
+    if (unlikely(add_overflow(ms->length, len, &newlen))
+     || unlikely(add_overflow(newlen, 1, &newlen)))
+        goto error;
+
+    char *base = realloc(ms->ptr, newlen);
     if (unlikely(base == NULL))
         goto error;
 
@@ -137,7 +145,7 @@ size_t vlc_memstream_write(struct vlc_memstream *ms, const void *ptr,
 
 error:
     ms->error = EOF;
-    return EOF;
+    return 0;
 }
 
 int vlc_memstream_putc(struct vlc_memstream *ms, int c)
@@ -145,7 +153,7 @@ int vlc_memstream_putc(struct vlc_memstream *ms, int c)
     return (vlc_memstream_write(ms, &(unsigned char){ c }, 1u) == 1) ? c : EOF;
 }
 
-int vlc_memstream_puts(struct vlc_memstream *ms, const char *str)
+int (vlc_memstream_puts)(struct vlc_memstream *ms, const char *str)
 {
     size_t len = strlen(str);
     return (vlc_memstream_write(ms, str, len) == len) ? 0 : EOF;
@@ -157,12 +165,18 @@ int vlc_memstream_vprintf(struct vlc_memstream *ms, const char *fmt,
     va_list ap;
     char *ptr;
     int len;
+    size_t newlen;
 
     va_copy(ap, args);
     len = vsnprintf(NULL, 0, fmt, ap);
     va_end(ap);
 
-    ptr = realloc(ms->ptr, ms->length + len + 1);
+    if (len < 0
+     || unlikely(add_overflow(ms->length, len, &newlen))
+     || unlikely(add_overflow(newlen, 1, &newlen)))
+        goto error;
+
+    ptr = realloc(ms->ptr, newlen);
     if (ptr == NULL)
         goto error;
 

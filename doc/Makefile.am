@@ -2,7 +2,6 @@ NULL =
 
 LIBVLC_SAMPLES = \
 	libvlc/gtk_player.c \
-	libvlc/libvlc_DVD_ripper.c \
 	libvlc/QtPlayer/LICENSE \
 	libvlc/QtPlayer/main.cpp \
 	libvlc/QtPlayer/player.cpp \
@@ -38,6 +37,8 @@ CHANGELOGS = \
 	ChangeLog-2015 \
 	ChangeLog-2016 \
 	ChangeLog-2017 \
+	ChangeLog-2018 \
+	ChangeLog-2019 \
 	$(NULL)
 
 man1_MANS = \
@@ -74,7 +75,7 @@ doc: Doxyfile
 	doxygen
 
 $(CHANGELOGS): Makefile.am
-	if test -d "$(top_srcdir)/.git"; then \
+	if test -e "$(top_srcdir)/.git"; then \
 		y="$@"; y="$${y##ChangeLog-}" ; \
 		git --git-dir="$(top_srcdir)/.git" log \
 			--since="$$y-01-01" \

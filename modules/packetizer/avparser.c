@@ -2,7 +2,6 @@
  * avparser.c
  *****************************************************************************
  * Copyright (C) 2015 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Denis Charmet <typx@videolan.org>
  *
@@ -50,12 +49,12 @@ vlc_module_end ()
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-struct decoder_sys_t
+typedef struct
 {
     AVCodecParserContext * p_parser_ctx;
     AVCodecContext * p_codec_ctx;
     int i_offset;
-};
+} decoder_sys_t;
 
 static block_t * Packetize( decoder_t *, block_t ** );
 static block_t * PacketizeClosed( decoder_t *, block_t ** );
@@ -65,9 +64,9 @@ static block_t * PacketizeClosed( decoder_t *, block_t ** );
  *****************************************************************************/
 static void FlushPacketizer( decoder_t *p_dec )
 {
-    ClosePacketizer( VLC_OBJECT( p_dec ) );
+    avparser_ClosePacketizer( VLC_OBJECT( p_dec ) );
     p_dec->p_sys = NULL;
-    int res = OpenPacketizer( VLC_OBJECT( p_dec ) );
+    int res = avparser_OpenPacketizer( VLC_OBJECT( p_dec ) );
     if ( res != VLC_SUCCESS )
     {
         msg_Err( p_dec, "failed to flush with error %d", res );
@@ -76,12 +75,12 @@ static void FlushPacketizer( decoder_t *p_dec )
 }
 
 /*****************************************************************************
- * OpenPacketizer: probe the packetizer and return score
+ * avparser_OpenPacketizer: probe the packetizer and return score
  *****************************************************************************
  * Tries to launch a decoder and return score so that the interface is able
  * to choose.
  *****************************************************************************/
-int OpenPacketizer( vlc_object_t *p_this )
+int avparser_OpenPacketizer( vlc_object_t *p_this )
 {
     decoder_t     *p_dec = (decoder_t*)p_this;
     decoder_sys_t *p_sys;
@@ -92,7 +91,8 @@ int OpenPacketizer( vlc_object_t *p_this )
 
     unsigned i_avcodec_id;
 
-    if( !GetFfmpegCodec( p_dec->fmt_in.i_codec, NULL, &i_avcodec_id, NULL ) )
+    if( !GetFfmpegCodec( p_dec->fmt_in.i_cat, p_dec->fmt_in.i_codec,
+                         &i_avcodec_id, NULL ) )
         return VLC_EGENERIC;
 
     /* init avcodec */
@@ -127,6 +127,7 @@ int OpenPacketizer( vlc_object_t *p_this )
     }
     p_dec->pf_packetize = Packetize;
     p_dec->pf_flush = FlushPacketizer;
+    p_dec->pf_get_cc = NULL;
     p_sys->p_parser_ctx = p_ctx;
     p_sys->p_codec_ctx = p_codec_ctx;
     p_sys->i_offset = 0;
@@ -136,18 +137,18 @@ int OpenPacketizer( vlc_object_t *p_this )
 }
 
 /*****************************************************************************
- * ClosePacketizer:
+ * avparser_ClosePacketizer:
  *****************************************************************************/
-void ClosePacketizer( vlc_object_t *p_this )
+void avparser_ClosePacketizer( vlc_object_t *p_this )
 {
     decoder_t     *p_dec = (decoder_t*)p_this;
-    if (likely( p_dec->p_sys != NULL ))
+    decoder_sys_t *p_sys = p_dec->p_sys;
+    if (likely( p_sys != NULL ))
     {
-        avcodec_free_context( &p_dec->p_sys->p_codec_ctx );
-        av_parser_close( p_dec->p_sys->p_parser_ctx );
-        free( p_dec->p_sys );
+        avcodec_free_context( &p_sys->p_codec_ctx );
+        av_parser_close( p_sys->p_parser_ctx );
+        free( p_sys );
     }
-    es_format_Clean( &p_dec->fmt_out );
 }
 
 /*****************************************************************************
@@ -177,7 +178,7 @@ static block_t *Packetize ( decoder_t *p_dec, block_t **pp_block )
 
     p_sys->i_offset += av_parser_parse2( p_sys->p_parser_ctx, p_sys->p_codec_ctx,
                                          &p_outdata, &i_outlen, p_indata, i_inlen,
-                                         p_block->i_pts, p_block->i_dts, -1);
+                                         TO_AV_TS(p_block->i_pts), TO_AV_TS(p_block->i_dts), -1);
 
     if( unlikely( i_outlen <= 0 || !p_outdata ) )
         goto out;
@@ -190,8 +191,10 @@ static block_t *Packetize ( decoder_t *p_dec, block_t **pp_block )
     memcpy( p_ret->p_buffer, p_outdata, i_outlen );
     p_ret->i_pts = p_block->i_pts;
     p_ret->i_dts = p_block->i_dts;
+    if( p_sys->p_parser_ctx->key_frame == 1 )
+        p_ret->i_flags |= BLOCK_FLAG_TYPE_I;
 
-    p_block->i_pts = p_block->i_dts = VLC_TS_INVALID;
+    p_block->i_pts = p_block->i_dts = VLC_TICK_INVALID;
 
     return p_ret;
 

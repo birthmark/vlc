@@ -41,7 +41,7 @@ static void Close(vlc_object_t *);
 vlc_module_begin ()
     set_shortname (N_("PulseAudio"))
     set_description (N_("PulseAudio input"))
-    set_capability ("access_demux", 0)
+    set_capability ("access", 0)
     set_category (CAT_INPUT)
     set_subcategory (SUBCAT_INPUT_ACCESS)
     set_help (HELP_TEXT)
@@ -50,7 +50,7 @@ vlc_module_begin ()
     set_callbacks (Open, Close)
 vlc_module_end ()
 
-struct demux_sys_t
+typedef struct
 {
     pa_stream *stream; /**< PulseAudio playback stream object */
     pa_context *context; /**< PulseAudio connection context */
@@ -59,8 +59,8 @@ struct demux_sys_t
     es_out_id_t *es;
     bool discontinuity; /**< The next block will not follow the last one */
     unsigned framesize; /**< Byte size of a sample */
-    mtime_t caching; /**< Caching value */
-};
+    vlc_tick_t caching; /**< Caching value */
+} demux_sys_t;
 
 /* Stream helpers */
 static void stream_state_cb(pa_stream *s, void *userdata)
@@ -161,7 +161,7 @@ static void stream_read_cb(pa_stream *s, size_t length, void *userdata)
         return;
     }
 
-    mtime_t pts = mdate();
+    vlc_tick_t pts = vlc_tick_now();
     pa_usec_t latency;
     int negative;
 
@@ -174,7 +174,7 @@ static void stream_read_cb(pa_stream *s, size_t length, void *userdata)
     else
         pts -= latency;
 
-    es_out_Control(demux->out, ES_OUT_SET_PCR, pts);
+    es_out_SetPCR(demux->out, pts);
     if (unlikely(sys->es == NULL))
         goto race;
 
@@ -207,7 +207,7 @@ static int Control(demux_t *demux, int query, va_list ap)
 
             if (pa_stream_get_time(sys->stream, &us) < 0)
                 return VLC_EGENERIC;
-            *(va_arg(ap, int64_t *)) = us;
+            *(va_arg(ap, vlc_tick_t *)) = us * 10000000LL / CLOCK_FREQ;
             break;
         }
 
@@ -215,7 +215,7 @@ static int Control(demux_t *demux, int query, va_list ap)
         //case DEMUX_GET_META TODO
 
         case DEMUX_GET_PTS_DELAY:
-            *(va_arg(ap, int64_t *)) = sys->caching;
+            *(va_arg(ap, vlc_tick_t *)) = sys->caching;
             break;
 
         case DEMUX_HAS_UNSUPPORTED_META:
@@ -255,20 +255,21 @@ static int Open(vlc_object_t *obj)
 {
     demux_t *demux = (demux_t *)obj;
 
-    demux_sys_t *sys = malloc(sizeof (*sys));
+    if (demux->out == NULL)
+        return VLC_EGENERIC;
+
+    demux_sys_t *sys = vlc_obj_malloc(obj, sizeof (*sys));
     if (unlikely(sys == NULL))
         return VLC_ENOMEM;
 
     sys->context = vlc_pa_connect(obj, &sys->mainloop);
-    if (sys->context == NULL) {
-        free(sys);
+    if (sys->context == NULL)
         return VLC_EGENERIC;
-    }
 
     sys->stream = NULL;
     sys->es = NULL;
     sys->discontinuity = false;
-    sys->caching = INT64_C(1000) * var_InheritInteger(obj, "live-caching");
+    sys->caching = VLC_TICK_FROM_MS( var_InheritInteger(obj, "live-caching") );
     demux->p_sys = sys;
 
     /* Stream parameters */
@@ -343,8 +344,7 @@ static int Open(vlc_object_t *obj)
     }
 
     es_format_Init(&fmt, AUDIO_ES, format);
-    fmt.audio.i_physical_channels = fmt.audio.i_original_channels =
-        AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT;
+    fmt.audio.i_physical_channels = AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT;
     fmt.audio.i_channels = ss.channels;
     fmt.audio.i_rate = pss->rate;
     fmt.audio.i_bitspersample = aout_BitsPerSample(format);
@@ -396,5 +396,4 @@ static void Close (vlc_object_t *obj)
     }
 
     vlc_pa_disconnect(obj, sys->context, sys->mainloop);
-    free(sys);
 }

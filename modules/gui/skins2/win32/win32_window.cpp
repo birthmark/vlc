@@ -2,7 +2,6 @@
  * win32_window.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
- * $Id$
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -84,7 +83,8 @@ Win32Window::Win32Window( intf_thread_t *pIntf, GenericWindow &rWindow,
         GenericWindow* pParent =
            (GenericWindow*)pVoutManager->getVoutMainWindow();
 
-        m_hWnd_parent = (HWND)pParent->getOSHandle();
+        Win32Window *pWin = (Win32Window*)pParent->getOSWindow();
+        m_hWnd_parent = pWin->getHandle();
 
         // top-level window
         m_hWnd = CreateWindowEx( WS_EX_APPWINDOW, vlc_class, vlc_name,
@@ -145,10 +145,11 @@ Win32Window::~Win32Window()
 }
 
 
-void Win32Window::reparent( void* OSHandle, int x, int y, int w, int h )
+void Win32Window::reparent( OSWindow* parent, int x, int y, int w, int h )
 {
+    Win32Window *pParentWin = (Win32Window*)parent;
     // Reparent the window
-    if( !SetParent( m_hWnd, (HWND)OSHandle ) )
+    if( !SetParent( m_hWnd, pParentWin->getHandle() ) )
         msg_Err( getIntf(), "SetParent failed (%lu)", GetLastError() );
     MoveWindow( m_hWnd, x, y, w, h, TRUE );
 }

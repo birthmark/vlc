@@ -41,10 +41,11 @@ typedef struct sout_cycle sout_cycle_t;
 struct sout_cycle
 {
     sout_cycle_t *next;
-    mtime_t offset;
+    vlc_tick_t offset;
     char chain[1];
 };
 
+typedef struct sout_stream_id_sys_t sout_stream_id_sys_t;
 struct sout_stream_id_sys_t
 {
     sout_stream_id_sys_t *prev;
@@ -53,7 +54,7 @@ struct sout_stream_id_sys_t
     void *id;
 };
 
-struct sout_stream_sys_t
+typedef struct
 {
     sout_stream_t *stream; /*< Current output stream */
     sout_stream_id_sys_t *first; /*< First elementary stream */
@@ -61,16 +62,16 @@ struct sout_stream_sys_t
 
     sout_cycle_t *start;
     sout_cycle_t *next;
-    mtime_t (*clock)(const block_t *);
-    mtime_t period; /*< Total cycle duration */
-};
+    vlc_tick_t (*clock)(const block_t *);
+    vlc_tick_t period; /*< Total cycle duration */
+} sout_stream_sys_t;
 
-static mtime_t get_dts(const block_t *block)
+static vlc_tick_t get_dts(const block_t *block)
 {
     return block->i_dts;
 }
 
-static sout_stream_id_sys_t *Add(sout_stream_t *stream, const es_format_t *fmt)
+static void *Add(sout_stream_t *stream, const es_format_t *fmt)
 {
     sout_stream_sys_t *sys = stream->p_sys;
     sout_stream_id_sys_t *id = malloc(sizeof (*id));
@@ -98,9 +99,10 @@ static sout_stream_id_sys_t *Add(sout_stream_t *stream, const es_format_t *fmt)
     return id;
 }
 
-static void Del(sout_stream_t *stream, sout_stream_id_sys_t *id)
+static void Del(sout_stream_t *stream, void *_id)
 {
     sout_stream_sys_t *sys = stream->p_sys;
+    sout_stream_id_sys_t *id = (sout_stream_id_sys_t *)_id;
 
     if (id->prev != NULL)
         id->prev->next = id->next;
@@ -151,10 +153,10 @@ static void DelStream(sout_stream_t *stream)
     sys->stream = NULL;
 }
 
-static int Send(sout_stream_t *stream, sout_stream_id_sys_t *id,
-                block_t *block)
+static int Send(sout_stream_t *stream, void *_id, block_t *block)
 {
     sout_stream_sys_t *sys = stream->p_sys;
+    sout_stream_id_sys_t *id = (sout_stream_id_sys_t *)_id;
 
     for (block_t *next = block->p_next; block != NULL; block = next)
     {
@@ -181,7 +183,7 @@ static int Send(sout_stream_t *stream, sout_stream_id_sys_t *id,
 }
 
 static int AppendPhase(sout_cycle_t ***restrict pp,
-                       mtime_t offset, const char *chain)
+                       vlc_tick_t offset, const char *chain)
 {
 
     size_t len = strlen(chain);
@@ -198,7 +200,7 @@ static int AppendPhase(sout_cycle_t ***restrict pp,
     return 0;
 }
 
-static mtime_t ParseTime(const char *str)
+static vlc_tick_t ParseTime(const char *str)
 {
     char *end;
     unsigned long long u = strtoull(str, &end, 0);
@@ -206,26 +208,26 @@ static mtime_t ParseTime(const char *str)
     switch (*end)
     {
         case 'w':
-            if (u > 15250284U)
-                return -1;
-            return CLOCK_FREQ * 604800LLU * u;
+            if (u < ((unsigned long long)INT64_MAX)/ (60 * 60 * 24 * 7 * CLOCK_FREQ))
+                return vlc_tick_from_sec( 60LU * 60 * 24 * 7 * u );
+            break;
         case 'd':
-            if (u > 106751991U)
-                return -1;
-            return CLOCK_FREQ * 86400LLU * u;
+            if (u < ((unsigned long long)INT64_MAX)/ (60 * 60 * 24 * CLOCK_FREQ))
+                return vlc_tick_from_sec( 60LU * 60 * 24 * u );
+            break;
         case 'h':
-            if (u > 2562047788U)
-                return -1;
-            return CLOCK_FREQ * 3600LLU * u;
+            if (u < ((unsigned long long)INT64_MAX)/ (60 * 60 * CLOCK_FREQ))
+                return vlc_tick_from_sec( 60LLU * 60 * u );
+            break;
         case 'm':
-            if (u > 153722867280U)
-                return -1;
-            return CLOCK_FREQ * 60LLU * u;
+            if (u < ((unsigned long long)INT64_MAX)/ (60 * CLOCK_FREQ))
+                return vlc_tick_from_sec( 60LLU * u );
+            break;
         case 's':
         case 0:
-            if (u > 9223372036854U)
-                return -1;
-            return CLOCK_FREQ * u;
+            if (u < ((unsigned long long)INT64_MAX)/CLOCK_FREQ)
+                return vlc_tick_from_sec( u );
+            break;
     }
     return -1;
 }
@@ -243,7 +245,7 @@ static int Open(vlc_object_t *obj)
     sys->start = NULL;
     sys->clock = get_dts;
 
-    mtime_t offset = 0;
+    vlc_tick_t offset = 0;
     sout_cycle_t **pp = &sys->start;
     const char *chain = "";
 
@@ -257,7 +259,7 @@ static int Open(vlc_object_t *obj)
         }
         else if (!strcmp(cfg->psz_name, "duration"))
         {
-            mtime_t t = ParseTime(cfg->psz_value);
+            vlc_tick_t t = ParseTime(cfg->psz_value);
 
             if (t > 0)
             {
@@ -269,7 +271,7 @@ static int Open(vlc_object_t *obj)
         }
         else if (!strcmp(cfg->psz_name, "offset"))
         {
-            mtime_t t = ParseTime(cfg->psz_value);
+            vlc_tick_t t = ParseTime(cfg->psz_value);
 
             if (t > offset)
             {
@@ -285,7 +287,7 @@ static int Open(vlc_object_t *obj)
         }
     }
 
-    if (sys->start == NULL || offset <= 0)
+    if (sys->start == NULL || offset == 0)
     {
         free(sys);
         msg_Err(stream, "unknown or invalid cycle specification");

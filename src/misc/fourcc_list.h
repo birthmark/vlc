@@ -25,6 +25,7 @@ static const staticentry_t p_list_video[] = {
 
     B(VLC_CODEC_MP1V, "MPEG-1 Video"),
         A("mp1v"),
+        A("m1v "),
         A("mpg1"),
         A("BW10"),
         E("XMPG", "Xing MPEG-1 Intra"),
@@ -158,7 +159,7 @@ static const staticentry_t p_list_video[] = {
         E("PLV1", "Pelco DVR MPEG-4"),
         E("QMP4", "QNAP Systems MPEG-4"),
         E("qMP4", "QNAP Systems MPEG-4"),
-        A("wMP4"), /* Seems QNAP too */
+        E("wMP4", "QNAP Systems MPEG-4"),
         /* 3ivx delta 3.5 Unsupported
          * putting it here gives extreme distorted images */
         //E("3IV1", "3ivx delta 3.5 MPEG-4 Video"),
@@ -230,7 +231,10 @@ static const staticentry_t p_list_video[] = {
         A("H265"),
         A("x265"),
         A("hev1"),
+        A("hvc1"),
         A("HM10"),
+        E("dvhe", "Dolby Vision HEVC (H.265)"),
+        /* E("dvh1", "Dolby Vision HEVC (H.265)"), Collides with DV */
 
     /* h264 */
     B(VLC_CODEC_H264, "H264 - MPEG-4 AVC (part 10)"),
@@ -256,6 +260,8 @@ static const staticentry_t p_list_video[] = {
         E("ai13", "AVC-Intra 100M 1080p24/30/60"),
         E("ai15", "AVC-Intra 100M 1080i50"),
         E("ai16", "AVC-Intra 100M 1080i60"),
+        E("dvav", "Dolby Vision H264"),
+        E("dva1", "Dolby Vision H264"),
         E("VSSH", "Vanguard VSS H264"),
         E("VSSW", "Vanguard VSS H264"),
         E("vssh", "Vanguard VSS H264"),
@@ -265,6 +271,7 @@ static const staticentry_t p_list_video[] = {
         E("GAVC", "GeoVision MPEG-4 AVC"),
         E("Q264", "QNAP H.264/MPEG-4 AVC"),
         E("q264", "QNAP H.264/MPEG-4 AVC"),
+        E("w264", "QNAP H.264/MPEG-4 AVC"),
         A("UMSV"),
         A("SMV2"),
         A("tshd"),
@@ -331,9 +338,9 @@ static const staticentry_t p_list_video[] = {
         A("FLJP"),
         A("FMJP"),
         A("SJPG"),
-        A("QIVG"), /* Probably QNAP */
-        A("qIVG"), /* Probably QNAP */
-        A("wIVG"), /* Probably QNAP */
+        E("QIVG", "QNAP Motion JPEG"),
+        E("qIVG", "QNAP Motion JPEG"),
+        E("wIVG", "QNAP Motion JPEG"),
         E("AVRn", "Avid Motion JPEG"),
         E("AVDJ", "Avid Motion JPEG"),
         E("ADJV", "Avid Motion JPEG"),
@@ -478,6 +485,10 @@ static const staticentry_t p_list_video[] = {
         A("VP31"),
         A("vp31"),
 
+    /* On2 VP4 Video Codec */
+    B(VLC_CODEC_VP4, "On2's VP4 Video"),
+        A("VP40"),
+
     /* On2  VP5, VP6 codecs */
     B(VLC_CODEC_VP5, "On2's VP5 Video"),
         A("VP5 "),
@@ -586,6 +597,10 @@ static const staticentry_t p_list_video[] = {
 
     B(VLC_CODEC_VMNC, "VMware Video"),
         A("VMnc"),
+
+    B(VLC_CODEC_FMVC, "FM Screen Capture Codec"),
+        A("FMVC"),
+
     B(VLC_CODEC_FRAPS, "FRAPS: Realtime Video Capture"),
         A("FPS1"),
         A("fps1"),
@@ -693,6 +708,7 @@ static const staticentry_t p_list_video[] = {
         E("apco", "Apple ProRes 422 Proxy"),
         E("ap4c", "Apple ProRes 4444"),
         E("ap4h", "Apple ProRes 4444"),
+        E("ap4x", "Apple ProRes 4444 XQ"),
 
     B(VLC_CODEC_ICOD, "Apple Intermediate Codec"),
         A("icod"),
@@ -789,11 +805,33 @@ static const staticentry_t p_list_video[] = {
         A("AV32"),
     B(VLC_CODEC_BGRA, "32 bits BGRA"),
         A("BGRA"),
+    B(VLC_CODEC_RGBA10, "32 bits RGB 10bits A 2bits"),
+        A("RGA0"),
+    B(VLC_CODEC_RGBA64, "64 bits RGBA"),
+        A("RGA4"),
 
     B(VLC_CODEC_GREY, "8 bits greyscale"),
         A("GREY"),
         A("Y800"),
         A("Y8  "),
+
+    B(VLC_CODEC_GREY_10L, "10 bits greyscale LE"),
+        A("G0FL"),
+
+    B(VLC_CODEC_GREY_10B, "10 bits greyscale BE"),
+        A("G0FB"),
+
+    B(VLC_CODEC_GREY_12L, "12 bits greyscale LE"),
+        A("G2FL"),
+
+    B(VLC_CODEC_GREY_12B, "12 bits greyscale BE"),
+        A("G2FB"),
+
+    B(VLC_CODEC_GREY_16L, "16 bits greyscale LE"),
+        A("GRFL"),
+
+    B(VLC_CODEC_GREY_16B, "16 bits greyscale BE"),
+        A("GRFB"),
 
     B(VLC_CODEC_UYVY, "Packed YUV 4:2:2, U:Y:V:Y"),
         A("UYVY"),
@@ -813,6 +851,11 @@ static const staticentry_t p_list_video[] = {
         A("YUYV"),
         A("YUNV"),
         A("V422"),
+
+    B(VLC_CODEC_YUV2, "Packed YUV 4:2:2, Y:U:Y:V signed"),
+        A("yuv2"),
+        A("yuvu"),
+
     B(VLC_CODEC_YVYU, "Packed YUV 4:2:2, Y:V:Y:U"),
         A("YVYU"),
 
@@ -824,6 +867,13 @@ static const staticentry_t p_list_video[] = {
 
     B(VLC_CODEC_V210, "10-bit 4:2:2 Component YCbCr"),
         A("v210"),
+
+    B(VLC_CODEC_Y210, "Packed 10-bit YUV 4:2:2"),
+        A("Y210"),
+    B(VLC_CODEC_VUYA, "Packed YUV 4:4:4, V:U:Y:A"),
+        A("VUYA"),
+    B(VLC_CODEC_Y410, "Packed 10-bit YUV 4:4:4"),
+        A("Y410"),
 
     B(VLC_CODEC_NV12, "Biplanar 4:2:0 Y/UV"),
         A("NV12"),
@@ -986,6 +1036,9 @@ static const staticentry_t p_list_video[] = {
         A("LJ2C"),
         A("LJ2K"),
 
+    B(VLC_CODEC_WEBP, "WebP Image"),
+        A("WEBP"),
+
     B(VLC_CODEC_LAGARITH, "Lagarith Lossless"),
         A("LAGS"),
 
@@ -1003,8 +1056,13 @@ static const staticentry_t p_list_video[] = {
         A("ULRG"),
         A("ULY0"),
         A("ULY2"),
+        A("ULY4"),
         A("ULH0"),
         A("ULH2"),
+        A("ULH4"),
+        A("UQY2"),
+        A("UQRA"),
+        A("UQRG"),
 
     B(VLC_CODEC_VBLE, "VBLE Lossless"),
         A("VBLE"),
@@ -1115,6 +1173,88 @@ static const staticentry_t p_list_video[] = {
 
     B(VLC_CODEC_PIXLET, "Apple Pixlet" ),
         A("pxlt"),
+
+    B(VLC_CODEC_MAGICYUV, "MagicYUV lossless" ),
+        A("M8RG"),
+        A("M8RA"),
+        A("M8G0"),
+        A("M8Y0"),
+        A("M8Y2"),
+        A("M8Y4"),
+        A("M8YA"),
+
+    B(VLC_CODEC_IMM4, "Infinity IMM4"),
+        A("IMM4"),
+
+    B(VLC_CODEC_IMM5, "Infinity IMM5"),
+        A("IMM5"),
+
+    B(VLC_CODEC_VDPAU_VIDEO_420, "4:2:0 VDPAU opaque"),
+        A("VDV0"),
+
+    B(VLC_CODEC_VDPAU_VIDEO_422, "4:2:2 VDPAU opaque"),
+        A("VDV2"),
+
+    B(VLC_CODEC_VDPAU_VIDEO_444, "4:4:4 VDPAU opaque"),
+        A("VDV4"),
+
+    B(VLC_CODEC_VDPAU_OUTPUT, "VDPAU opaque"),
+        A("VDVR"),
+
+    B(VLC_CODEC_VAAPI_420, "4:2:0 VAAPI opaque"),
+        A("VAOP"),
+
+    B(VLC_CODEC_VAAPI_420_10BPP, "4:2:0 10bits VAAPI opaque"),
+        A("VAO0"),
+
+    B(VLC_CODEC_ANDROID_OPAQUE, "Android opaque"),
+        A("ANOP"),
+
+    B(VLC_CODEC_MMAL_OPAQUE, "MMAL opaque"),
+        A("MMAL"),
+
+    B(VLC_CODEC_D3D9_OPAQUE, "4:2:0 D3D9 opaque"),
+        A("DXA9"),
+
+    B(VLC_CODEC_D3D9_OPAQUE_10B, "4:2:0 10bits D3D9 opaque"),
+        A("DXA0"),
+
+    B(VLC_CODEC_D3D11_OPAQUE, "4:2:0 D3D11 opaque"),
+        A("DX11"),
+
+    B(VLC_CODEC_D3D11_OPAQUE_10B, "4:2:0 10bits D3D11 opaque"),
+        A("DX10"),
+
+    B(VLC_CODEC_D3D11_OPAQUE_RGBA, "RGBA D3D11 opaque"),
+        A("DXRG"),
+
+    B(VLC_CODEC_D3D11_OPAQUE_BGRA, "BGRA D3D11 opaque"),
+        A("DAGR"),
+
+    B(VLC_CODEC_NVDEC_OPAQUE, "4:2:0 NVDEC opaque"),
+        A("NVD8"),
+
+    B(VLC_CODEC_NVDEC_OPAQUE_10B, "4:2:0 10bits NVDEC opaque"),
+        A("NVD0"),
+
+    B(VLC_CODEC_NVDEC_OPAQUE_16B, "4:2:0 16bits NVDEC opaque"),
+        A("NVD6"),
+
+    B(VLC_CODEC_NVDEC_OPAQUE_444, "4:4:4 NVDEC opaque"),
+        A("NV48"),
+
+    B(VLC_CODEC_NVDEC_OPAQUE_444_16B, "4:4:4 16bits NVDEC opaque"),
+        A("NV46"),
+
+    B(VLC_CODEC_AGM, "AmuseGraphics Movie"),
+        A("AGM0"),
+        A("AGM1"),
+        A("AGM2"),
+        A("AGM3"),
+        A("AGM4"),
+        A("AGM5"),
+        A("AGM6"),
+        A("AGM7"),
 };
 
 static const staticentry_t p_list_audio[] = {
@@ -1302,6 +1442,9 @@ static const staticentry_t p_list_audio[] = {
         A("ms\x00\x61"),
 
     B(VLC_CODEC_ADPCM_THP, "GameCube THP ADPCM"),
+
+    B(VLC_CODEC_ADPCM_XA_EA, "EA-XA ADPCM"),
+        A("XAJ\x00"),
 
     /* AMR */
     B(VLC_CODEC_AMR_NB, "AMR narrow band"),
@@ -1524,6 +1667,14 @@ static const staticentry_t p_list_audio[] = {
     B(VLC_CODEC_ADPCM_EA_R1, "ADPCM Electronic Arts R1"),
 
     B(VLC_CODEC_ADPCM_IMA_APC, "ADPCM APC"),
+
+    B(VLC_CODEC_DSD_LSBF, "DSD (Direct Stream Digital) LSB first"),
+
+    B(VLC_CODEC_DSD_MSBF, "DSD (Direct Stream Digital) MSB first"),
+
+    B(VLC_CODEC_DSD_LSBF_PLANAR, "DSD (Direct Stream Digital) LSB first, planar"),
+
+    B(VLC_CODEC_DSD_MSBF_PLANAR, "DSD (Direct Stream Digital) MSB first, planar"),
 };
 
 static const staticentry_t p_list_spu[] = {
@@ -1589,12 +1740,12 @@ static const staticentry_t p_list_spu[] = {
     B(VLC_CODEC_SCTE_27, "SCTE-27 subtitles"),
         A("SC27"),
 
-    B(VLC_CODEC_EIA608_1, "EIA-608 subtitles"),
-        A("cc1 "),
-        A("cc2 "),
-        A("cc3 "),
-        A("cc4 "),
+    B(VLC_CODEC_CEA608,  "EIA-608 subtitles"),
 
     B(VLC_CODEC_TTML, "TTML subtitles"),
         A("ttml"),
+
+    B(VLC_CODEC_TTML_TS, "TTML subtitles (EN.303.560)"),
+
+    B(VLC_CODEC_WEBVTT, "WEBVTT subtitles"),
 };

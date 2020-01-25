@@ -22,12 +22,12 @@
 #define VLC_RENDERER_DISCOVERY_H 1
 
 #include <vlc_input.h>
-#include <vlc_events.h>
 #include <vlc_probe.h>
 #include <vlc_url.h>
 
 /**
  * @defgroup vlc_renderer VLC renderer discovery
+ * @ingroup interface
  * @{
  *
  * @file
@@ -114,7 +114,7 @@ vlc_renderer_item_flags(const vlc_renderer_item_t *p_item);
  * @{
  */
 
-typedef struct vlc_renderer_discovery_sys vlc_renderer_discovery_sys;
+struct vlc_renderer_discovery_owner;
 
 /**
  * Return a list of renderer discovery modules
@@ -141,33 +141,10 @@ vlc_rd_get_names(vlc_object_t *p_obj, char ***pppsz_names,
  * vlc_rd_release()
  */
 VLC_API vlc_renderer_discovery_t *
-vlc_rd_new(vlc_object_t *p_obj, const char *psz_name) VLC_USED;
+vlc_rd_new(vlc_object_t *p_obj, const char *psz_name,
+           const struct vlc_renderer_discovery_owner *owner) VLC_USED;
 
-#define vlc_rd_release(p_rd) vlc_object_release(p_rd)
-
-/**
- * Get the event manager of the renderer discovery module
- *
- * @see vlc_RendererDiscoveryItemAdded
- * @see vlc_RendererDiscoveryItemRemoved
- */
-VLC_API vlc_event_manager_t *
-vlc_rd_event_manager(vlc_renderer_discovery_t *p_rd);
-
-/**
- * Start the renderer discovery module
- *
- * Once started, the module can send new vlc_renderer_item_t via the
- * vlc_RendererDiscoveryItemAdded event.
- */
-VLC_API int
-vlc_rd_start(vlc_renderer_discovery_t *p_rd);
-
-/**
- * Stop the renderer discovery module
- */
-VLC_API void
-vlc_rd_stop(vlc_renderer_discovery_t *p_rd);
+VLC_API void vlc_rd_release(vlc_renderer_discovery_t *p_rd);
 
 /**
  * @}
@@ -175,17 +152,26 @@ vlc_rd_stop(vlc_renderer_discovery_t *p_rd);
  * @{
  */
 
+struct vlc_renderer_discovery_owner
+{
+    void *sys;
+    void (*item_added)(struct vlc_renderer_discovery_t *,
+                       struct vlc_renderer_item_t *);
+    void (*item_removed)(struct vlc_renderer_discovery_t *,
+                         struct vlc_renderer_item_t *);
+};
+
 struct vlc_renderer_discovery_t
 {
-    VLC_COMMON_MEMBERS
+    struct vlc_object_t obj;
     module_t *          p_module;
 
-    vlc_event_manager_t event_manager;
+    struct vlc_renderer_discovery_owner owner;
 
     char *              psz_name;
     config_chain_t *    p_cfg;
 
-    vlc_renderer_discovery_sys *p_sys;
+    void *p_sys;
 };
 
 /**
@@ -193,16 +179,22 @@ struct vlc_renderer_discovery_t
  *
  * This will send the vlc_RendererDiscoveryItemAdded event
  */
-VLC_API void
-vlc_rd_add_item(vlc_renderer_discovery_t * p_rd, vlc_renderer_item_t * p_item);
+static inline void vlc_rd_add_item(vlc_renderer_discovery_t * p_rd,
+                                   vlc_renderer_item_t * p_item)
+{
+    p_rd->owner.item_added(p_rd, p_item);
+}
 
 /**
  * Add a new renderer item
  *
  * This will send the vlc_RendererDiscoveryItemRemoved event
  */
-VLC_API void
-vlc_rd_remove_item(vlc_renderer_discovery_t * p_rd, vlc_renderer_item_t * p_item);
+static inline void vlc_rd_remove_item(vlc_renderer_discovery_t * p_rd,
+                                      vlc_renderer_item_t * p_item)
+{
+    p_rd->owner.item_removed(p_rd, p_item);
+}
 
 /**
  * Renderer Discovery proble helpers
@@ -220,7 +212,7 @@ static int vlc_rd_probe_open(vlc_object_t *obj) \
 #define VLC_RD_PROBE_SUBMODULE \
     add_submodule() \
         set_capability("renderer probe", 100) \
-        set_callbacks(vlc_rd_probe_open, NULL)
+        set_callback(vlc_rd_probe_open)
 
 /** @} @} */
 

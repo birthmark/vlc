@@ -1,24 +1,29 @@
 # matroska
 
-MATROSKA_VERSION := 1.4.5
-MATROSKA_URL := http://dl.matroska.org/downloads/libmatroska/libmatroska-$(MATROSKA_VERSION).tar.bz2
+MATROSKA_VERSION := 1.5.1
+MATROSKA_URL := http://dl.matroska.org/downloads/libmatroska/libmatroska-$(MATROSKA_VERSION).tar.xz
 
 PKGS += matroska
+
+ifeq ($(call need_pkg,"libmatroska"),)
+PKGS_FOUND += matroska
+endif
+
 DEPS_matroska = ebml $(DEPS_ebml)
 
-$(TARBALLS)/libmatroska-$(MATROSKA_VERSION).tar.bz2:
+$(TARBALLS)/libmatroska-$(MATROSKA_VERSION).tar.xz:
 	$(call download_pkg,$(MATROSKA_URL),matroska)
 
-.sum-matroska: libmatroska-$(MATROSKA_VERSION).tar.bz2
+.sum-matroska: libmatroska-$(MATROSKA_VERSION).tar.xz
 
-libmatroska: libmatroska-$(MATROSKA_VERSION).tar.bz2 .sum-matroska
+libmatroska: libmatroska-$(MATROSKA_VERSION).tar.xz .sum-matroska
 	$(UNPACK)
 	$(call pkg_static,"libmatroska.pc.in")
 	$(MOVE)
 
-MATROSKA_EXTRA_FLAGS = CXXFLAGS="${CXXFLAGS} -fvisibility=hidden"
+MATROSKA_CXXFLAGS := $(CXXFLAGS) $(PIC) -fvisibility=hidden -O2
 
-.matroska: libmatroska
-	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) $(MATROSKA_EXTRA_FLAGS)
+.matroska: libmatroska toolchain.cmake
+	cd $< && $(HOSTVARS_PIC) CXXFLAGS="$(MATROSKA_CXXFLAGS)" $(CMAKE) -DBUILD_SHARED_LIBS=OFF
 	cd $< && $(MAKE) install
 	touch $@

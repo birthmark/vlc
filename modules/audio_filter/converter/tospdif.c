@@ -2,7 +2,6 @@
  * tospdif.c : encapsulates A/52 and DTS frames into S/PDIF packets
  *****************************************************************************
  * Copyright (C) 2002, 2006-2016 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Christophe Massiot <massiot@via.ecp.fr>
  *          Stéphane Borel <stef@via.ecp.fr>
@@ -37,8 +36,8 @@
 #include <vlc_aout.h>
 #include <vlc_filter.h>
 
-#include "../packetizer/a52.h"
-#include "../packetizer/dts_header.h"
+#include "../../packetizer/a52.h"
+#include "../../packetizer/dts_header.h"
 
 static int  Open( vlc_object_t * );
 static void Close( vlc_object_t * );
@@ -51,7 +50,7 @@ vlc_module_begin ()
     set_callbacks( Open, Close )
 vlc_module_end ()
 
-struct filter_sys_t
+typedef struct
 {
     block_t *p_out_buf;
     size_t i_out_offset;
@@ -60,7 +59,7 @@ struct filter_sys_t
     {
         struct
         {
-            unsigned int i_nb_blocks_substream0;
+            unsigned int i_nb_blocks;
         } eac3;
         struct
         {
@@ -71,7 +70,7 @@ struct filter_sys_t
             bool b_skip;
         } dtshd;
     };
-};
+} filter_sys_t;
 
 #define SPDIF_HEADER_SIZE 8
 
@@ -97,6 +96,7 @@ static bool is_big_endian( filter_t *p_filter, block_t *p_in_buf )
         case VLC_CODEC_TRUEHD:
             return true;
         case VLC_CODEC_DTS:
+        case VLC_CODEC_DTSHD:
             return p_in_buf->p_buffer[0] == 0x1F
                 || p_in_buf->p_buffer[0] == 0x7F;
         default:
@@ -165,9 +165,10 @@ static void write_data( filter_t *p_filter, const void *p_buf, size_t i_size,
 
 static void write_buffer( filter_t *p_filter, block_t *p_in_buf )
 {
+    filter_sys_t *p_sys = p_filter->p_sys;
     write_data( p_filter, p_in_buf->p_buffer, p_in_buf->i_buffer,
                 is_big_endian( p_filter, p_in_buf ) );
-    p_filter->p_sys->p_out_buf->i_length += p_in_buf->i_length;
+    p_sys->p_out_buf->i_length += p_in_buf->i_length;
 }
 
 static int write_init( filter_t *p_filter, block_t *p_in_buf,
@@ -194,21 +195,19 @@ static void write_finalize( filter_t *p_filter, uint16_t i_data_type,
 {
     filter_sys_t *p_sys = p_filter->p_sys;
     assert( p_sys->p_out_buf != NULL );
+    assert( i_data_type != 0 );
     uint8_t *p_out = p_sys->p_out_buf->p_buffer;
 
     /* S/PDIF header */
-    if( i_data_type != 0 )
-    {
-        assert( p_sys->i_out_offset > SPDIF_HEADER_SIZE );
-        assert( i_length_mul == 1 || i_length_mul == 8 );
+    assert( p_sys->i_out_offset > SPDIF_HEADER_SIZE );
+    assert( i_length_mul == 1 || i_length_mul == 8 );
 
-        set_16( p_filter, &p_out[0], 0xf872 ); /* syncword 1 */
-        set_16( p_filter, &p_out[2], 0x4e1f ); /* syncword 2 */
-        set_16( p_filter, &p_out[4], i_data_type ); /* data type */
-        /* length in bits or bytes */
-        set_16( p_filter, &p_out[6],
-                  ( p_sys->i_out_offset - SPDIF_HEADER_SIZE ) * i_length_mul );
-    }
+    set_16( p_filter, &p_out[0], 0xf872 ); /* syncword 1 */
+    set_16( p_filter, &p_out[2], 0x4e1f ); /* syncword 2 */
+    set_16( p_filter, &p_out[4], i_data_type ); /* data type */
+    /* length in bits or bytes */
+    set_16( p_filter, &p_out[6],
+              ( p_sys->i_out_offset - SPDIF_HEADER_SIZE ) * i_length_mul );
 
     /* 0 padding */
     if( p_sys->i_out_offset < p_sys->p_out_buf->i_buffer )
@@ -221,7 +220,7 @@ static int write_buffer_ac3( filter_t *p_filter, block_t *p_in_buf )
     static const size_t a52_size = A52_FRAME_NB * 4;
 
     if( unlikely( p_in_buf->i_buffer < 6
-     || p_in_buf->i_buffer > a52_size
+     || p_in_buf->i_buffer + SPDIF_HEADER_SIZE > a52_size
      || p_in_buf->i_nb_samples != A52_FRAME_NB ) )
     {
         /* Input is not correctly packetizer. Try to parse the buffer in order
@@ -245,17 +244,46 @@ static int write_buffer_ac3( filter_t *p_filter, block_t *p_in_buf )
     return SPDIF_SUCCESS;
 }
 
+
 static int write_buffer_eac3( filter_t *p_filter, block_t *p_in_buf )
 {
     filter_sys_t *p_sys = p_filter->p_sys;
 
-    vlc_a52_header_t a52 = { };
+    /* The input block can contain the following:
+     * a/ One EAC3 independent stream (with 1, 2, 3 or 6 audio blocks per
+     * syncframe)
+     * b/ One AC3 stream followed by one EAC3 dependent stream (with 6 audio
+     * blocks per syncframe)
+     * c/ One EAC3 independent stream followed by one EAC3 dependent stream
+     * (with 1, 2, 3 or 6 audio blocks per syncframe)
+     *
+     * One IEC61937_EAC3 frame must contain 6 audio blocks per syncframe. This
+     * function will gather input blocks until it reaches this amount of audio
+     * blocks.
+     *
+     * Example: for the c/ case with 1 audio blocks per syncframe, a
+     * IEC61937_EAC3 frame will contain 12 a52 streams: 6 independent + 6
+     * dependent EAC3 streams.
+     */
+
+    vlc_a52_header_t a52;
     if( vlc_a52_header_Parse( &a52, p_in_buf->p_buffer, p_in_buf->i_buffer )
         != VLC_SUCCESS || a52.i_size > p_in_buf->i_buffer )
         return SPDIF_ERROR;
 
-    p_in_buf->i_buffer = a52.i_size;
-    p_in_buf->i_nb_samples = a52.i_samples;
+    if( p_in_buf->i_buffer > a52.i_size )
+    {
+        /* Check if the next stream is an eac3 dependent one */
+        vlc_a52_header_t a52_dep;
+        const uint8_t *dep_buf = &p_in_buf->p_buffer[a52.i_size];
+        const size_t dep_size = p_in_buf->i_buffer - a52.i_size;
+
+        if( vlc_a52_header_Parse( &a52_dep, dep_buf, dep_size ) != VLC_SUCCESS
+         || a52_dep.i_size > dep_size
+         || !a52_dep.b_eac3 || a52_dep.bs.eac3.strmtyp != EAC3_STRMTYP_DEPENDENT
+         || p_in_buf->i_buffer > a52.i_size + a52_dep.i_size )
+            return SPDIF_ERROR;
+    }
 
     if( !p_sys->p_out_buf
      && write_init( p_filter, p_in_buf, AOUT_SPDIF_SIZE * 4, AOUT_SPDIF_SIZE ) )
@@ -265,28 +293,17 @@ static int write_buffer_eac3( filter_t *p_filter, block_t *p_in_buf )
 
     write_buffer( p_filter, p_in_buf );
 
-    if( a52.b_eac3 )
-    {
-        if( ( a52.eac3.strmtyp == EAC3_STRMTYP_INDEPENDENT
-           || a52.eac3.strmtyp == EAC3_STRMTYP_AC3_CONVERT )
-         && a52.i_blocks_per_sync_frame != 6 )
-        {
-            /* cf. Annex E 2.3.1.2 of AC3 spec */
-            if( a52.eac3.i_substreamid == 0 )
-                p_sys->eac3.i_nb_blocks_substream0
-                    += a52.i_blocks_per_sync_frame;
+    /* cf. Annex E 2.3 of AC3 spec */
+    p_sys->eac3.i_nb_blocks += a52.i_blocks_per_sync_frame;
 
-            if( p_sys->eac3.i_nb_blocks_substream0 != 6 )
-                return SPDIF_MORE_DATA;
-            else
-                p_sys->eac3.i_nb_blocks_substream0 = 0;
-        }
-        write_finalize( p_filter, IEC61937_EAC3, 1 /* in bytes */ );
-        return SPDIF_SUCCESS;
-    }
-    else
+    if( p_sys->eac3.i_nb_blocks < 6 )
         return SPDIF_MORE_DATA;
+    else if ( p_sys->eac3.i_nb_blocks > 6 )
+        return SPDIF_ERROR;
 
+    write_finalize( p_filter, IEC61937_EAC3, 1 /* in bytes */ );
+    p_sys->eac3.i_nb_blocks = 0;
+    return SPDIF_SUCCESS;
 }
 
 /* Adapted from libavformat/spdifenc.c:
@@ -371,6 +388,7 @@ static int write_buffer_truehd( filter_t *p_filter, block_t *p_in_buf )
 static int write_buffer_dts( filter_t *p_filter, block_t *p_in_buf )
 {
     uint16_t i_data_type;
+    filter_sys_t *p_sys = p_filter->p_sys;
 
     /* Only send the DTS core part */
     vlc_dts_header_t core;
@@ -397,23 +415,37 @@ static int write_buffer_dts( filter_t *p_filter, block_t *p_in_buf )
         return SPDIF_ERROR;
     }
 
-    if( p_in_buf->i_buffer == p_in_buf->i_nb_samples * 4 )
+    if( core.syncword == DTS_SYNC_CORE_14BITS_BE ||
+        core.syncword == DTS_SYNC_CORE_14BITS_LE )
     {
-        /* No enough room to put the S/PDIF header. This is the case for DTS
-         * inside WAV. */
-        i_data_type = 0;
+        if( p_in_buf->i_buffer > p_in_buf->i_nb_samples * 4 )
+            return SPDIF_ERROR;
+        if( write_init( p_filter, p_in_buf, p_in_buf->i_nb_samples * 4,
+                        p_in_buf->i_nb_samples ) )
+            return SPDIF_ERROR;
+
+        uint8_t *p_out = &p_sys->p_out_buf->p_buffer[p_sys->i_out_offset];
+        ssize_t i_size = vlc_dts_header_Convert14b16b( p_out,
+                            p_sys->p_out_buf->i_buffer - p_sys->i_out_offset,
+                            p_in_buf->p_buffer, p_in_buf->i_buffer,
+                            p_filter->fmt_out.audio.i_format == VLC_CODEC_SPDIFL );
+        if( i_size < 0 )
+            return SPDIF_ERROR;
+
+        p_sys->i_out_offset += i_size;
+        p_sys->p_out_buf->i_length += p_in_buf->i_length;
     }
-    else if( p_in_buf->i_buffer + SPDIF_HEADER_SIZE > p_in_buf->i_nb_samples * 4 )
-        return SPDIF_ERROR;
+    else
+    {
+        if( p_in_buf->i_buffer + SPDIF_HEADER_SIZE > p_in_buf->i_nb_samples * 4 )
+            return SPDIF_ERROR;
 
-    if( write_init( p_filter, p_in_buf, p_in_buf->i_nb_samples * 4,
-                    p_in_buf->i_nb_samples ) )
-        return SPDIF_ERROR;
+        if( write_init( p_filter, p_in_buf, p_in_buf->i_nb_samples * 4,
+                        p_in_buf->i_nb_samples ) )
+            return SPDIF_ERROR;
+        write_buffer( p_filter, p_in_buf );
+    }
 
-    if( i_data_type == 0 )
-        p_filter->p_sys->i_out_offset = 0;
-
-    write_buffer( p_filter, p_in_buf );
     write_finalize( p_filter, i_data_type, 8 /* in bits */ );
     return SPDIF_SUCCESS;
 }
@@ -463,7 +495,7 @@ static int write_buffer_dtshd( filter_t *p_filter, block_t *p_in_buf )
     size_t i_out_size = i_period * 4;
     uint16_t i_data_type = IEC61937_DTSHD | i_subtype << 8;
 
-    if( p_filter->p_sys->dtshd.b_skip
+    if( p_sys->dtshd.b_skip
      || i_in_size + SPDIF_HEADER_SIZE > i_out_size )
     {
         /* The bitrate is too high, pass only the core part */
@@ -474,7 +506,7 @@ static int write_buffer_dtshd( filter_t *p_filter, block_t *p_in_buf )
 
         /* Don't try to send substreams anymore. That way, we avoid to switch
          * back and forth between DTD and DTS-HD */
-        p_filter->p_sys->dtshd.b_skip = true;
+        p_sys->dtshd.b_skip = true;
     }
 
     if( write_init( p_filter, p_in_buf, i_out_size,
@@ -513,7 +545,7 @@ static void Flush( filter_t *p_filter )
             p_sys->truehd.i_frame_count = 0;
             break;
         case VLC_CODEC_EAC3:
-            p_sys->eac3.i_nb_blocks_substream0 = 0;
+            p_sys->eac3.i_nb_blocks = 0;
             break;
         default:
             break;
@@ -538,14 +570,11 @@ static block_t *DoWork( filter_t *p_filter, block_t *p_in_buf )
         case VLC_CODEC_TRUEHD:
             i_ret = write_buffer_truehd( p_filter, p_in_buf );
             break;
+        case VLC_CODEC_DTSHD:
+            i_ret = write_buffer_dtshd( p_filter, p_in_buf );
+            break;
         case VLC_CODEC_DTS:
-            /* if the fmt_out is configured for a higher rate than 48kHz
-             * (IEC958 rate), use the DTS-HD framing to pass the DTS Core and
-             * or DTS substreams (like DTS-HD MA). */
-            if( p_filter->fmt_out.audio.i_rate > 48000 )
-                i_ret = write_buffer_dtshd( p_filter, p_in_buf );
-            else
-                i_ret = write_buffer_dts( p_filter, p_in_buf );
+            i_ret = write_buffer_dts( p_filter, p_in_buf );
             break;
         default:
             vlc_assert_unreachable();
@@ -575,6 +604,7 @@ static int Open( vlc_object_t *p_this )
     filter_sys_t *p_sys;
 
     if( ( p_filter->fmt_in.audio.i_format != VLC_CODEC_DTS &&
+          p_filter->fmt_in.audio.i_format != VLC_CODEC_DTSHD &&
           p_filter->fmt_in.audio.i_format != VLC_CODEC_A52 &&
           p_filter->fmt_in.audio.i_format != VLC_CODEC_EAC3 &&
           p_filter->fmt_in.audio.i_format != VLC_CODEC_MLP &&

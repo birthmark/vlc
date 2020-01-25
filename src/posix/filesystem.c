@@ -4,7 +4,7 @@
  * Copyright (C) 2005-2006 VLC authors and VideoLAN
  * Copyright © 2005-2008 Rémi Denis-Courmont
  *
- * Authors: Rémi Denis-Courmont <rem # videolan.org>
+ * Authors: Rémi Denis-Courmont
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -37,19 +37,15 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-#ifndef HAVE_LSTAT
-# define lstat(a, b) stat(a, b)
-#endif
 #include <dirent.h>
+#ifdef HAVE_SYS_SOCKET_H
 #include <sys/socket.h>
-#ifndef O_TMPFILE
-# define O_TMPFILE 0
 #endif
 
 #include <vlc_common.h>
 #include <vlc_fs.h>
 
-#if !defined(HAVE_ACCEPT4) || !defined HAVE_MKOSTEMP
+#if !defined(HAVE_ACCEPT4)
 static inline void vlc_cloexec(int fd)
 {
     fcntl(fd, F_SETFD, FD_CLOEXEC | fcntl(fd, F_GETFD));
@@ -62,18 +58,11 @@ int vlc_open (const char *filename, int flags, ...)
     va_list ap;
 
     va_start (ap, flags);
-    if (flags & (O_CREAT|O_TMPFILE))
+    if (flags & O_CREAT)
         mode = va_arg (ap, unsigned int);
     va_end (ap);
 
-#ifdef O_CLOEXEC
-    return open(filename, flags, mode | O_CLOEXEC);
-#else
-    int fd = open(filename, flags, mode);
-    if (fd != -1)
-        vlc_cloexec(fd);
-    return -1;
-#endif
+    return open(filename, flags | O_CLOEXEC, mode);
 }
 
 int vlc_openat (int dir, const char *filename, int flags, ...)
@@ -82,49 +71,24 @@ int vlc_openat (int dir, const char *filename, int flags, ...)
     va_list ap;
 
     va_start (ap, flags);
-    if (flags & (O_CREAT|O_TMPFILE))
+    if (flags & O_CREAT)
         mode = va_arg (ap, unsigned int);
     va_end (ap);
 
-#ifdef HAVE_OPENAT
-    return openat(dir, filename, flags, mode | O_CLOEXEC);
-#else
-    VLC_UNUSED (dir);
-    VLC_UNUSED (filename);
-    VLC_UNUSED (mode);
-    errno = ENOSYS;
-    return -1;
-#endif
+    return openat(dir, filename, flags | O_CLOEXEC, mode);
 }
 
+#ifdef HAVE_MKOSTEMP
 int vlc_mkstemp (char *template)
 {
-#if defined (HAVE_MKOSTEMP) && defined (O_CLOEXEC)
     return mkostemp(template, O_CLOEXEC);
-#else
-    int fd = mkstemp(template);
-    if (fd != -1)
-        vlc_cloexec(fd);
-    return fd;
-#endif
 }
-
-int vlc_memfd (void)
-{
-    int fd;
-#ifdef O_TMPFILE
-    fd = vlc_open ("/tmp", O_RDWR|O_TMPFILE, S_IRUSR|S_IWUSR);
-    if (fd != -1)
-        return fd;
-    /* ENOENT means either /tmp is missing (!) or the kernel does not support
-     * O_TMPFILE. EISDIR means /tmp exists but the kernel does not support
-     * O_TMPFILE. EOPNOTSUPP means the kernel supports O_TMPFILE but the /tmp
-     * filesystem does not. Do not fallback on other errors. */
-    if (errno != ENOENT && errno != EISDIR && errno != EOPNOTSUPP)
-        return -1;
 #endif
 
+VLC_WEAK int vlc_memfd(void)
+{
     char bufpath[] = "/tmp/"PACKAGE_NAME"XXXXXX";
+    int fd;
 
     fd = vlc_mkstemp (bufpath);
     if (fd != -1)
@@ -134,17 +98,19 @@ int vlc_memfd (void)
 
 int vlc_close (int fd)
 {
+    int ret;
 #ifdef POSIX_CLOSE_RESTART
-    return posix_close (fd, 0);
+    ret = posix_close(fd, 0);
 #else
-    int ret = close (fd);
+    ret = close(fd);
     /* POSIX.2008 (and earlier) does not specify if the file descriptor is
      * closed on failure. Assume it is as on Linux and most other common OSes.
      * Also emulate the correct error code as per newer POSIX versions. */
     if (unlikely(ret != 0) && unlikely(errno == EINTR))
         errno = EINPROGRESS;
-    return ret;
 #endif
+    assert(ret == 0 || errno != EBADF); /* something is corrupt? */
+    return ret;
 }
 
 int vlc_mkdir (const char *dirname, mode_t mode)
@@ -206,14 +172,7 @@ char *vlc_getcwd (void)
 
 int vlc_dup (int oldfd)
 {
-#ifdef F_DUPFD_CLOEXEC
     return fcntl (oldfd, F_DUPFD_CLOEXEC, 0);
-#else
-    int newfd = dup (oldfd);
-    if (newfd != -1)
-        vlc_cloexec(oldfd);
-    return newfd;
-#endif
 }
 
 int vlc_pipe (int fds[2])
@@ -291,15 +250,6 @@ static void vlc_socket_setup(int fd, bool nonblock)
 }
 #endif
 
-/**
- * Creates a socket file descriptor. The new file descriptor has the
- * close-on-exec flag set.
- * @param pf protocol family
- * @param type socket type
- * @param proto network protocol
- * @param nonblock true to create a non-blocking socket
- * @return a new file descriptor or -1
- */
 int vlc_socket (int pf, int type, int proto, bool nonblock)
 {
 #ifdef SOCK_CLOEXEC
@@ -346,15 +296,6 @@ int vlc_socketpair(int pf, int type, int proto, int fds[2], bool nonblock)
     return ret;
 }
 
-/**
- * Accepts an inbound connection request on a listening socket.
- * The new file descriptor has the close-on-exec flag set.
- * @param lfd listening socket file descriptor
- * @param addr pointer to the peer address or NULL [OUT]
- * @param alen pointer to the length of the peer address or NULL [OUT]
- * @param nonblock whether to put the new socket in non-blocking mode
- * @return a new file descriptor, or -1 on error.
- */
 int vlc_accept (int lfd, struct sockaddr *addr, socklen_t *alen, bool nonblock)
 {
 #ifdef HAVE_ACCEPT4

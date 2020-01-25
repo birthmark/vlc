@@ -27,13 +27,12 @@
 
 using namespace adaptive;
 
-FakeESOutID::FakeESOutID( FakeESOut *fakeesout_, const es_format_t *p_fmt )
+FakeESOutID::FakeESOutID( FakeESOut *fakeesout, const es_format_t *p_fmt )
+    : fakeesout( fakeesout )
+    , p_real_es_id( NULL )
+    , pending_delete( false )
 {
-    p_real_es_id = NULL;
-    fakeesout = fakeesout_;
-    es_format_Init( &fmt, 0, 0 );
     es_format_Copy( &fmt, p_fmt );
-    pending_delete = false;
 }
 
 FakeESOutID::~FakeESOutID()
@@ -73,12 +72,28 @@ const es_format_t *FakeESOutID::getFmt() const
 
 bool FakeESOutID::isCompatible( const FakeESOutID *p_other ) const
 {
+    if( p_other->fmt.i_cat != fmt.i_cat )
+        return false;
+
+    if(fmt.i_original_fourcc != p_other->fmt.i_original_fourcc)
+        return false;
+    if((fmt.i_extra > 0) ^ (p_other->fmt.i_extra > 0))
+        return false;
+
     switch(fmt.i_codec)
     {
         case VLC_CODEC_H264:
         case VLC_CODEC_HEVC:
         case VLC_CODEC_VC1:
-            return true;
+        {
+            if(fmt.i_codec == p_other->fmt.i_codec &&
+               fmt.i_extra && p_other->fmt.i_extra &&
+               fmt.i_extra == p_other->fmt.i_extra)
+            {
+               return !!memcmp(fmt.p_extra, p_other->fmt.p_extra, fmt.i_extra);
+            }
+            else return false; /* no extra, can't tell anything */
+        }
 
         default:
             if(fmt.i_cat == AUDIO_ES)
@@ -88,8 +103,7 @@ bool FakeESOutID::isCompatible( const FakeESOutID *p_other ) const
                     return false;
             }
 
-            return es_format_IsSimilar( &p_other->fmt, &fmt ) &&
-                   !p_other->fmt.i_extra && !fmt.i_extra;
+            return es_format_IsSimilar( &p_other->fmt, &fmt );
     }
 }
 

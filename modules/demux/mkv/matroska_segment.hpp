@@ -2,7 +2,6 @@
  * matroska_segment.hpp : matroska demuxer
  *****************************************************************************
  * Copyright (C) 2003-2004 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Steve Lhomme <steve.lhomme@free.fr>
@@ -25,6 +24,7 @@
 #ifndef VLC_MKV_MATROSKA_SEGMENT_HPP_
 #define VLC_MKV_MATROSKA_SEGMENT_HPP_
 
+#include "demux.hpp"
 #include "mkv.hpp"
 #include "matroska_segment_seeker.hpp"
 #include <vector>
@@ -32,6 +32,11 @@
 
 #include <map>
 #include <set>
+#include <memory>
+
+#include "Ebml_parser.hpp"
+
+namespace mkv {
 
 class EbmlParser;
 
@@ -39,8 +44,7 @@ class chapter_edition_c;
 class chapter_translation_c;
 class chapter_item_c;
 
-struct mkv_track_t;
-struct mkv_index_t;
+class mkv_track_t;
 
 typedef enum
 {
@@ -75,10 +79,10 @@ public:
 class matroska_segment_c
 {
 public:
-    typedef std::map<mkv_track_t::track_id_t, mkv_track_t> tracks_map_t;
+    typedef std::map<mkv_track_t::track_id_t, std::unique_ptr<mkv_track_t>> tracks_map_t;
     typedef std::vector<Tag>            tags_t;
 
-    matroska_segment_c( demux_sys_t & demuxer, EbmlStream & estream );
+    matroska_segment_c( demux_sys_t &, EbmlStream &, KaxSegment * );
     virtual ~matroska_segment_c();
 
     KaxSegment              *segment;
@@ -88,12 +92,12 @@ public:
     uint64_t                i_timescale;
 
     /* duration of the segment */
-    mtime_t                 i_duration;
-    mtime_t                 i_mk_start_time;
+    vlc_tick_t              i_duration;
+    vlc_tick_t              i_mk_start_time;
 
     /* all tracks */
     tracks_map_t tracks;
-    std::vector<mkv_track_t::track_id_t> priority_tracks;
+    SegmentSeeker::track_ids_t priority_tracks;
 
     /* from seekhead */
     int                     i_seekhead_count;
@@ -130,7 +134,7 @@ public:
     tags_t                          tags;
 
     demux_sys_t                    & sys;
-    EbmlParser                     *ep;
+    EbmlParser                     ep;
     bool                           b_preloaded;
     bool                           b_ref_external_segments;
 
@@ -139,12 +143,11 @@ public:
     bool PreloadClusters( uint64 i_cluster_position );
     void InformationCreate();
 
-    void FastSeek( mtime_t i_mk_date, mtime_t i_mk_time_offset );
-    void Seek( mtime_t i_mk_date, mtime_t i_mk_time_offset );
+    bool Seek( demux_t &, vlc_tick_t i_mk_date, vlc_tick_t i_mk_time_offset, bool b_accurate );
 
     int BlockGet( KaxBlock * &, KaxSimpleBlock * &, bool *, bool *, int64_t *);
 
-    int FindTrackByBlock(tracks_map_t::iterator* track_it, const KaxBlock *, const KaxSimpleBlock * );
+    mkv_track_t * FindTrackByBlock(const KaxBlock *, const KaxSimpleBlock * );
 
     bool ESCreate( );
     void ESDestroy( );
@@ -163,11 +166,10 @@ private:
     void ParseSeekHead( KaxSeekHead *seekhead );
     void ParseTracks( KaxTracks *tracks );
     void ParseChapterAtom( int i_level, KaxChapterAtom *ca, chapter_item_c & chapters );
-    void ParseTrackEntry( KaxTrackEntry *m );
+    void ParseTrackEntry( const KaxTrackEntry* m );
     bool ParseCluster( KaxCluster *cluster, bool b_update_start_time = true, ScopeMode read_fully = SCOPE_ALL_DATA );
     bool ParseSimpleTags( SimpleTag* out, KaxTagSimple *tag, int level = 50 );
-    void IndexAppendCluster( KaxCluster *cluster );
-    int32_t TrackInit( mkv_track_t * p_tk );
+    bool TrackInit( mkv_track_t * p_tk );
     void ComputeTrackPriority();
     void EnsureDuration();
 
@@ -176,5 +178,6 @@ private:
     friend SegmentSeeker;
 };
 
+} // namespace
 
 #endif

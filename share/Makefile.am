@@ -5,17 +5,18 @@ EXTRA_DIST =
 desktopdir = $(datadir)/applications
 if !HAVE_WIN32
 if !HAVE_DARWIN
-desktop_DATA = vlc.desktop
-appdatadir = $(datarootdir)/appdata
+desktop_DATA = vlc.desktop vlc-openbd.desktop vlc-opendvd.desktop vlc-openvcd.desktop vlc-opencda.desktop
+appdatadir = $(datarootdir)/metainfo
 appdata_DATA = $(appdata_in_files:.xml.in=.xml)
 appdata_in_files = vlc.appdata.xml.in
 endif
 endif
 
 EXTRA_DIST += vlc.desktop.in vlc.desktop.mimetypes
+EXTRA_DIST += vlc-openbd.desktop.in vlc-opendvd.desktop.in vlc-openvcd.desktop.in vlc-opencda.desktop.in
 CLEANFILES += $(desktop_DATA) $(appdata_DATA)
 
-vlc.desktop: vlc.desktop.in $(top_builddir)/config.status
+%.desktop: %.desktop.in $(top_builddir)/config.status
 	$(AM_V_GEN)mimetypes="$$(sed 's/\s*#.*$$//g' $(srcdir)/vlc.desktop.mimetypes | egrep -v '^$$' | tr "\n" ';')"; \
 	sed \
 		-e 's,\@bindir\@,$(bindir),g' \
@@ -34,15 +35,16 @@ icons128dir = $(iconsdatadir)/128x128/apps
 icons256dir = $(iconsdatadir)/256x256/apps
 
 if !HAVE_WIN32
-dist_vlcdata_DATA = icons/vlc.ico
+dist_pkgdata_DATA = icons/vlc.ico
 dist_icons16_DATA = icons/16x16/vlc.png icons/16x16/vlc.xpm
 dist_icons32_DATA = icons/32x32/vlc.png icons/32x32/vlc.xpm \
 			icons/32x32/vlc-xmas.xpm
 dist_icons48_DATA = icons/48x48/vlc.png icons/48x48/vlc-xmas.png
-dist_icons128_DATA = icons/128x128/vlc.png icons/128x128/vlc-xmas.png
+dist_icons128_DATA = icons/128x128/vlc.png icons/128x128/vlc-xmas.png \
+                     icons/128x128/vlc-kb.png
 dist_icons256_DATA = icons/256x256/vlc.png
 
-nobase_dist_vlcdata_SCRIPTS = \
+nobase_dist_pkgdata_SCRIPTS = \
 	utils/gnome-vlc-default.sh \
 	utils/audio-vlc-default.sh \
 	utils/video-vlc-default.sh \
@@ -51,15 +53,16 @@ endif
 
 EXTRA_DIST += \
 	$(skins2_default_vlt_FILES) \
-	$(DIST_skins2) \
 	$(DIST_icons) \
 	$(DIST_http_lua) \
 	$(DIST_solid)
 
-nobase_vlcdata_DATA =
+nobase_pkgdata_DATA =
+nobase_pkglibexec_SCRIPTS =
+nobase_dist_pkgdata_DATA =
 if BUILD_SKINS
-nobase_vlcdata_DATA += skins2/default.vlt
-nobase_vlcdata_DATA += $(DIST_skins2)
+nobase_pkgdata_DATA += skins2/default.vlt
+nobase_dist_pkgdata_DATA += $(DIST_skins2)
 endif
 if KDE_SOLID
 soliddata_DATA = $(DIST_solid)
@@ -90,8 +93,11 @@ skins2_default_vlt_FILES = \
 skins2/default.vlt: $(skins2_default_vlt_FILES)
 	$(AM_V_at)mkdir -p skins2
 	$(AM_V_at)rm -f -- skins2/default.vlt.tmp
-	$(AM_V_GEN)GZIP=--no-name \
+	$(AM_V_GEN)tarsort= ; \
+	tar --help|grep -q sort=ORDER && tarsort=--sort=name ; \
+	GZIP=--no-name \
 	tar cvvzf skins2/default.vlt.tmp \
+		--format=ustar $$tarsort \
 		--owner=root --group=root --directory="$(srcdir)/skins2" \
 		default/
 	$(AM_V_at)mv -f -- skins2/default.vlt.tmp skins2/default.vlt
@@ -116,19 +122,20 @@ luac_verbose_0 = @echo "  LUAC   $@";
 	$(luac_verbose)$(LUAC) -o $@ $<
 
 if BUILD_LUA
-nobase_vlclib_DATA = \
+nobase_pkglibexec_SCRIPTS += \
 	lua/extensions/VLSub.luac \
 	lua/intf/cli.luac \
 	lua/intf/dummy.luac \
 	lua/intf/dumpmeta.luac \
 	lua/intf/luac.luac \
+	lua/intf/http.luac \
 	lua/intf/modules/host.luac \
+	lua/intf/modules/httprequests.luac \
 	lua/intf/telnet.luac \
 	lua/meta/art/02_frenchtv.luac \
 	lua/meta/art/03_lastfm.luac \
 	lua/meta/art/01_googleimage.luac \
 	lua/meta/art/00_musicbrainz.luac \
-	lua/meta/fetcher/tvrage.luac \
 	lua/meta/reader/filename.luac \
 	lua/modules/common.luac \
 	lua/modules/dkjson.luac \
@@ -149,22 +156,21 @@ nobase_vlclib_DATA = \
 	lua/playlist/vimeo.luac \
 	lua/playlist/vocaroo.luac \
 	lua/playlist/youtube.luac \
-	lua/sd/fmc.luac \
+	lua/playlist/twitch.luac \
 	lua/sd/icecast.luac \
-	lua/sd/icast.luac \
 	lua/sd/jamendo.luac \
 	$(NULL)
 
 nobase_doc_DATA = \
 	lua/README.txt \
 	lua/extensions/README.txt \
+	lua/http/requests/README.txt \
 	lua/intf/README.txt \
 	lua/intf/dumpmeta.lua \
 	lua/meta/README.txt \
 	lua/meta/art/README.txt \
 	lua/meta/art/01_googleimage.lua \
 	lua/meta/fetcher/README.txt \
-	lua/meta/fetcher/tvrage.lua \
 	lua/meta/reader/README.txt \
 	lua/meta/reader/filename.lua \
 	lua/playlist/README.txt \
@@ -175,78 +181,7 @@ nobase_doc_DATA = \
 	lua/sd/icast.lua \
 	$(NULL)
 
-if BUILD_HTTPD
-nobase_vlclib_DATA += \
-	lua/intf/http.luac \
-	lua/intf/modules/httprequests.luac \
-	$(NULL)
-nobase_vlcdata_DATA += $(DIST_http_lua)
-nobase_doc_DATA += lua/http/requests/README.txt
-endif
-endif
-MOSTLYCLEANFILES += $(nobase_vlclib_DATA)
-
-EXTRA_DIST += \
-	lua/README.txt \
-	lua/extensions/README.txt \
-	lua/extensions/VLSub.lua \
-	lua/intf/README.txt \
-	lua/intf/cli.lua \
-	lua/intf/dummy.lua \
-	lua/intf/dumpmeta.lua \
-	lua/intf/http.lua \
-	lua/intf/luac.lua \
-	lua/intf/modules/host.lua \
-	lua/intf/modules/httprequests.lua \
-	lua/intf/telnet.lua \
-	lua/meta/README.txt \
-	lua/meta/art/README.txt \
-	lua/meta/art/02_frenchtv.lua \
-	lua/meta/art/03_lastfm.lua \
-	lua/meta/art/01_googleimage.lua \
-	lua/meta/art/00_musicbrainz.lua \
-	lua/meta/fetcher/README.txt \
-	lua/meta/fetcher/tvrage.lua \
-	lua/meta/reader/README.txt \
-	lua/meta/reader/filename.lua \
-	lua/modules/common.lua \
-	lua/modules/dkjson.lua \
-	lua/modules/sandbox.lua \
-	lua/modules/simplexml.lua \
-	lua/playlist/README.txt \
-	lua/playlist/anevia_streams.lua \
-	lua/playlist/anevia_xml.lua \
-	lua/playlist/appletrailers.lua \
-	lua/playlist/bbc_co_uk.lua \
-	lua/playlist/break.lua \
-	lua/playlist/canalplus.lua \
-	lua/playlist/cue.lua \
-	lua/playlist/dailymotion.lua \
-	lua/playlist/extreme.lua \
-	lua/playlist/france2.lua \
-	lua/playlist/jamendo.lua \
-	lua/playlist/katsomo.lua \
-	lua/playlist/koreus.lua \
-	lua/playlist/lelombrik.lua \
-	lua/playlist/liveleak.lua \
-	lua/playlist/metacafe.lua \
-	lua/playlist/mpora.lua \
-	lua/playlist/newgrounds.lua \
-	lua/playlist/pinkbike.lua \
-	lua/playlist/pluzz.lua \
-	lua/playlist/rockbox_fm_presets.lua \
-	lua/playlist/soundcloud.lua \
-	lua/playlist/vimeo.lua \
-	lua/playlist/vocaroo.lua \
-	lua/playlist/youtube.lua \
-	lua/playlist/zapiks.lua \
-	lua/sd/README.txt \
-	lua/sd/fmc.lua \
-	lua/sd/icecast.lua \
-	lua/sd/icast.lua \
-	lua/sd/jamendo.lua
-
-DIST_http_lua = \
+nobase_dist_pkgdata_DATA += \
 	lua/http/view.html \
 	lua/http/mobile.html \
 	lua/http/dialogs/create_stream.html \
@@ -306,7 +241,66 @@ DIST_http_lua = \
 	lua/http/js/common.js \
 	lua/http/js/jquery.jstree.js \
 	lua/http/js/controllers.js
+endif
+MOSTLYCLEANFILES += $(nobase_pkgdata_DATA)
 
+EXTRA_DIST += \
+	lua/README.txt \
+	lua/extensions/README.txt \
+	lua/extensions/VLSub.lua \
+	lua/intf/README.txt \
+	lua/intf/cli.lua \
+	lua/intf/dummy.lua \
+	lua/intf/dumpmeta.lua \
+	lua/intf/http.lua \
+	lua/intf/luac.lua \
+	lua/intf/modules/host.lua \
+	lua/intf/modules/httprequests.lua \
+	lua/intf/telnet.lua \
+	lua/meta/README.txt \
+	lua/meta/art/README.txt \
+	lua/meta/art/02_frenchtv.lua \
+	lua/meta/art/03_lastfm.lua \
+	lua/meta/art/01_googleimage.lua \
+	lua/meta/art/00_musicbrainz.lua \
+	lua/meta/fetcher/README.txt \
+	lua/meta/reader/README.txt \
+	lua/meta/reader/filename.lua \
+	lua/modules/common.lua \
+	lua/modules/dkjson.lua \
+	lua/modules/sandbox.lua \
+	lua/modules/simplexml.lua \
+	lua/playlist/README.txt \
+	lua/playlist/anevia_streams.lua \
+	lua/playlist/anevia_xml.lua \
+	lua/playlist/appletrailers.lua \
+	lua/playlist/bbc_co_uk.lua \
+	lua/playlist/break.lua \
+	lua/playlist/cue.lua \
+	lua/playlist/dailymotion.lua \
+	lua/playlist/extreme.lua \
+	lua/playlist/france2.lua \
+	lua/playlist/jamendo.lua \
+	lua/playlist/katsomo.lua \
+	lua/playlist/koreus.lua \
+	lua/playlist/lelombrik.lua \
+	lua/playlist/liveleak.lua \
+	lua/playlist/metacafe.lua \
+	lua/playlist/mpora.lua \
+	lua/playlist/newgrounds.lua \
+	lua/playlist/pinkbike.lua \
+	lua/playlist/rockbox_fm_presets.lua \
+	lua/playlist/soundcloud.lua \
+	lua/playlist/vimeo.lua \
+	lua/playlist/vocaroo.lua \
+	lua/playlist/youtube.lua \
+	lua/playlist/twitch.lua \
+	lua/playlist/zapiks.lua \
+	lua/sd/README.txt \
+	lua/sd/fmc.lua \
+	lua/sd/icecast.lua \
+	lua/sd/icast.lua \
+	lua/sd/jamendo.lua
 DIST_solid = \
 	solid/vlc-openbd.desktop \
 	solid/vlc-opencda.desktop \

@@ -2,7 +2,6 @@
  * vlc_block.h: Data blocks management functions
  *****************************************************************************
  * Copyright (C) 2003 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
@@ -49,7 +48,7 @@
  * - i_flags may not always be set (ie could be 0, even for a key frame
  *      it depends where you receive the buffer (before/after a packetizer
  *      and the demux/packetizer implementations.
- * - i_dts/i_pts could be VLC_TS_INVALID, it means no pts/dts
+ * - i_dts/i_pts could be VLC_TICK_INVALID, it means no pts/dts
  * - i_length: length in microseond of the packet, can be null except in the
  *      sout where it is mandatory.
  *
@@ -75,28 +74,28 @@
 #define BLOCK_FLAG_TYPE_PB       0x0010
 /** Warn that this block is a header one */
 #define BLOCK_FLAG_HEADER        0x0020
-/** This is the last block of the frame */
-#define BLOCK_FLAG_END_OF_FRAME  0x0040
-/** This is not a key frame for bitrate shaping */
-#define BLOCK_FLAG_NO_KEYFRAME   0x0080
 /** This block contains the last part of a sequence  */
-#define BLOCK_FLAG_END_OF_SEQUENCE 0x0100
+#define BLOCK_FLAG_END_OF_SEQUENCE 0x0040
 /** This block contains a clock reference */
-#define BLOCK_FLAG_CLOCK         0x0200
+#define BLOCK_FLAG_CLOCK         0x0080
 /** This block is scrambled */
-#define BLOCK_FLAG_SCRAMBLED     0x0400
+#define BLOCK_FLAG_SCRAMBLED     0x0100
 /** This block has to be decoded but not be displayed */
-#define BLOCK_FLAG_PREROLL       0x0800
+#define BLOCK_FLAG_PREROLL       0x0200
 /** This block is corrupted and/or there is data loss  */
-#define BLOCK_FLAG_CORRUPTED     0x1000
-/** This block contains an interlaced picture with top field first */
-#define BLOCK_FLAG_TOP_FIELD_FIRST 0x2000
-/** This block contains an interlaced picture with bottom field first */
-#define BLOCK_FLAG_BOTTOM_FIELD_FIRST 0x4000
+#define BLOCK_FLAG_CORRUPTED     0x0400
+/** This block is last of its access unit */
+#define BLOCK_FLAG_AU_END        0x0800
+/** This block contains an interlaced picture with top field stored first */
+#define BLOCK_FLAG_TOP_FIELD_FIRST 0x1000
+/** This block contains an interlaced picture with bottom field stored first */
+#define BLOCK_FLAG_BOTTOM_FIELD_FIRST 0x2000
+/** This block contains a single field from interlaced picture. */
+#define BLOCK_FLAG_SINGLE_FIELD  0x4000
 
 /** This block contains an interlaced picture */
 #define BLOCK_FLAG_INTERLACED_MASK \
-    (BLOCK_FLAG_TOP_FIELD_FIRST|BLOCK_FLAG_BOTTOM_FIELD_FIRST)
+    (BLOCK_FLAG_TOP_FIELD_FIRST|BLOCK_FLAG_BOTTOM_FIELD_FIRST|BLOCK_FLAG_SINGLE_FIELD)
 
 #define BLOCK_FLAG_TYPE_MASK \
     (BLOCK_FLAG_TYPE_I|BLOCK_FLAG_TYPE_P|BLOCK_FLAG_TYPE_B|BLOCK_FLAG_TYPE_PB)
@@ -109,7 +108,10 @@
 #define BLOCK_FLAG_PRIVATE_MASK  0xff000000
 #define BLOCK_FLAG_PRIVATE_SHIFT 24
 
-typedef void (*block_free_t) (block_t *);
+struct vlc_block_callbacks
+{
+    void (*free)(block_t *);
+};
 
 struct block_t
 {
@@ -123,15 +125,32 @@ struct block_t
     uint32_t    i_flags;
     unsigned    i_nb_samples; /* Used for audio */
 
-    mtime_t     i_pts;
-    mtime_t     i_dts;
-    mtime_t     i_length;
+    vlc_tick_t  i_pts;
+    vlc_tick_t  i_dts;
+    vlc_tick_t  i_length;
 
-    /* Rudimentary support for overloading block (de)allocation. */
-    block_free_t pf_release;
+    const struct vlc_block_callbacks *cbs;
 };
 
-VLC_API void block_Init( block_t *, void *, size_t );
+/**
+ * Initializes a custom block.
+ *
+ * This function initialize a block of timed data allocated by custom means.
+ * This allows passing data with copying even if the data has been allocated
+ * with unusual means or outside of LibVLC.
+ *
+ * Normally, blocks are allocated and initialized by block_Alloc() instead.
+ *
+ * @param block allocated block structure to initialize
+ * @param cbs structure of custom callbacks to handle the block [IN]
+ * @param base start address of the block data
+ * @param length byte length of the block data
+ *
+ * @return @c block (this function cannot fail)
+ */
+VLC_API block_t *block_Init(block_t *block,
+                            const struct vlc_block_callbacks *cbs,
+                            void *base, size_t length);
 
 /**
  * Allocates a block.
@@ -144,7 +163,7 @@ VLC_API void block_Init( block_t *, void *, size_t );
  */
 VLC_API block_t *block_Alloc(size_t size) VLC_USED VLC_MALLOC;
 
-block_t *block_TryRealloc(block_t *, ssize_t pre, size_t body) VLC_USED;
+VLC_API block_t *block_TryRealloc(block_t *, ssize_t pre, size_t body) VLC_USED;
 
 /**
  * Reallocates a block.
@@ -160,9 +179,9 @@ block_t *block_TryRealloc(block_t *, ssize_t pre, size_t body) VLC_USED;
  *
  * @return the reallocated block on succes, NULL on error.
  *
- * @note Skipping leading bytes can be achieved directly by substracting from
+ * @note Skipping leading bytes can be achieved directly by subtracting from
  * block_t.i_buffer and adding block_t.p_buffer.
- * @note Discard trailing bytes can be achieved directly by substracting from
+ * @note Discard trailing bytes can be achieved directly by subtracting from
  * block_t.i_buffer.
  * @note On error, the block is discarded.
  * To avoid that, use block_TryRealloc() instead.
@@ -177,16 +196,13 @@ VLC_API block_t *block_Realloc(block_t *, ssize_t pre, size_t body) VLC_USED;
  *
  * @note
  * If the block is in a chain, this function does <b>not</b> release any
- * subsequent block in the chain. Use block_ChainRelease() for that purpose. 
+ * subsequent block in the chain. Use block_ChainRelease() for that purpose.
  *
  * @param block block to release (cannot be NULL)
  */
-static inline void block_Release(block_t *block)
-{
-    block->pf_release(block);
-}
+VLC_API void block_Release(block_t *block);
 
-static inline void block_CopyProperties( block_t *dst, block_t *src )
+static inline void block_CopyProperties( block_t *dst, const block_t *src )
 {
     dst->i_flags   = src->i_flags;
     dst->i_nb_samples = src->i_nb_samples;
@@ -203,7 +219,7 @@ static inline void block_CopyProperties( block_t *dst, block_t *src )
  * @return the duplicate on success, NULL on error.
  */
 VLC_USED
-static inline block_t *block_Duplicate( block_t *p_block )
+static inline block_t *block_Duplicate( const block_t *p_block )
 {
     block_t *p_dup = block_Alloc( p_block->i_buffer );
     if( p_dup == NULL )
@@ -366,10 +382,10 @@ static size_t block_ChainExtract( block_t *p_list, void *p_data, size_t i_max )
     return i_total;
 }
 
-static inline void block_ChainProperties( block_t *p_list, int *pi_count, size_t *pi_size, mtime_t *pi_length )
+static inline void block_ChainProperties( block_t *p_list, int *pi_count, size_t *pi_size, vlc_tick_t *pi_length )
 {
     size_t i_size = 0;
-    mtime_t i_length = 0;
+    vlc_tick_t i_length = 0;
     int i_count = 0;
 
     while( p_list )
@@ -392,7 +408,7 @@ static inline void block_ChainProperties( block_t *p_list, int *pi_count, size_t
 static inline block_t *block_ChainGather( block_t *p_list )
 {
     size_t  i_total = 0;
-    mtime_t i_length = 0;
+    vlc_tick_t i_length = 0;
     block_t *g;
 
     if( p_list->p_next == NULL )
@@ -536,7 +552,7 @@ VLC_API void vlc_fifo_WaitCond(vlc_fifo_t *, vlc_cond_t *);
  * Atomically unlocks the FIFO and waits until one thread signals the FIFO up
  * to a certain date, then locks the FIFO again. See vlc_fifo_Wait().
  */
-int vlc_fifo_TimedWaitCond(vlc_fifo_t *, vlc_cond_t *, mtime_t);
+int vlc_fifo_TimedWaitCond(vlc_fifo_t *, vlc_cond_t *, vlc_tick_t);
 
 /**
  * Queues a linked-list of blocks into a locked FIFO.

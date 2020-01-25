@@ -25,6 +25,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <netdb.h>
+#include <signal.h>
 
 #include <vlc_common.h>
 #include <vlc_interrupt.h>
@@ -82,6 +83,7 @@ int vlc_getaddrinfo_i11e(const char *name, unsigned port,
 
     val = gai_error(&req);
     assert(val != EAI_INPROGRESS);
+    vlc_sem_destroy(&done);
 
     if (val == 0)
         *res = req.ar_result;

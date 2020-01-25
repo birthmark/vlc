@@ -2,7 +2,6 @@
  * ts.c: MPEG-II TS Muxer
  *****************************************************************************
  * Copyright (C) 2001-2005 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Eric Petit <titer@videolan.org>
@@ -61,6 +60,9 @@
 #include "dvbpsi_compat.h"
 
 #include "tables.h"
+
+#include "../../codec/jpeg2000.h"
+#include "../../demux/mpeg/timestamps.h"
 
 /*
  * TODO:
@@ -192,6 +194,8 @@ static const char *const ts_standards_list_text[] =
   #error "MAX_SDT_DESC < MAX_PMT"
 #endif
 
+#define BLOCK_FLAG_NO_KEYFRAME (1 << BLOCK_FLAG_PRIVATE_SHIFT) /* This is not a key frame for bitrate shaping */
+
 vlc_module_begin ()
     set_description( N_("TS muxer (libdvbpsi)") )
     set_shortname( "MPEG-TS")
@@ -322,8 +326,8 @@ static inline void BufferChainClean( sout_buffer_chain_t *c )
 typedef struct
 {
     sout_buffer_chain_t chain_pes;
-    mtime_t             i_pes_dts;
-    mtime_t             i_pes_length;
+    vlc_tick_t          i_pes_dts;
+    vlc_tick_t          i_pes_length;
     int                 i_pes_used;
     bool                b_key_frame;
 
@@ -331,12 +335,12 @@ typedef struct
 
 typedef struct
 {
-    ts_stream_t  ts;
-    pes_stream_t pes;
+    tsmux_stream_t  ts;
+    pesmux_stream_t pes;
     pes_state_t  state;
 } sout_input_sys_t;
 
-struct sout_mux_sys_t
+typedef struct
 {
     sout_input_t    *p_pcr_input;
 
@@ -352,10 +356,10 @@ struct sout_mux_sys_t
     unsigned        i_num_pmt;
     int             i_pmtslots;
     int             i_pat_version_number;
-    ts_stream_t     pat;
+    tsmux_stream_t  pat;
 
     int             i_pmt_version_number;
-    ts_stream_t     pmt[MAX_PMT];
+    tsmux_stream_t  pmt[MAX_PMT];
     pmt_map_t       pmtmap[MAX_PMT_PID];
     int             i_pmt_program_number[MAX_PMT];
     bool            b_data_alignment;
@@ -367,21 +371,21 @@ struct sout_mux_sys_t
     int64_t         i_bitrate_min;
     int64_t         i_bitrate_max;
 
-    int64_t         i_shaping_delay;
-    int64_t         i_pcr_delay;
+    vlc_tick_t      i_shaping_delay;
+    vlc_tick_t      i_pcr_delay;
 
-    int64_t         i_dts_delay;
-    mtime_t         first_dts;
+    vlc_tick_t      i_dts_delay;
+    vlc_tick_t      first_dts;
 
     bool            b_use_key_frames;
 
-    mtime_t         i_pcr;  /* last PCR emited */
+    vlc_tick_t      i_pcr;  /* last PCR emited */
 
     csa_t           *csa;
     int             i_csa_pkt_size;
     bool            b_crypt_audio;
     bool            b_crypt_video;
-};
+} sout_mux_sys_t;
 
 
 static int GetNextFreePID( sout_mux_t *p_mux, int i_pid_start )
@@ -470,14 +474,14 @@ static int Mux      ( sout_mux_t * );
 static block_t *FixPES( sout_mux_t *p_mux, block_fifo_t *p_fifo );
 static block_t *Add_ADTS( block_t *, const es_format_t * );
 static void TSSchedule  ( sout_mux_t *p_mux, sout_buffer_chain_t *p_chain_ts,
-                          mtime_t i_pcr_length, mtime_t i_pcr_dts );
+                          vlc_tick_t i_pcr_length, vlc_tick_t i_pcr_dts );
 static void TSDate      ( sout_mux_t *p_mux, sout_buffer_chain_t *p_chain_ts,
-                          mtime_t i_pcr_length, mtime_t i_pcr_dts );
+                          vlc_tick_t i_pcr_length, vlc_tick_t i_pcr_dts );
 static void GetPAT( sout_mux_t *p_mux, sout_buffer_chain_t *c );
 static void GetPMT( sout_mux_t *p_mux, sout_buffer_chain_t *c );
 
 static block_t *TSNew( sout_mux_t *p_mux, sout_input_sys_t *p_stream, bool b_pcr );
-static void TSSetPCR( block_t *p_ts, mtime_t i_dts );
+static void TSSetPCR( block_t *p_ts, vlc_tick_t i_dts );
 
 static csa_t *csaSetup( vlc_object_t *p_this )
 {
@@ -507,7 +511,7 @@ static csa_t *csaSetup( vlc_object_t *p_this )
 
     var_Create( p_mux, SOUT_CFG_PREFIX "csa-use", VLC_VAR_STRING | VLC_VAR_DOINHERIT | VLC_VAR_ISCOMMAND );
     var_AddCallback( p_mux, SOUT_CFG_PREFIX "csa-use", ActiveKeyCallback, NULL );
-    var_AddCallback( p_mux, SOUT_CFG_PREFIX "csa-ck", ChangeKeyCallback, (void *)1 );
+    var_AddCallback( p_mux, SOUT_CFG_PREFIX "csa-ck", ChangeKeyCallback, p_mux );
     var_AddCallback( p_mux, SOUT_CFG_PREFIX "csa2-ck", ChangeKeyCallback, NULL );
 
     vlc_value_t use_val;
@@ -600,7 +604,7 @@ static int Open( vlc_object_t *p_this )
     vlc_rand_bytes(subi, sizeof(subi));
     p_sys->i_pat_version_number = nrand48(subi) & 0x1f;
 
-    vlc_value_t val;
+    vlc_value_t val,val2;
     var_Get( p_mux, SOUT_CFG_PREFIX "tsid", &val );
     if ( val.i_int )
         p_sys->i_tsid = val.i_int;
@@ -703,28 +707,33 @@ static int Open( vlc_object_t *p_this )
     }
 
     var_Get( p_mux, SOUT_CFG_PREFIX "shaping", &val );
-    p_sys->i_shaping_delay = val.i_int * 1000;
-    if( p_sys->i_shaping_delay <= 0 )
+    if( val.i_int <= 0 )
     {
         msg_Err( p_mux,
                  "invalid shaping (%"PRId64"ms) resetting to 200ms",
-                 p_sys->i_shaping_delay / 1000 );
-        p_sys->i_shaping_delay = 200000;
+                 val.i_int );
+        p_sys->i_shaping_delay = VLC_TICK_FROM_MS(200);
+    }
+    else
+    {
+        p_sys->i_shaping_delay = VLC_TICK_FROM_MS(val.i_int);
     }
 
-    var_Get( p_mux, SOUT_CFG_PREFIX "pcr", &val );
-    p_sys->i_pcr_delay = val.i_int * 1000;
-    if( p_sys->i_pcr_delay <= 0 ||
-        p_sys->i_pcr_delay >= p_sys->i_shaping_delay )
+    var_Get( p_mux, SOUT_CFG_PREFIX "pcr", &val2 );
+    if( val2.i_int <= 0 || val2.i_int >= val.i_int )
     {
         msg_Err( p_mux,
                  "invalid pcr delay (%"PRId64"ms) resetting to 70ms",
-                 p_sys->i_pcr_delay / 1000 );
-        p_sys->i_pcr_delay = 70000;
+                 val2.i_int );
+        p_sys->i_pcr_delay = VLC_TICK_FROM_MS(70);
+    }
+    else
+    {
+        p_sys->i_pcr_delay = VLC_TICK_FROM_MS(val2.i_int);
     }
 
     var_Get( p_mux, SOUT_CFG_PREFIX "dts-delay", &val );
-    p_sys->i_dts_delay = val.i_int * 1000;
+    p_sys->i_dts_delay = VLC_TICK_FROM_MS(val.i_int);
 
     msg_Dbg( p_mux, "shaping=%"PRId64" pcr=%"PRId64" dts_delay=%"PRId64,
              p_sys->i_shaping_delay, p_sys->i_pcr_delay, p_sys->i_dts_delay );
@@ -756,7 +765,7 @@ static void Close( vlc_object_t * p_this )
 
     if( p_sys->csa )
     {
-        var_DelCallback( p_mux, SOUT_CFG_PREFIX "csa-ck", ChangeKeyCallback, NULL );
+        var_DelCallback( p_mux, SOUT_CFG_PREFIX "csa-ck", ChangeKeyCallback, p_mux );
         var_DelCallback( p_mux, SOUT_CFG_PREFIX "csa2-ck", ChangeKeyCallback, NULL );
         var_DelCallback( p_mux, SOUT_CFG_PREFIX "csa-use", ActiveKeyCallback, NULL );
         csa_Delete( p_sys->csa );
@@ -785,7 +794,7 @@ static int ChangeKeyCallback( vlc_object_t *p_this, char const *psz_cmd,
     int ret;
 
     vlc_mutex_lock(&p_sys->csa_lock);
-    ret = csa_SetCW(p_this, p_sys->csa, newval.psz_string, !!(intptr_t)p_data);
+    ret = csa_SetCW(p_this, p_sys->csa, newval.psz_string, p_data != NULL);
     vlc_mutex_unlock(&p_sys->csa_lock);
 
     return ret;
@@ -838,17 +847,17 @@ static int Control( sout_mux_t *p_mux, int i_query, va_list args )
     switch( i_query )
     {
     case MUX_CAN_ADD_STREAM_WHILE_MUXING:
-        pb_bool = (bool*)va_arg( args, bool * );
+        pb_bool = va_arg( args, bool * );
         *pb_bool = true;
         return VLC_SUCCESS;
 
     case MUX_GET_ADD_STREAM_WAIT:
-        pb_bool = (bool*)va_arg( args, bool * );
+        pb_bool = va_arg( args, bool * );
         *pb_bool = false;
         return VLC_SUCCESS;
 
     case MUX_GET_MIME:
-        ppsz = (char**)va_arg( args, char ** );
+        ppsz = va_arg( args, char ** );
         *ppsz = strdup( "video/mp2t" );
         return VLC_SUCCESS;
 
@@ -893,7 +902,7 @@ static void SelectPCRStream( sout_mux_t *p_mux, sout_input_t *p_removed_pcr_inpu
 
         if( p_input->p_fmt->i_cat == VIDEO_ES &&
            (p_sys->p_pcr_input == NULL ||
-            p_sys->p_pcr_input->fmt.i_cat != VIDEO_ES) )
+            p_sys->p_pcr_input->p_fmt->i_cat != VIDEO_ES) )
         {
             p_sys->p_pcr_input = p_input;
             break;
@@ -928,7 +937,7 @@ static int AddStream( sout_mux_t *p_mux, sout_input_t *p_input )
         goto oom;
 
     if ( p_sys->b_es_id_pid )
-        p_stream->ts.i_pid = p_input->p_fmt->i_id & 0x1fff;
+        p_stream->ts.i_pid = p_input->fmt.i_id & 0x1fff;
     else
         p_stream->ts.i_pid = AllocatePID( p_mux, p_input->p_fmt->i_cat );
 
@@ -936,15 +945,9 @@ static int AddStream( sout_mux_t *p_mux, sout_input_t *p_input )
                         &p_stream->ts, &p_stream->pes ) != VLC_SUCCESS )
     {
         msg_Warn( p_mux, "rejecting stream with unsupported codec %4.4s",
-                  (char*)&p_input->fmt.i_codec );
+                  (char*)&p_input->p_fmt->i_codec );
         free( p_stream );
         return VLC_EGENERIC;
-    }
-
-    if( p_input->p_fmt->i_cat == VIDEO_ES )
-    {
-        p_stream->pes.i_width = p_input->fmt.video.i_width;
-        p_stream->pes.i_height = p_input->fmt.video.i_height;
     }
 
     p_stream->pes.i_langs = 1 + p_input->p_fmt->i_extra_languages;
@@ -953,9 +956,9 @@ static int AddStream( sout_mux_t *p_mux, sout_input_t *p_input )
         goto oom;
 
     msg_Dbg( p_mux, "adding input codec=%4.4s pid=%d",
-             (char*)&p_stream->pes.i_codec, p_stream->ts.i_pid );
+             (char*)&p_input->fmt.i_codec, p_stream->ts.i_pid );
 
-    for (int i = 0; i < p_stream->pes.i_langs; i++) {
+    for (size_t i = 0; i < p_stream->pes.i_langs; i++) {
         char *lang = (i == 0)
             ? p_input->p_fmt->psz_language
             : p_input->p_fmt->p_extra_languages[i-1].psz_language;
@@ -969,68 +972,6 @@ static int AddStream( sout_mux_t *p_mux, sout_input_t *p_input )
             memcpy(&p_stream->pes.lang[i*4], code, 3);
             p_stream->pes.lang[i*4+3] = 0x00; /* audio type: 0x00 undefined */
             msg_Dbg( p_mux, "    - lang=%3.3s", &p_stream->pes.lang[i*4] );
-        }
-    }
-
-    /* Create decoder specific info for subt */
-    if( p_stream->pes.i_codec == VLC_CODEC_SUBT )
-    {
-        p_stream->pes.i_extra = 55;
-        p_stream->pes.p_extra = malloc( p_stream->pes.i_extra );
-        if (!p_stream->pes.p_extra)
-            goto oom;
-
-        uint8_t *p = p_stream->pes.p_extra;
-        p[0] = 0x10;    /* textFormat, 0x10 for 3GPP TS 26.245 */
-        p[1] = 0x00;    /* flags: 1b: associated video info flag
-                                3b: reserved
-                                1b: duration flag
-                                3b: reserved */
-        p[2] = 52;      /* remaining size */
-
-        p += 3;
-
-        p[0] = p[1] = p[2] = p[3] = 0; p+=4;    /* display flags */
-        *p++ = 0;  /* horizontal justification (-1: left, 0 center, 1 right) */
-        *p++ = 1;  /* vertical   justification (-1: top, 0 center, 1 bottom) */
-
-        p[0] = p[1] = p[2] = 0x00; p+=3;/* background rgb */
-        *p++ = 0xff;                    /* background a */
-
-        p[0] = p[1] = 0; p += 2;        /* text box top */
-        p[0] = p[1] = 0; p += 2;        /* text box left */
-        p[0] = p[1] = 0; p += 2;        /* text box bottom */
-        p[0] = p[1] = 0; p += 2;        /* text box right */
-
-        p[0] = p[1] = 0; p += 2;        /* start char */
-        p[0] = p[1] = 0; p += 2;        /* end char */
-        p[0] = p[1] = 0; p += 2;        /* default font id */
-
-        *p++ = 0;                       /* font style flags */
-        *p++ = 12;                      /* font size */
-
-        p[0] = p[1] = p[2] = 0x00; p+=3;/* foreground rgb */
-        *p++ = 0x00;                    /* foreground a */
-
-        p[0] = p[1] = p[2] = 0; p[3] = 22; p += 4;
-        memcpy( p, "ftab", 4 ); p += 4;
-        *p++ = 0; *p++ = 1;             /* entry count */
-        p[0] = p[1] = 0; p += 2;        /* font id */
-        *p++ = 9;                       /* font name length */
-        memcpy( p, "Helvetica", 9 );    /* font name */
-    }
-    else
-    {
-        /* Copy extra data (VOL for MPEG-4 and extra BitMapInfoHeader for VFW */
-        const es_format_t *fmt = p_input->p_fmt;
-        if( fmt->i_extra > 0 )
-        {
-            p_stream->pes.i_extra = fmt->i_extra;
-            p_stream->pes.p_extra = malloc( fmt->i_extra );
-            if( !p_stream->pes.p_extra )
-                goto oom;
-
-            memcpy( p_stream->pes.p_extra, fmt->p_extra, fmt->i_extra );
         }
     }
 
@@ -1074,9 +1015,6 @@ static void DelStream( sout_mux_t *p_mux, sout_input_t *p_input )
     /* Empty all data in chain_pes */
     BufferChainClean( &p_stream->state.chain_pes );
 
-    free(p_stream->pes.lang);
-    free( p_stream->pes.p_extra );
-
     pid = var_GetInteger( p_mux, SOUT_CFG_PREFIX "pid-video" );
     if ( pid > 0 && pid == p_stream->ts.i_pid )
     {
@@ -1096,6 +1034,7 @@ static void DelStream( sout_mux_t *p_mux, sout_input_t *p_input )
         msg_Dbg( p_mux, "freeing spu PID %d", pid);
     }
 
+    free(p_stream->pes.lang);
     free( p_stream );
 
     /* We only change PMT version (PAT isn't changed) */
@@ -1137,7 +1076,7 @@ static void SetBlockDuration( sout_input_t *p_input, block_t *p_data )
         block_FifoCount( p_input->p_fifo ) > 0 )
     {
         block_t *p_next = block_FifoShow( p_input->p_fifo );
-        mtime_t i_diff = p_next->i_dts - p_data->i_dts;
+        vlc_tick_t i_diff = p_next->i_dts - p_data->i_dts;
         if( i_diff > 0 &&
                 (p_next->i_flags & BLOCK_FLAG_DISCONTINUITY) == 0 )
         {
@@ -1150,9 +1089,9 @@ static void SetBlockDuration( sout_input_t *p_input, block_t *p_data )
                 p_input->p_fmt->video.i_frame_rate &&
                 p_input->p_fmt->video.i_frame_rate_base )
             {
-                p_data->i_length = CLOCK_FREQ *
-                                   p_input->p_fmt->video.i_frame_rate /
-                                   p_input->p_fmt->video.i_frame_rate_base;
+                p_data->i_length = vlc_tick_from_samples(
+                                   p_input->p_fmt->video.i_frame_rate,
+                                   p_input->p_fmt->video.i_frame_rate_base);
             }
             else if( p_input->p_fmt->i_cat == AUDIO_ES &&
                      p_input->p_fmt->audio.i_bytes_per_frame &&
@@ -1170,13 +1109,91 @@ static void SetBlockDuration( sout_input_t *p_input, block_t *p_data )
                 p_data->i_length = p_next->i_length;
             /* or worse */
             else
-                p_data->i_length = 1000;
+                p_data->i_length = VLC_TICK_FROM_MS(1);
         }
     }
     else if( p_input->p_fmt->i_codec != VLC_CODEC_SUBT )
     {
-        p_data->i_length = 1000;
+        p_data->i_length = VLC_TICK_FROM_MS(1);
     }
+}
+
+static block_t *Encap_J2K( block_t *p_data, const es_format_t *p_fmt )
+{
+    size_t i_offset = 0;
+    uint32_t i_box = 0;
+    while( p_data->i_buffer > 8 && p_data->i_buffer - i_offset > 8 )
+    {
+        const uint32_t i_size = GetDWBE( &p_data->p_buffer[i_offset] );
+        i_box = VLC_FOURCC( p_data->p_buffer[i_offset + 4],
+                            p_data->p_buffer[i_offset + 5],
+                            p_data->p_buffer[i_offset + 6],
+                            p_data->p_buffer[i_offset + 7] );
+        if( p_data->i_buffer - i_offset < i_size || i_size < 8 )
+        {
+            i_box = 0;
+            break;
+        }
+        else if( i_box == J2K_BOX_JP2C )
+        {
+            break;
+        }
+
+        i_offset += i_size;
+    }
+
+    if( i_box != J2K_BOX_JP2C )
+    {
+        block_Release( p_data );
+        return NULL;
+    }
+
+    if( i_offset < 38 )
+    {
+        block_t *p_realloc = block_Realloc( p_data, 38 - i_offset, p_data->i_buffer );
+        if( unlikely(!p_realloc) )
+        {
+            block_Release( p_data );
+            return NULL;
+        }
+        p_data = p_realloc;
+    }
+    else
+    {
+        p_data->p_buffer += (i_offset - 38);
+        p_data->i_buffer -= (i_offset - 38);
+    }
+
+    const int profile = j2k_get_profile( p_fmt->video.i_visible_width,
+                                         p_fmt->video.i_visible_height,
+                                         p_fmt->video.i_frame_rate,
+                                         p_fmt->video.i_frame_rate_base, true );
+    memcpy(  p_data->p_buffer,     "elsmfrat", 8 );
+    SetWBE( &p_data->p_buffer[8],  p_fmt->video.i_frame_rate_base );
+    SetWBE( &p_data->p_buffer[10], p_fmt->video.i_frame_rate );
+    memcpy( &p_data->p_buffer[12], "brat", 4 );
+    unsigned min = j2k_profiles_rates[profile].min * 1000000;
+    unsigned max = j2k_profiles_rates[profile].max * 1000000;
+    SetDWBE(&p_data->p_buffer[16], max );
+    SetDWBE(&p_data->p_buffer[20], min );
+    memcpy( &p_data->p_buffer[24], "tcod", 4 );
+    const unsigned s = SEC_FROM_VLC_TICK(p_data->i_pts);
+    const unsigned m = s / 60;
+    const unsigned h = m / 60;
+    const uint64_t l = p_fmt->video.i_frame_rate_base * CLOCK_FREQ /
+                       p_fmt->video.i_frame_rate;
+    const unsigned f = (p_data->i_pts % CLOCK_FREQ) / l;
+    p_data->p_buffer[28] = h;
+    p_data->p_buffer[29] = m % 60;
+    p_data->p_buffer[30] = s % 60;
+    p_data->p_buffer[31] = f;
+    memcpy( &p_data->p_buffer[32], "bcol", 4 );
+    p_data->p_buffer[36] = j2k_get_color_spec( p_fmt->video.primaries,
+                                               p_fmt->video.transfer,
+                                               p_fmt->video.space );
+    p_data->p_buffer[37] = 0;
+
+    return p_data;
 }
 
 /* returns true if needs more data */
@@ -1186,7 +1203,7 @@ static bool MuxStreams(sout_mux_t *p_mux )
     sout_input_sys_t *p_pcr_stream = (sout_input_sys_t*)p_sys->p_pcr_input->p_sys;
 
     sout_buffer_chain_t chain_ts;
-    mtime_t i_shaping_delay = p_pcr_stream->state.b_key_frame
+    vlc_tick_t i_shaping_delay = p_pcr_stream->state.b_key_frame
         ? p_pcr_stream->state.i_pes_length
         : p_sys->i_shaping_delay;
 
@@ -1240,11 +1257,11 @@ static bool MuxStreams(sout_mux_t *p_mux )
 
                 int64_t i_spu_delay = p_spu->i_dts - p_pcr_stream->state.i_pes_dts;
                 if( ( i_spu_delay > i_shaping_delay ) &&
-                    ( i_spu_delay < 100 * CLOCK_FREQ ) )
+                    ( i_spu_delay < VLC_TICK_FROM_SEC(100)) )
                     continue;
 
-                if ( ( i_spu_delay >= 100 * CLOCK_FREQ ) ||
-                     ( i_spu_delay < CLOCK_FREQ / 100 ) )
+                if ( ( i_spu_delay >= VLC_TICK_FROM_SEC(100)) ||
+                     ( i_spu_delay < VLC_TICK_FROM_MS(10) ) )
                 {
                     BufferChainClean( &p_stream->state.chain_pes );
                     p_stream->state.i_pes_dts = 0;
@@ -1262,7 +1279,9 @@ static bool MuxStreams(sout_mux_t *p_mux )
                  (p_input->p_fmt->i_codec != VLC_CODEC_MP3) ) )
         {
             p_data = block_FifoGet( p_input->p_fifo );
-            if (p_data->i_pts <= VLC_TS_INVALID)
+            if( p_data->i_dts == VLC_TICK_INVALID )
+                p_data->i_dts = p_data->i_pts;
+            else if ( p_data->i_pts == VLC_TICK_INVALID )
                 p_data->i_pts = p_data->i_dts;
 
             if( p_input->p_fmt->i_codec == VLC_CODEC_MP4A )
@@ -1275,6 +1294,13 @@ static bool MuxStreams(sout_mux_t *p_mux )
 
         SetBlockDuration( p_input, p_data );
 
+        if( p_data->i_dts == VLC_TICK_INVALID )
+        {
+            msg_Err( p_mux, "non dated packet dropped" );
+            block_Release( p_data );
+            continue;
+        }
+
         if ( p_sys->first_dts == 0 )
         {
             /* Pick the really first DTS */
@@ -1285,7 +1311,7 @@ static bool MuxStreams(sout_mux_t *p_mux )
                     block_FifoCount( p_mux->pp_inputs[j]->p_fifo) > 0 )
                 {
                     block_t *p_block = block_FifoShow( p_mux->pp_inputs[j]->p_fifo );
-                    if( p_block->i_dts > VLC_TS_INVALID &&
+                    if( p_block->i_dts != VLC_TICK_INVALID &&
                         p_block->i_dts < p_sys->first_dts )
                         p_sys->first_dts = p_block->i_dts;
                 }
@@ -1293,17 +1319,17 @@ static bool MuxStreams(sout_mux_t *p_mux )
         }
 
         if( ( p_pcr_stream->state.i_pes_dts > 0 &&
-              p_data->i_dts - 10 * CLOCK_FREQ > p_pcr_stream->state.i_pes_dts +
+              p_data->i_dts - VLC_TICK_FROM_SEC(10)> p_pcr_stream->state.i_pes_dts +
               p_pcr_stream->state.i_pes_length ) ||
             p_data->i_dts + i_shaping_delay < p_stream->state.i_pes_dts ||
             ( p_stream->state.i_pes_dts > 0 &&
               p_input->p_fmt->i_cat != SPU_ES &&
-              p_data->i_dts - 10 * CLOCK_FREQ > p_stream->state.i_pes_dts +
+              p_data->i_dts - VLC_TICK_FROM_SEC(10)> p_stream->state.i_pes_dts +
               p_stream->state.i_pes_length ) )
         {
             msg_Warn( p_mux, "packet with too strange dts on pid %d (%4.4s)"
                       "(dts=%"PRId64",old=%"PRId64",pcr=%"PRId64")",
-                      p_stream->ts.i_pid, (char *) &p_stream->pes.i_codec,
+                      p_stream->ts.i_pid, (char *) &p_input->fmt.i_codec,
                       p_data->i_dts, p_stream->state.i_pes_dts,
                       p_pcr_stream->state.i_pes_dts );
             block_Release( p_data );
@@ -1347,7 +1373,7 @@ static bool MuxStreams(sout_mux_t *p_mux )
 
                 p_spu->i_dts = p_data->i_dts + p_data->i_length;
                 p_spu->i_pts = p_spu->i_dts;
-                p_spu->i_length = 1000;
+                p_spu->i_length = VLC_TICK_FROM_MS(1);
 
                 p_spu->p_buffer[0] = 0;
                 p_spu->p_buffer[1] = 1;
@@ -1371,11 +1397,22 @@ static bool MuxStreams(sout_mux_t *p_mux )
             b_data_alignment = 1;
             break;
         }
-        else if( p_data->i_length < 0 || p_data->i_length > 2000000 )
+        else if( p_input->fmt.i_cat == VIDEO_ES )
+        {
+            if( p_input->fmt.i_codec == VLC_CODEC_JPEG2000 )
+            {
+                if( p_data->i_flags & BLOCK_FLAG_INTERLACED_MASK )
+                    msg_Warn( p_mux, "Unsupported interlaced J2K content. Expect broken result");
+                p_data = Encap_J2K( p_data, &p_input->fmt );
+                if( !p_data )
+                    return false;
+            }
+        }
+        else if( p_data->i_length < 0 || p_data->i_length > VLC_TICK_FROM_SEC(2) )
         {
             /* FIXME choose a better value, but anyway we
              * should never have to do that */
-            p_data->i_length = 1000;
+            p_data->i_length = VLC_TICK_FROM_MS(1);
         }
 
         p_stream->state.i_pes_length += p_data->i_length;
@@ -1392,10 +1429,14 @@ static bool MuxStreams(sout_mux_t *p_mux )
             p_data->i_pts = p_data->i_dts;
         }
 
-        if( p_input->p_fmt->i_codec == VLC_CODEC_DIRAC )
+        if( (p_input->p_fmt->i_codec == VLC_CODEC_DIRAC) ||
+            (p_input->p_fmt->i_codec == VLC_CODEC_H264) ||
+            (p_input->p_fmt->i_codec == VLC_CODEC_HEVC) ||
+            (p_input->p_fmt->i_codec == VLC_CODEC_MP2V)
+          )
         {
             b_data_alignment = 1;
-            /* dirac pes packets should be unbounded in
+            /* dirac and mpeg video pes packets should be unbounded in
              * length, specify a suitibly large max size */
             i_max_pes_size = INT_MAX;
         }
@@ -1409,7 +1450,7 @@ static bool MuxStreams(sout_mux_t *p_mux )
         if( p_sys->b_use_key_frames && p_stream == p_pcr_stream
             && (p_data->i_flags & BLOCK_FLAG_TYPE_I)
             && !(p_data->i_flags & BLOCK_FLAG_NO_KEYFRAME)
-            && (p_stream->state.i_pes_length > 400000) )
+            && (p_stream->state.i_pes_length > VLC_TICK_FROM_MS(400)) )
         {
             i_shaping_delay = p_stream->state.i_pes_length;
             p_stream->state.b_key_frame = 1;
@@ -1417,7 +1458,7 @@ static bool MuxStreams(sout_mux_t *p_mux )
     }
 
     /* save */
-    const mtime_t i_pcr_length = p_pcr_stream->state.i_pes_length;
+    const vlc_tick_t i_pcr_length = p_pcr_stream->state.i_pes_length;
     p_pcr_stream->state.b_key_frame = 0;
 
     /* msg_Dbg( p_mux, "starting muxing %lldms", i_pcr_length / 1000 ); */
@@ -1432,11 +1473,10 @@ static bool MuxStreams(sout_mux_t *p_mux )
              p_pes = p_pes->p_next )
         {
             int i_size = p_pes->i_buffer;
-            if( p_pes->i_dts + p_pes->i_length >
-                p_pcr_stream->state.i_pes_dts + p_pcr_stream->state.i_pes_length )
+            vlc_tick_t i_frag = p_pcr_stream->state.i_pes_dts +
+                             p_pcr_stream->state.i_pes_length - p_pes->i_dts;
+            if( p_pes->i_length > i_frag )
             {
-                mtime_t i_frag = p_pcr_stream->state.i_pes_dts +
-                    p_pcr_stream->state.i_pes_length - p_pes->i_dts;
                 if( i_frag < 0 )
                 {
                     /* Next stream */
@@ -1460,11 +1500,11 @@ static bool MuxStreams(sout_mux_t *p_mux )
     i_packet_count += chain_ts.i_depth;
     /* msg_Dbg( p_mux, "estimated pck=%d", i_packet_count ); */
 
-    const mtime_t i_pcr_dts = p_pcr_stream->state.i_pes_dts;
+    const vlc_tick_t i_pcr_dts = p_pcr_stream->state.i_pes_dts;
     for (;;)
     {
         int          i_stream = -1;
-        mtime_t      i_dts = 0;
+        vlc_tick_t   i_dts = 0;
         sout_input_sys_t *p_stream;
 
         /* Select stream (lowest dts) */
@@ -1492,13 +1532,13 @@ static bool MuxStreams(sout_mux_t *p_mux )
 
         /* do we need to issue pcr */
         bool b_pcr = false;
+        vlc_tick_t packet_length = i_pcr_length * i_packet_pos / i_packet_count;
         if( p_stream == p_pcr_stream &&
-            i_pcr_dts + i_packet_pos * i_pcr_length / i_packet_count >=
+            i_pcr_dts + packet_length >=
             p_sys->i_pcr + p_sys->i_pcr_delay )
         {
             b_pcr = true;
-            p_sys->i_pcr = i_pcr_dts + i_packet_pos *
-                i_pcr_length / i_packet_count;
+            p_sys->i_pcr = i_pcr_dts + packet_length;
         }
 
         /* Build the TS packet */
@@ -1611,9 +1651,12 @@ static block_t *FixPES( sout_mux_t *p_mux, block_fifo_t *p_fifo )
         i_copy = __MIN( STD_PES_PAYLOAD - i_size, p_next->i_buffer );
 
         memcpy( &p_data->p_buffer[i_size], p_next->p_buffer, i_copy );
-        p_next->i_pts += p_next->i_length * i_copy / p_next->i_buffer;
-        p_next->i_dts += p_next->i_length * i_copy / p_next->i_buffer;
-        p_next->i_length -= p_next->i_length * i_copy / p_next->i_buffer;
+        vlc_tick_t offset = p_next->i_length * i_copy / p_next->i_buffer;
+        if( p_next->i_pts )
+            p_next->i_pts += offset;
+        if( p_next->i_dts )
+            p_next->i_dts += offset;
+        p_next->i_length -= offset;
         p_next->i_buffer -= i_copy;
         p_next->p_buffer += i_copy;
         p_next->i_flags |= BLOCK_FLAG_NO_KEYFRAME;
@@ -1669,7 +1712,7 @@ static block_t *Add_ADTS( block_t *p_data, const es_format_t *p_fmt )
 }
 
 static void TSSchedule( sout_mux_t *p_mux, sout_buffer_chain_t *p_chain_ts,
-                        mtime_t i_pcr_length, mtime_t i_pcr_dts )
+                        vlc_tick_t i_pcr_length, vlc_tick_t i_pcr_dts )
 {
     sout_mux_sys_t  *p_sys = p_mux->p_sys;
     sout_buffer_chain_t new_chain;
@@ -1677,7 +1720,7 @@ static void TSSchedule( sout_mux_t *p_mux, sout_buffer_chain_t *p_chain_ts,
 
     BufferChainInit( &new_chain );
 
-    if ( i_pcr_length <= 0 )
+    if ( unlikely(i_pcr_length <= 0) )
     {
         i_pcr_length = i_packet_count;
     }
@@ -1685,15 +1728,15 @@ static void TSSchedule( sout_mux_t *p_mux, sout_buffer_chain_t *p_chain_ts,
     for (int i = 0; i < i_packet_count; i++ )
     {
         block_t *p_ts = BufferChainGet( p_chain_ts );
-        mtime_t i_new_dts = i_pcr_dts + i_pcr_length * i / i_packet_count;
+        vlc_tick_t i_new_dts = i_pcr_dts + i_pcr_length * i / i_packet_count;
 
         BufferChainAppend( &new_chain, p_ts );
 
         if (!p_ts->i_dts || p_ts->i_dts + p_sys->i_dts_delay * 2/3 >= i_new_dts)
             continue;
 
-        mtime_t i_max_diff = i_new_dts - p_ts->i_dts;
-        mtime_t i_cut_dts = p_ts->i_dts;
+        vlc_tick_t i_max_diff = i_new_dts - p_ts->i_dts;
+        vlc_tick_t i_cut_dts = p_ts->i_dts;
 
         p_ts = BufferChainPeek( p_chain_ts );
         i++;
@@ -1725,20 +1768,20 @@ static void TSSchedule( sout_mux_t *p_mux, sout_buffer_chain_t *p_chain_ts,
 }
 
 static void TSDate( sout_mux_t *p_mux, sout_buffer_chain_t *p_chain_ts,
-                    mtime_t i_pcr_length, mtime_t i_pcr_dts )
+                    vlc_tick_t i_pcr_length, vlc_tick_t i_pcr_dts )
 {
     sout_mux_sys_t  *p_sys = p_mux->p_sys;
     int i_packet_count = p_chain_ts->i_depth;
 
-    if ( i_pcr_length / 1000 > 0 )
+    if ( likely(i_pcr_length / 1000 > 0) )
     {
         int i_bitrate = ((uint64_t)i_packet_count * 188 * 8000)
-                          / (uint64_t)(i_pcr_length / 1000);
+                          / MS_FROM_VLC_TICK(i_pcr_length);
         if ( p_sys->i_bitrate_max && p_sys->i_bitrate_max < i_bitrate )
         {
             msg_Warn( p_mux, "max bitrate exceeded at %"PRId64
                       " (%d bi/s for %d pkt in %"PRId64" us)",
-                      i_pcr_dts + p_sys->i_shaping_delay * 3 / 2 - mdate(),
+                      i_pcr_dts + p_sys->i_shaping_delay * 3 / 2 - vlc_tick_now(),
                       i_bitrate, i_packet_count, i_pcr_length);
         }
     }
@@ -1753,7 +1796,7 @@ static void TSDate( sout_mux_t *p_mux, sout_buffer_chain_t *p_chain_ts,
     for (int i = 0; i < i_packet_count; i++ )
     {
         block_t *p_ts = BufferChainGet( p_chain_ts );
-        mtime_t i_new_dts = i_pcr_dts + i_pcr_length * i / i_packet_count;
+        vlc_tick_t i_new_dts = i_pcr_dts + i_pcr_length * i / i_packet_count;
 
         p_ts->i_dts    = i_new_dts;
         p_ts->i_length = i_pcr_length / i_packet_count;
@@ -1880,9 +1923,9 @@ static block_t *TSNew( sout_mux_t *p_mux, sout_input_sys_t *p_stream,
     return p_ts;
 }
 
-static void TSSetPCR( block_t *p_ts, mtime_t i_dts )
+static void TSSetPCR( block_t *p_ts, vlc_tick_t i_dts )
 {
-    mtime_t i_pcr = 9 * i_dts / 100;
+    int64_t i_pcr = TO_SCALE_NZ(i_dts);
 
     p_ts->p_buffer[6]  = ( i_pcr >> 25 )&0xff;
     p_ts->p_buffer[7]  = ( i_pcr >> 17 )&0xff;

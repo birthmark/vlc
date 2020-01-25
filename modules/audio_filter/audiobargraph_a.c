@@ -2,7 +2,6 @@
  * audiobargraph_a.c : audiobargraph audio plugin for vlc
  *****************************************************************************
  * Copyright (C) 2002-2014 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Clement CHESNIN <clement.chesnin@gmail.com>
  *          Philippe COENT <philippe.coent@tdf.fr>
@@ -88,24 +87,24 @@ vlc_module_end ()
 
 typedef struct ValueDate_t {
     float value;
-    mtime_t date;
+    vlc_tick_t date;
     struct ValueDate_t* next;
 } ValueDate_t;
 
-struct filter_sys_t
+typedef struct
 {
     bool            bargraph;
     int             bargraph_repetition;
     bool            silence;
-    int64_t         time_window;
+    vlc_tick_t      time_window;
     float           alarm_threshold;
-    int64_t         repetition_time;
+    vlc_tick_t      repetition_time;
     int             counter;
     ValueDate_t*    first;
     ValueDate_t*    last;
     int             started;
-    mtime_t         lastAlarm;
-};
+    vlc_tick_t      lastAlarm;
+} filter_sys_t;
 
 /*****************************************************************************
  * Open: open the visualizer
@@ -126,9 +125,9 @@ static int Open( vlc_object_t *p_this )
     p_sys->bargraph = !!var_CreateGetInteger(p_filter, CFG_PREFIX "bargraph");
     p_sys->bargraph_repetition = var_CreateGetInteger(p_filter, CFG_PREFIX "bargraph_repetition");
     p_sys->silence = !!var_CreateGetInteger(p_filter, CFG_PREFIX "silence");
-    p_sys->time_window = var_CreateGetInteger(p_filter, CFG_PREFIX "time_window") * 1000;
+    p_sys->time_window = VLC_TICK_FROM_MS( var_CreateGetInteger(p_filter, CFG_PREFIX "time_window") );
     p_sys->alarm_threshold = var_CreateGetFloat(p_filter, CFG_PREFIX "alarm_threshold");
-    p_sys->repetition_time = var_CreateGetInteger(p_filter, CFG_PREFIX "repetition_time") * 1000;
+    p_sys->repetition_time = VLC_TICK_FROM_MS( var_CreateGetInteger(p_filter, CFG_PREFIX "repetition_time") );
     p_sys->counter = 0;
     p_sys->first = NULL;
     p_sys->last = NULL;
@@ -136,11 +135,14 @@ static int Open( vlc_object_t *p_this )
     p_sys->lastAlarm = 0;
 
     p_filter->fmt_in.audio.i_format = VLC_CODEC_FL32;
+    aout_FormatPrepare(&p_filter->fmt_in.audio);
     p_filter->fmt_out.audio = p_filter->fmt_in.audio;
     p_filter->pf_audio_filter = DoWork;
 
-    var_Create(p_filter->obj.libvlc, "audiobargraph_v-alarm", VLC_VAR_BOOL);
-    var_Create(p_filter->obj.libvlc, "audiobargraph_v-i_values", VLC_VAR_STRING);
+    vlc_object_t *vlc = VLC_OBJECT(vlc_object_instance(p_filter));
+
+    var_Create(vlc, "audiobargraph_v-alarm", VLC_VAR_BOOL);
+    var_Create(vlc, "audiobargraph_v-i_values", VLC_VAR_STRING);
 
     return VLC_SUCCESS;
 }
@@ -157,7 +159,8 @@ static void SendValues(filter_t *p_filter, float *value, int nbChannels)
     }
 
     //msg_Dbg(p_filter, "values: %s", msg);
-    var_SetString(p_filter->obj.libvlc, "audiobargraph_v-i_values", msg);
+    var_SetString(vlc_object_instance(p_filter), "audiobargraph_v-i_values",
+                  msg);
 }
 
 /*****************************************************************************
@@ -224,7 +227,7 @@ static block_t *DoWork( filter_t *p_filter, block_t *p_in_buf )
             sum = sqrtf(sum);
 
             /* 5 - compare it to the threshold */
-            var_SetBool(p_filter->obj.libvlc, "audiobargraph_v-alarm",
+            var_SetBool(vlc_object_instance(p_filter), "audiobargraph_v-alarm",
                         sum < p_sys->alarm_threshold);
 
             p_sys->lastAlarm = p_in_buf->i_pts;
@@ -246,9 +249,10 @@ static void Close( vlc_object_t *p_this )
 {
     filter_t * p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
+    vlc_object_t *vlc = VLC_OBJECT(vlc_object_instance(p_filter));
 
-    var_Destroy(p_filter->obj.libvlc, "audiobargraph_v-i_values");
-    var_Destroy(p_filter->obj.libvlc, "audiobargraph_v-alarm");
+    var_Destroy(vlc, "audiobargraph_v-i_values");
+    var_Destroy(vlc, "audiobargraph_v-alarm");
 
     while (p_sys->first != NULL) {
         ValueDate_t *current = p_sys->first;

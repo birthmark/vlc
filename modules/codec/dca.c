@@ -46,7 +46,7 @@
 static int  Open ( vlc_object_t * );
 static void Close( vlc_object_t * );
 
-struct decoder_sys_t
+typedef struct
 {
     dca_state_t     *p_libdca; /* libdca internal structure */
     bool            b_dynrng; /* see below */
@@ -56,7 +56,7 @@ struct decoder_sys_t
 
     uint8_t         pi_chan_table[AOUT_CHAN_MAX]; /* channel reordering */
     bool            b_synced;
-};
+} decoder_sys_t;
 
 #define DYNRNG_TEXT N_("DTS dynamic range compression")
 #define DYNRNG_LONGTEXT N_( \
@@ -72,7 +72,7 @@ vlc_module_begin ()
     set_shortname( "DCA" )
     set_description( N_("DTS Coherent Acoustics audio decoder") )
     add_bool( "dts-dynrng", true, DYNRNG_TEXT, DYNRNG_LONGTEXT, false )
-    set_capability( "decoder", 60 )
+    set_capability( "audio decoder", 60 )
     set_callbacks( Open, Close )
 vlc_module_end ()
 
@@ -107,29 +107,13 @@ static void Duplicate( float * p_out, const float * p_in )
     }
 }
 
-/*
- * helper function to exchange left & right channels
- */
-static void Exchange( float * p_out, const float * p_in )
-{
-    const float * p_first = p_in + 256;
-    const float * p_second = p_in;
-
-    for ( int i = 0; i < 256; i++ )
-    {
-        *p_out++ = *p_first++;
-        *p_out++ = *p_second++;
-    }
-}
-
-static block_t *Decode( decoder_t *p_dec, block_t **pp_block )
+static int Decode( decoder_t *p_dec, block_t *p_in_buf )
 {
     decoder_sys_t  *p_sys = p_dec->p_sys;
 
-    if (pp_block == NULL || *pp_block == NULL)
-        return NULL;
+    if (p_in_buf == NULL) /* No Drain */
+        return VLCDEC_SUCCESS;
 
-    block_t *p_in_buf = *pp_block;
     sample_t i_sample_level = 1;
     int  i_flags = p_sys->i_flags;
     size_t i_bytes_per_block = 256 * p_sys->i_nb_channels * sizeof(float);
@@ -168,11 +152,6 @@ static block_t *Decode( decoder_t *p_dec, block_t **pp_block )
         p_sys->b_dontwarn = 1;
     }
 
-    if( 0)//!p_sys->b_dynrng )
-    {
-        dca_dynrng( p_sys->p_libdca, NULL, NULL );
-    }
-
     for( int i = 0; i < dca_blocks_num(p_sys->p_libdca); i++ )
     {
         sample_t * p_samples;
@@ -192,12 +171,6 @@ static block_t *Decode( decoder_t *p_dec, block_t **pp_block )
             Duplicate( (float *)(p_out_buf->p_buffer + i * i_bytes_per_block),
                        p_samples );
         }
-        else if ( p_dec->fmt_out.audio.i_original_channels
-                    & AOUT_CHAN_REVERSESTEREO )
-        {
-            Exchange( (float *)(p_out_buf->p_buffer + i * i_bytes_per_block),
-                      p_samples );
-        }
         else
         {
             /* Interleave the *$£%ù samples. */
@@ -212,9 +185,10 @@ static block_t *Decode( decoder_t *p_dec, block_t **pp_block )
     p_out_buf->i_pts = p_in_buf->i_pts;
     p_out_buf->i_length = p_in_buf->i_length;
 out:
+    if (p_out_buf != NULL)
+        decoder_QueueAudio(p_dec, p_out_buf);
     block_Release( p_in_buf );
-    *pp_block = NULL;
-    return p_out_buf;
+    return VLCDEC_SUCCESS;
 }
 
 static int channels_vlc2dca( const audio_format_t *p_audio, int *p_flags )
@@ -224,18 +198,16 @@ static int channels_vlc2dca( const audio_format_t *p_audio, int *p_flags )
     switch ( p_audio->i_physical_channels & ~AOUT_CHAN_LFE )
     {
     case AOUT_CHAN_CENTER:
-        if ( (p_audio->i_original_channels & AOUT_CHAN_CENTER)
-              || (p_audio->i_original_channels
+        if ( (p_audio->i_physical_channels & AOUT_CHAN_CENTER)
+              || (p_audio->i_physical_channels
                    & (AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT)) )
             i_flags = DCA_MONO;
         break;
 
     case AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT:
-        if ( p_audio->i_original_channels & AOUT_CHAN_DOLBYSTEREO )
+        if ( p_audio->i_chan_mode & AOUT_CHANMODE_DOLBYSTEREO )
             i_flags = DCA_DOLBY;
-        else if ( p_audio->i_original_channels == AOUT_CHAN_CENTER )
-            i_flags = DCA_MONO;
-        else if ( p_audio->i_original_channels & AOUT_CHAN_DUALMONO )
+        else if ( p_audio->i_chan_mode & AOUT_CHANMODE_DUALMONO )
             i_flags = DCA_CHANNEL;
         else
             i_flags = DCA_STEREO;
@@ -282,7 +254,6 @@ static int Open( vlc_object_t *p_this )
     if( p_dec->fmt_in.i_codec != VLC_CODEC_DTS
      || p_dec->fmt_in.audio.i_rate == 0
      || p_dec->fmt_in.audio.i_physical_channels == 0
-     || p_dec->fmt_in.audio.i_original_channels == 0
      || p_dec->fmt_in.audio.i_bytes_per_frame == 0
      || p_dec->fmt_in.audio.i_frame_length == 0 )
         return VLC_EGENERIC;
@@ -327,7 +298,6 @@ static int Open( vlc_object_t *p_this )
                               p_dec->fmt_in.audio.i_physical_channels,
                               p_sys->pi_chan_table );
 
-    p_dec->fmt_out.i_cat = AUDIO_ES;
     p_dec->fmt_out.audio = p_dec->fmt_in.audio;
     p_dec->fmt_out.audio.i_format = VLC_CODEC_FL32;
     p_dec->fmt_out.i_codec = p_dec->fmt_out.audio.i_format;
@@ -336,13 +306,12 @@ static int Open( vlc_object_t *p_this )
 
     if( decoder_UpdateAudioFormat( p_dec ) )
     {
-        es_format_Init( &p_dec->fmt_out, UNKNOWN_ES, 0 );
         Close( p_this );
         return VLC_EGENERIC;
     }
 
-    p_dec->pf_decode_audio = Decode;
-    p_dec->pf_flush        = NULL;
+    p_dec->pf_decode = Decode;
+    p_dec->pf_flush  = NULL;
     return VLC_SUCCESS;
 }
 

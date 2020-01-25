@@ -3,7 +3,6 @@
  *****************************************************************************
  * Copyright (C) 1998-2008 VLC authors and VideoLAN
  * Copyright (C) 2008 Laurent Aimar
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
@@ -27,21 +26,56 @@
 
 #include <vlc_common.h>
 #include <vlc_codec.h>
+#include <vlc_mouse.h>
 
-decoder_t *input_DecoderNew( input_thread_t *, es_format_t *, input_clock_t *,
-                             sout_instance_t * ) VLC_USED;
+struct input_decoder_callbacks {
+    /* notifications */
+    void (*on_vout_started)(decoder_t *decoder, vout_thread_t *vout,
+                          enum vlc_vout_order vout_order,
+                          void *userdata);
+    void (*on_vout_stopped)(decoder_t *decoder, vout_thread_t *vout,
+                            void *userdata);
+    void (*on_thumbnail_ready)(decoder_t *decoder, picture_t *pic,
+                               void *userdata);
+
+    void (*on_new_video_stats)(decoder_t *decoder, unsigned decoded,
+                               unsigned lost, unsigned displayed,
+                               void *userdata);
+    void (*on_new_audio_stats)(decoder_t *decoder, unsigned decoded,
+                               unsigned lost, unsigned played, void *userdata);
+
+    /* requests */
+    int (*get_attachments)(decoder_t *decoder,
+                           input_attachment_t ***ppp_attachment,
+                           void *userdata);
+};
+
+decoder_t *input_DecoderNew( vlc_object_t *parent, es_format_t *, vlc_clock_t *,
+                             input_resource_t *, sout_instance_t *,
+                             bool thumbnailing,
+                             const struct input_decoder_callbacks *cbs,
+                             void *userdata ) VLC_USED;
 
 /**
  * This function changes the pause state.
  * The date parameter MUST hold the exact date at which the change has been
  * done for proper vout/aout pausing.
  */
-void input_DecoderChangePause( decoder_t *, bool b_paused, mtime_t i_date );
+void input_DecoderChangePause( decoder_t *, bool b_paused, vlc_tick_t i_date );
+
+/**
+ * Changes the decoder rate.
+ *
+ * This function changes rate of the intended playback speed to nominal speed.
+ * \param dec decoder
+ * \param rate playback rate (default is 1)
+ */
+void input_DecoderChangeRate( decoder_t *dec, float rate );
 
 /**
  * This function changes the delay.
  */
-void input_DecoderChangeDelay( decoder_t *, mtime_t i_delay );
+void input_DecoderChangeDelay( decoder_t *, vlc_tick_t i_delay );
 
 /**
  * This function makes the decoder start waiting for a valid data block from its fifo.
@@ -66,25 +100,24 @@ bool input_DecoderIsEmpty( decoder_t * );
 /**
  * This function activates the request closed caption channel.
  */
-int input_DecoderSetCcState( decoder_t *, bool b_decode, int i_channel );
+int input_DecoderSetCcState( decoder_t *, vlc_fourcc_t, int i_channel, bool b_decode );
 
 /**
  * This function returns an error if the requested channel does not exist and
  * set pb_decode to the channel status(active or not) otherwise.
  */
-int input_DecoderGetCcState( decoder_t *, bool *pb_decode, int i_channel );
+int input_DecoderGetCcState( decoder_t *, vlc_fourcc_t, int i_channel, bool *pb_decode );
 
 /**
- * This function set each pb_present entry to true if the corresponding channel
- * exists or false otherwise.
+ * This function get cc channels descriptions
  */
-void input_DecoderIsCcPresent( decoder_t *, bool pb_present[4] );
+void input_DecoderGetCcDesc( decoder_t *, decoder_cc_desc_t * );
 
 /**
  * This function force the display of the next picture and fills the stream
  * time consumed.
  */
-void input_DecoderFrameNext( decoder_t *p_dec, mtime_t *pi_duration );
+void input_DecoderFrameNext( decoder_t *p_dec, vlc_tick_t *pi_duration );
 
 /**
  * This function will return true if the ES format or meta data have changed since
@@ -101,11 +134,8 @@ bool input_DecoderHasFormatChanged( decoder_t *p_dec, es_format_t *p_fmt, vlc_me
  */
 size_t input_DecoderGetFifoSize( decoder_t *p_dec );
 
-/**
- * This function returns the objects associated to a decoder
- *
- * They must be released using vlc_object_release().
- */
-void input_DecoderGetObjects( decoder_t *, vout_thread_t **, audio_output_t ** );
+void input_DecoderSetVoutMouseEvent( decoder_t *, vlc_mouse_event, void * );
+int  input_DecoderAddVoutOverlay( decoder_t *, subpicture_t *, size_t * );
+int  input_DecoderDelVoutOverlay( decoder_t *, size_t );
 
 #endif

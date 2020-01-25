@@ -40,27 +40,26 @@ namespace adaptive
                 virtual ~RateBasedAdaptationLogic   ();
 
                 BaseRepresentation *getNextRepresentation(BaseAdaptationSet *, BaseRepresentation *);
-                virtual void updateDownloadRate(const ID &, size_t, mtime_t); /* reimpl */
+                virtual void updateDownloadRate(const ID &, size_t, vlc_tick_t); /* reimpl */
                 virtual void trackerEvent(const SegmentTrackerEvent &); /* reimpl */
 
             private:
                 size_t                  bpsAvg;
                 size_t                  currentBps;
                 size_t                  usedBps;
-                vlc_object_t *          p_obj;
 
                 MovingAverage<size_t>   average;
 
                 size_t                  dlsize;
-                mtime_t                 dllength;
+                vlc_tick_t              dllength;
 
-                vlc_mutex_t             lock;
+                mutable vlc_mutex_t     lock;
         };
 
         class FixedRateAdaptationLogic : public AbstractAdaptationLogic
         {
             public:
-                FixedRateAdaptationLogic(size_t);
+                FixedRateAdaptationLogic(vlc_object_t *, size_t);
 
                 BaseRepresentation *getNextRepresentation(BaseAdaptationSet *, BaseRepresentation *);
 

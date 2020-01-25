@@ -39,7 +39,7 @@ namespace smooth
     class SmoothManager : public PlaylistManager
     {
         public:
-            SmoothManager( demux_t *, playlist::Manifest *,
+            SmoothManager( demux_t *, SharedResources *, playlist::Manifest *,
                         AbstractStreamFactory *,
                         logic::AbstractAdaptationLogic::LogicType type );
             virtual ~SmoothManager();

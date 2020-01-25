@@ -2,7 +2,6 @@
  * chapter_command.hpp : matroska demuxer
  *****************************************************************************
  * Copyright (C) 2003-2004 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Steve Lhomme <steve.lhomme@free.fr>
@@ -26,6 +25,8 @@
 #define VLC_MKV_CHAPTER_COMMAND_HPP_
 
 #include "mkv.hpp"
+
+namespace mkv {
 
 const int MATROSKA_CHAPTER_CODEC_NATIVE  = 0x00;
 const int MATROSKA_CHAPTER_CODEC_DVD     = 0x01;
@@ -244,9 +245,6 @@ protected:
     static bool MatchCellNumber   ( const chapter_codec_cmds_c &data, const void *p_cookie, size_t i_cookie_size );
 };
 
-
-#include "demux.hpp"
-
 class dvd_chapter_codec_c : public chapter_codec_cmds_c
 {
 public:
@@ -296,5 +294,6 @@ protected:
     matroska_script_interpretor_c interpretor;
 };
 
+} // namespace
 
 #endif

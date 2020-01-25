@@ -35,10 +35,12 @@ using namespace adaptive::logic;
 using namespace hls;
 using namespace hls::playlist;
 
-HLSManager::HLSManager(demux_t *demux_, M3U8 *playlist,
+HLSManager::HLSManager(demux_t *demux_,
+                       SharedResources *res,
+                       M3U8 *playlist,
                        AbstractStreamFactory *factory,
                        AbstractAdaptationLogic::LogicType type) :
-             PlaylistManager(demux_, playlist, factory, type)
+             PlaylistManager(demux_, res, playlist, factory, type)
 {
 }
 
@@ -102,7 +104,7 @@ bool HLSManager::isHTTPLiveStreaming(stream_t *s)
     return false;
 }
 
-mtime_t HLSManager::getFirstPlaybackTime() const
+vlc_tick_t HLSManager::getFirstPlaybackTime() const
 {
     return demux.i_firstpcr;
 }

@@ -39,41 +39,31 @@ typedef struct vdp_instance
     VdpDevice device;
 
     int num; /**< X11 screen number */
-    char *name; /**< X11 display name */
 
     uintptr_t refs; /**< Reference count */
     struct vdp_instance *next;
+    char name[]; /**< X11 display name */
 } vdp_instance_t;
 
-static VdpStatus vdp_instance_create(const char *name, int num,
-                                     vdp_instance_t **pp)
+static vdp_instance_t *vdp_instance_create(const char *name, int num)
 {
-    size_t namelen = (name != NULL) ? (strlen(name) + 1) : 0;
+    size_t namelen = strlen(name) + 1;
     vdp_instance_t *vi = malloc(sizeof (*vi) + namelen);
 
     if (unlikely(vi == NULL))
-        return VDP_STATUS_RESOURCES;
+        return NULL;
 
     vi->display = XOpenDisplay(name);
     if (vi->display == NULL)
     {
         free(vi);
-        return VDP_STATUS_ERROR;
+        return NULL;
     }
 
-    vi->next = NULL;
-    if (name != NULL)
-    {
-        vi->name = (void *)(vi + 1);
-        memcpy(vi->name, name, namelen);
-    }
-    else
-        vi->name = NULL;
     if (num >= 0)
         vi->num = num;
     else
         vi->num = XDefaultScreen(vi->display);
-    vi->refs = 1;
 
     VdpStatus err = vdp_create_x11(vi->display, vi->num,
                                    &vi->vdp, &vi->device);
@@ -81,10 +71,14 @@ static VdpStatus vdp_instance_create(const char *name, int num,
     {
         XCloseDisplay(vi->display);
         free(vi);
-        return err;
+        return NULL;
     }
-    *pp = vi;
-    return VDP_STATUS_OK;
+
+    vi->next = NULL;
+    memcpy(vi->name, name, namelen);
+    vi->refs = 1;
+
+    return vi;
 }
 
 static void vdp_instance_destroy(vdp_instance_t *vi)
@@ -95,19 +89,9 @@ static void vdp_instance_destroy(vdp_instance_t *vi)
     free(vi);
 }
 
-/** Compares two string pointers that might be NULL */
-static int strnullcmp(const char *a, const char *b)
-{
-    if (b == NULL)
-        return a != NULL;
-    if (a == NULL)
-        return -1;
-    return strcmp(a, b);
-}
-
 static int vicmp(const char *name, int num, const vdp_instance_t *vi)
 {
-    int val = strnullcmp(name, vi->name);
+    int val = strcmp(name, vi->name);
     if (val)
         return val;
 
@@ -146,7 +130,6 @@ VdpStatus vdp_get_x11(const char *display_name, int snum,
                       vdp_t **restrict vdpp, VdpDevice *restrict devicep)
 {
     vdp_instance_t *vi, *vi2;
-    VdpStatus err = VDP_STATUS_RESOURCES;
 
     if (display_name == NULL)
     {
@@ -161,9 +144,9 @@ VdpStatus vdp_get_x11(const char *display_name, int snum,
     if (vi != NULL)
         goto found;
 
-    err = vdp_instance_create(display_name, snum, &vi);
-    if (err != VDP_STATUS_OK)
-        return err;
+    vi = vdp_instance_create(display_name, snum);
+    if (vi == NULL)
+        return VDP_STATUS_ERROR;
 
     pthread_mutex_lock(&lock);
     vi2 = vdp_instance_lookup(display_name, snum);

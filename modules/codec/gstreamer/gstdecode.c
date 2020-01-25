@@ -2,7 +2,6 @@
  * gstdecode.c: Decoder module making use of gstreamer
  *****************************************************************************
  * Copyright (C) 2014-2016 VLC authors and VideoLAN
- * $Id:
  *
  * Author: Vikram Fugro <vikram.fugro@gmail.com>
  *
@@ -42,7 +41,7 @@
 #include "gstvlcpictureplaneallocator.h"
 #include "gstvlcvideosink.h"
 
-struct decoder_sys_t
+typedef struct
 {
     GstElement *p_decoder;
     GstElement *p_decode_src;
@@ -57,7 +56,7 @@ struct decoder_sys_t
     GstAtomicQueue *p_que;
     bool b_prerolled;
     bool b_running;
-};
+} decoder_sys_t;
 
 typedef struct
 {
@@ -70,7 +69,7 @@ typedef struct
  *****************************************************************************/
 static int  OpenDecoder( vlc_object_t* );
 static void CloseDecoder( vlc_object_t* );
-static picture_t *DecodeBlock( decoder_t*, block_t** );
+static int  DecodeBlock( decoder_t*, block_t* );
 static void Flush( decoder_t * );
 
 #define MODULE_DESCRIPTION N_( "Uses GStreamer framework's plugins " \
@@ -84,6 +83,13 @@ static void Flush( decoder_t * );
     "more info such as codec profile, level and other attributes, " \
     "in the form of GstCaps (Stream Capabilities) to decoder." )
 
+#define USEVLCPOOL_TEXT "Use VLCPool"
+#define USEVLCPOOL_LONGTEXT \
+    "Allow the gstreamer decoders to directly decode (direct render) " \
+    "into the buffers provided and managed by the (downstream)VLC modules " \
+    "that follow. Note: Currently this feature is unstable, enable it at " \
+    "your own risk."
+
 vlc_module_begin( )
     set_shortname( "GstDecode" )
     add_shortcut( "gstdecode" )
@@ -92,11 +98,13 @@ vlc_module_begin( )
     /* decoder main module */
     set_description( N_( "GStreamer Based Decoder" ) )
     set_help( MODULE_DESCRIPTION )
-    set_capability( "decoder", 50 )
+    set_capability( "video decoder", 50 )
     set_section( N_( "Decoding" ) , NULL )
     set_callbacks( OpenDecoder, CloseDecoder )
     add_bool( "use-decodebin", true, USEDECODEBIN_TEXT,
         USEDECODEBIN_LONGTEXT, false )
+    add_bool( "use-vlcpool", false, USEVLCPOOL_TEXT,
+        USEVLCPOOL_LONGTEXT, false )
 vlc_module_end( )
 
 void gst_vlc_dec_ensure_empty_queue( decoder_t *p_dec )
@@ -112,7 +120,7 @@ void gst_vlc_dec_ensure_empty_queue( decoder_t *p_dec )
     while( p_sys->b_running && i_count < 60 &&
             gst_atomic_queue_length( p_sys->p_que ))
     {
-        msleep ( 15000 );
+        vlc_tick_sleep ( VLC_TICK_FROM_MS(15) );
         i_count++;
     }
 
@@ -320,25 +328,23 @@ static gboolean vlc_gst_plugin_init( GstPlugin *p_plugin )
     return TRUE;
 }
 
+static bool vlc_gst_registered = false;
+
+static void vlc_gst_init_once(void)
+{
+    gst_init( NULL, NULL );
+    vlc_gst_registered = gst_plugin_register_static( 1, 0, "videolan",
+                "VLC Gstreamer plugins", vlc_gst_plugin_init,
+                "1.0.0", "LGPL", "NA", "vlc", "NA" );
+}
+
 /* gst_init( ) is not thread-safe, hence a thread-safe wrapper */
 static bool vlc_gst_init( void )
 {
-    static vlc_mutex_t init_lock = VLC_STATIC_MUTEX;
-    static bool b_registered = false;
-    bool b_ret = true;
+    static vlc_once_t once = VLC_STATIC_ONCE;
 
-    vlc_mutex_lock( &init_lock );
-    gst_init( NULL, NULL );
-    if ( !b_registered )
-    {
-        b_ret = gst_plugin_register_static( 1, 0, "videolan",
-                "VLC Gstreamer plugins", vlc_gst_plugin_init,
-                "1.0.0", "LGPL", "NA", "vlc", "NA" );
-        b_registered = b_ret;
-    }
-    vlc_mutex_unlock( &init_lock );
-
-    return b_ret;
+    vlc_once(&once, vlc_gst_init_once);
+    return vlc_gst_registered;
 }
 
 static GstStructure* vlc_to_gst_fmt( const es_format_t *p_fmt )
@@ -448,7 +454,7 @@ static int OpenDecoder( vlc_object_t *p_this )
     GstAppSrcCallbacks cb;
     int i_rval = VLC_SUCCESS;
     GList *p_list;
-    bool dbin;
+    bool dbin, vlc_pool;
 
 #define VLC_GST_CHECK( r, v, s, t ) \
     { if( r == v ){ msg_Err( p_dec, s ); i_rval = t; goto fail; } }
@@ -560,10 +566,14 @@ static int OpenDecoder( vlc_object_t *p_this )
     p_sys->p_decode_out = gst_element_factory_make( "vlcvideosink", NULL );
     VLC_GST_CHECK( p_sys->p_decode_out, NULL, "vlcvideosink not found",
             VLC_ENOMOD );
+
+    vlc_pool = var_CreateGetBool( p_dec, "use-vlcpool" );
+    msg_Dbg( p_dec, "Using vlc pool? %s", vlc_pool ? "yes ":"no" );
+
     p_sys->p_allocator = gst_vlc_picture_plane_allocator_new(
             (gpointer) p_dec );
     g_object_set( G_OBJECT( p_sys->p_decode_out ), "sync", FALSE, "allocator",
-            p_sys->p_allocator, "id", (gpointer) p_dec, NULL );
+            p_sys->p_allocator, "id", (gpointer) p_dec, "use-pool", vlc_pool, NULL );
     g_signal_connect( G_OBJECT( p_sys->p_decode_out ), "new-buffer",
             G_CALLBACK( frame_handoff_cb ), p_dec );
 
@@ -600,8 +610,6 @@ static int OpenDecoder( vlc_object_t *p_this )
                 VLC_EGENERIC );
     }
 
-    p_dec->fmt_out.i_cat = p_dec->fmt_in.i_cat;
-
     /* set the pipeline to playing */
     i_ret = gst_element_set_state( p_sys->p_decoder, GST_STATE_PLAYING );
     VLC_GST_CHECK( i_ret, GST_STATE_CHANGE_FAILURE,
@@ -609,8 +617,8 @@ static int OpenDecoder( vlc_object_t *p_this )
     p_sys->b_running = true;
 
     /* Set callbacks */
-    p_dec->pf_decode_video = DecodeBlock;
-    p_dec->pf_flush        = Flush;
+    p_dec->pf_decode = DecodeBlock;
+    p_dec->pf_flush  = Flush;
 
     return VLC_SUCCESS;
 
@@ -648,21 +656,14 @@ static void Flush( decoder_t *p_dec )
 }
 
 /* Decode */
-static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
+static int DecodeBlock( decoder_t *p_dec, block_t *p_block )
 {
-    block_t *p_block;
     picture_t *p_pic = NULL;
     decoder_sys_t *p_sys = p_dec->p_sys;
     GstMessage *p_msg;
-    GstBuffer *p_buf;
 
-    if( !pp_block )
-        return NULL;
-
-    p_block = *pp_block;
-
-    if( !p_block )
-        goto check_messages;
+    if( !p_block ) /* No Drain */
+        return VLCDEC_SUCCESS;
 
     if( unlikely( p_block->i_flags & (BLOCK_FLAG_DISCONTINUITY |
                     BLOCK_FLAG_CORRUPTED ) ) )
@@ -679,6 +680,8 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
 
     if( likely( p_block->i_buffer ) )
     {
+        GstBuffer *p_buf;
+
         p_buf = gst_buffer_new_wrapped_full( GST_MEMORY_FLAG_READONLY,
                 p_block->p_start, p_block->i_size,
                 p_block->p_buffer - p_block->p_start, p_block->i_buffer,
@@ -686,22 +689,21 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
         if( unlikely( p_buf == NULL ) )
         {
             msg_Err( p_dec, "failed to create input gstbuffer" );
-            p_dec->b_error = true;
             block_Release( p_block );
-            goto done;
+            return VLCDEC_ECRITICAL;
         }
 
-        if( p_block->i_dts > VLC_TS_INVALID )
+        if( p_block->i_dts != VLC_TICK_INVALID )
             GST_BUFFER_DTS( p_buf ) = gst_util_uint64_scale( p_block->i_dts,
                     GST_SECOND, GST_MSECOND );
 
-        if( p_block->i_pts <= VLC_TS_INVALID )
+        if( p_block->i_pts == VLC_TICK_INVALID )
             GST_BUFFER_PTS( p_buf ) = GST_BUFFER_DTS( p_buf );
         else
             GST_BUFFER_PTS( p_buf ) = gst_util_uint64_scale( p_block->i_pts,
                     GST_SECOND, GST_MSECOND );
 
-        if( p_block->i_length > VLC_TS_INVALID )
+        if( p_block->i_length != VLC_TICK_INVALID )
             GST_BUFFER_DURATION( p_buf ) = gst_util_uint64_scale(
                     p_block->i_length, GST_SECOND, GST_MSECOND );
 
@@ -728,15 +730,13 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
         {
             /* block will be released internally,
              * when gst_buffer_unref() is called */
-            p_dec->b_error = true;
             msg_Err( p_dec, "failed to push buffer" );
-            goto done;
+            return VLCDEC_ECRITICAL;
         }
     }
     else
         block_Release( p_block );
 
-check_messages:
     /* Poll for any messages, errors */
     p_msg = gst_bus_pop_filtered( p_sys->p_bus,
             GST_MESSAGE_ASYNC_DONE | GST_MESSAGE_ERROR |
@@ -756,11 +756,10 @@ check_messages:
             msg_Dbg( p_dec, "Pipeline is prerolled" );
             break;
         default:
-            p_dec->b_error = default_msg_handler( p_dec, p_msg );
-            if( p_dec->b_error )
+            if( default_msg_handler( p_dec, p_msg ) )
             {
                 gst_message_unref( p_msg );
-                goto done;
+                return VLCDEC_ECRITICAL;
             }
             break;
         }
@@ -795,8 +794,7 @@ check_messages:
             {
                 msg_Err( p_dec, "failed to map gst video frame" );
                 gst_buffer_unref( p_buf );
-                p_dec->b_error = true;
-                goto done;
+                return VLCDEC_ECRITICAL;
             }
 
             gst_CopyPicture( p_pic, &frame );
@@ -813,8 +811,9 @@ check_messages:
     }
 
 done:
-    *pp_block = NULL;
-    return p_pic;
+    if( p_pic != NULL )
+        decoder_QueueVideo( p_dec, p_pic );
+    return VLCDEC_SUCCESS;
 }
 
 /* Close the decoder instance */
@@ -847,9 +846,11 @@ static void CloseDecoder( vlc_object_t *p_this )
                 msg_Dbg( p_dec, "got eos" );
                 break;
             default:
-                p_dec->b_error = default_msg_handler( p_dec, p_msg );
-                if( p_dec->b_error )
+                if( default_msg_handler( p_dec, p_msg ) )
+                {
                     msg_Err( p_dec, "pipeline may not close gracefully" );
+                    return;
+                }
                 break;
             }
 

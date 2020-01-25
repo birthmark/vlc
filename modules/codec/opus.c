@@ -30,7 +30,6 @@
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
-#include <vlc_input.h>
 #include <vlc_codec.h>
 #include <vlc_aout.h>
 #include "../demux/xiph.h"
@@ -60,7 +59,7 @@ vlc_module_begin ()
     set_subcategory( SUBCAT_INPUT_ACODEC )
 
     set_description( N_("Opus audio decoder") )
-    set_capability( "decoder", 100 )
+    set_capability( "audio decoder", 100 )
     set_shortname( N_("Opus") )
     set_callbacks( OpenDecoder, CloseDecoder )
 
@@ -77,7 +76,7 @@ vlc_module_end ()
 /*****************************************************************************
  * decoder_sys_t : opus decoder descriptor
  *****************************************************************************/
-struct decoder_sys_t
+typedef struct
 {
     /*
      * Input properties
@@ -94,7 +93,7 @@ struct decoder_sys_t
      * Common properties
      */
     date_t end_date;
-};
+} decoder_sys_t;
 
 static const int pi_channels_maps[9] =
 {
@@ -154,13 +153,13 @@ static const uint32_t pi_3channels_in[] =
  * Local prototypes
  ****************************************************************************/
 
-static block_t *DecodeBlock  ( decoder_t *, block_t ** );
+static int  DecodeAudio ( decoder_t *, block_t * );
 static void Flush( decoder_t * );
 static int  ProcessHeaders( decoder_t * );
 static int  ProcessInitialHeader ( decoder_t *, ogg_packet * );
-static void *ProcessPacket( decoder_t *, ogg_packet *, block_t ** );
+static block_t *ProcessPacket( decoder_t *, ogg_packet *, block_t * );
 
-static block_t *DecodePacket( decoder_t *, ogg_packet *, int, int );
+static block_t *DecodePacket( decoder_t *, ogg_packet *, int, vlc_tick_t );
 
 /*****************************************************************************
  * OpenDecoder: probe the decoder and return score
@@ -176,17 +175,15 @@ static int OpenDecoder( vlc_object_t *p_this )
     /* Allocate the memory needed to store the decoder's structure */
     if( ( p_dec->p_sys = p_sys = malloc(sizeof(decoder_sys_t)) ) == NULL )
         return VLC_ENOMEM;
-    p_dec->p_sys->b_has_headers = false;
+    p_sys->b_has_headers = false;
 
-    date_Set( &p_sys->end_date, 0 );
+    date_Set( &p_sys->end_date, VLC_TICK_INVALID );
 
     /* Set output properties */
-    p_dec->fmt_out.i_cat = AUDIO_ES;
     p_dec->fmt_out.i_codec = VLC_CODEC_FL32;
 
-    p_dec->pf_decode_audio = DecodeBlock;
-    p_dec->pf_packetize    = DecodeBlock;
-    p_dec->pf_flush        = Flush;
+    p_dec->pf_decode    = DecodeAudio;
+    p_dec->pf_flush     = Flush;
 
     p_sys->p_st = NULL;
 
@@ -198,17 +195,14 @@ static int OpenDecoder( vlc_object_t *p_this )
  ****************************************************************************
  * This function must be fed with ogg packets.
  ****************************************************************************/
-static block_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
+static block_t *DecodeBlock( decoder_t *p_dec, block_t *p_block )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
     ogg_packet oggpacket;
 
-    if( !pp_block || !*pp_block)
-        return NULL;
-
     /* Block to Ogg packet */
-    oggpacket.packet = (*pp_block)->p_buffer;
-    oggpacket.bytes = (*pp_block)->i_buffer;
+    oggpacket.packet = p_block->p_buffer;
+    oggpacket.bytes = p_block->i_buffer;
 
     oggpacket.granulepos = -1;
     oggpacket.b_o_s = 0;
@@ -220,13 +214,24 @@ static block_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
     {
         if( ProcessHeaders( p_dec ) )
         {
-            block_Release( *pp_block );
+            block_Release( p_block );
             return NULL;
         }
         p_sys->b_has_headers = true;
     }
 
-    return ProcessPacket( p_dec, &oggpacket, pp_block );
+    return ProcessPacket( p_dec, &oggpacket, p_block );
+}
+
+static int DecodeAudio( decoder_t *p_dec, block_t *p_block )
+{
+    if( p_block == NULL ) /* No Drain */
+        return VLCDEC_SUCCESS;
+
+    p_block = DecodeBlock( p_dec, p_block );
+    if( p_block != NULL )
+        decoder_QueueAudio( p_dec, p_block );
+    return VLCDEC_SUCCESS;
 }
 
 /*****************************************************************************
@@ -237,7 +242,7 @@ static int ProcessHeaders( decoder_t *p_dec )
     ogg_packet oggpacket;
 
     unsigned pi_size[XIPH_MAX_HEADER_COUNT];
-    void     *pp_data[XIPH_MAX_HEADER_COUNT];
+    const void *pp_data[XIPH_MAX_HEADER_COUNT];
     unsigned i_count;
 
     int i_extra = p_dec->fmt_in.i_extra;
@@ -245,7 +250,8 @@ static int ProcessHeaders( decoder_t *p_dec )
 
     /* If we have no header (e.g. from RTP), make one. */
     bool b_dummy_header = false;
-    if( !i_extra )
+    if( !i_extra ||
+        (i_extra > 10 && memcmp( &p_extra[2], "OpusHead", 8 )) ) /* Borked muxers */
     {
         OpusHeader header;
         opus_prepare_header( p_dec->fmt_in.audio.i_channels,
@@ -278,7 +284,7 @@ static int ProcessHeaders( decoder_t *p_dec )
     /* Take care of the initial Opus header */
     oggpacket.b_o_s = 1; /* yes this actually is a b_o_s packet :) */
     oggpacket.bytes  = pi_size[0];
-    oggpacket.packet = pp_data[0];
+    oggpacket.packet = (void *)pp_data[0];
     int ret = ProcessInitialHeader( p_dec, &oggpacket );
 
     if (ret != VLC_SUCCESS)
@@ -296,6 +302,7 @@ static int ProcessHeaders( decoder_t *p_dec )
 static int ProcessInitialHeader( decoder_t *p_dec, ogg_packet *p_oggpacket )
 {
     int err;
+    unsigned char* p_stream_map;
     unsigned char new_stream_map[8];
     decoder_sys_t *p_sys = p_dec->p_sys;
 
@@ -309,37 +316,61 @@ static int ProcessInitialHeader( decoder_t *p_dec, ogg_packet *p_oggpacket )
     msg_Dbg( p_dec, "Opus audio with %d channels", p_header->channels);
 
     if((p_header->channels>2 && p_header->channel_mapping==0) ||
-        p_header->channels>8 ||
-        p_header->channel_mapping>1)
+        (p_header->channels>8 && p_header->channel_mapping==1) ||
+        (p_header->channels>18 && p_header->channel_mapping==2) ||
+        p_header->channel_mapping>2)
     {
         msg_Err( p_dec, "Unsupported channel mapping" );
         return VLC_EGENERIC;
     }
+    if (p_header->channel_mapping == 2)
+    {
+        int i_order = floor(sqrt(p_header->channels));
+        int i_nondiegetic = p_header->channels - i_order * i_order;
+        if (i_nondiegetic != 0 && i_nondiegetic != 2)
+        {
+            msg_Err( p_dec, "Unsupported ambisonic channel mapping" );
+            return VLC_EGENERIC;
+        }
+    }
 
     /* Setup the format */
-    p_dec->fmt_out.audio.i_physical_channels =
-        p_dec->fmt_out.audio.i_original_channels =
-            pi_channels_maps[p_header->channels];
     p_dec->fmt_out.audio.i_channels = p_header->channels;
     p_dec->fmt_out.audio.i_rate = 48000;
 
-    if( p_header->channels>2 )
+    if (p_header->channel_mapping <= 1)
     {
-        static const uint32_t *pi_ch[6] = { pi_3channels_in, pi_4channels_in,
-                                            pi_5channels_in, pi_6channels_in,
-                                            pi_7channels_in, pi_8channels_in };
-        uint8_t pi_chan_table[AOUT_CHAN_MAX];
+        p_dec->fmt_out.audio.i_physical_channels =
+            pi_channels_maps[p_header->channels];
 
-        aout_CheckChannelReorder( pi_ch[p_header->channels-3], NULL,
-                                  p_dec->fmt_out.audio.i_physical_channels,
-                                  pi_chan_table );
-        for(int i=0;i<p_header->channels;i++)
-            new_stream_map[pi_chan_table[i]]=p_header->stream_map[i];
+        if( p_header->channels>2 )
+        {
+            static const uint32_t *pi_ch[6] = { pi_3channels_in, pi_4channels_in,
+                                                pi_5channels_in, pi_6channels_in,
+                                                pi_7channels_in, pi_8channels_in };
+            uint8_t pi_chan_table[AOUT_CHAN_MAX];
+
+            aout_CheckChannelReorder( pi_ch[p_header->channels-3], NULL,
+                                      p_dec->fmt_out.audio.i_physical_channels,
+                                      pi_chan_table );
+            for(int i=0;i<p_header->channels;i++)
+                new_stream_map[pi_chan_table[i]]=p_header->stream_map[i];
+
+            p_stream_map = new_stream_map;
+        }
+        else
+            p_stream_map = p_header->stream_map;
     }
+    else //p_header->channel_mapping == 2
+    {
+        p_dec->fmt_out.audio.channel_type = AUDIO_CHANNEL_TYPE_AMBISONICS;
+        p_stream_map = p_header->stream_map;
+    }
+
     /* Opus decoder init */
     p_sys->p_st = opus_multistream_decoder_create( 48000, p_header->channels,
                     p_header->nb_streams, p_header->nb_coupled,
-                    p_header->channels>2?new_stream_map:p_header->stream_map,
+                    p_stream_map,
                     &err );
     if( !p_sys->p_st || err!=OPUS_OK )
     {
@@ -368,48 +399,48 @@ static void Flush( decoder_t *p_dec )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
 
-    date_Set( &p_sys->end_date, 0 );
+    date_Set( &p_sys->end_date, VLC_TICK_INVALID );
 }
 
 /*****************************************************************************
  * ProcessPacket: processes a Opus packet.
  *****************************************************************************/
-static void *ProcessPacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
-                            block_t **pp_block )
+static block_t *ProcessPacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
+                               block_t *p_block )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
-    block_t *p_block = *pp_block;
-    *pp_block = NULL; /* To avoid being fed the same packet again */
 
-    if( !p_block )
-        return NULL;
-
-    if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
+    if( p_block->i_flags & (BLOCK_FLAG_CORRUPTED|BLOCK_FLAG_DISCONTINUITY) )
     {
-        block_Release( p_block );
-        return NULL;
+        Flush( p_dec );
+        if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
+        {
+            block_Release( p_block );
+            return NULL;
+        }
     }
 
-    if( p_block->i_flags & BLOCK_FLAG_DISCONTINUITY )
-        Flush( p_dec );
-
     /* Date management */
-    if( p_block->i_pts > VLC_TS_INVALID &&
+    if( p_block->i_pts != VLC_TICK_INVALID &&
         p_block->i_pts != date_Get( &p_sys->end_date ) )
     {
         date_Set( &p_sys->end_date, p_block->i_pts );
     }
 
-    if( !date_Get( &p_sys->end_date ) )
+    if( date_Get( &p_sys->end_date ) == VLC_TICK_INVALID )
     {
         /* We've just started the stream, wait for the first PTS. */
         block_Release( p_block );
         return NULL;
     }
 
+    /* trimming info */
+    vlc_tick_t i_max_duration = (p_block->i_flags & BLOCK_FLAG_END_OF_SEQUENCE) ?
+                             p_block->i_length : 0;
+
     block_t *p_aout_buffer = DecodePacket( p_dec, p_oggpacket,
                                            p_block->i_nb_samples,
-                                           (int)p_block->i_length );
+                                           i_max_duration );
 
     block_Release( p_block );
     return p_aout_buffer;
@@ -419,7 +450,7 @@ static void *ProcessPacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
  * DecodePacket: decodes a Opus packet.
  *****************************************************************************/
 static block_t *DecodePacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
-                              int i_nb_samples, int i_end_trim )
+                              int i_nb_samples, vlc_tick_t i_duration )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
 
@@ -447,6 +478,14 @@ static block_t *DecodePacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
 
     spp=opus_multistream_decode_float(p_sys->p_st, p_oggpacket->packet,
          p_oggpacket->bytes, (float *)p_aout_buffer->p_buffer, spp, 0);
+
+    int i_end_trim = 0;
+    if( i_duration > 0 && spp > 0 &&
+        i_duration < vlc_tick_from_samples(i_nb_samples, 48000) )
+    {
+        i_end_trim = spp - VLC_CLIP(samples_from_vlc_tick(i_duration, 48000), 0, spp);
+    }
+
     if( spp < 0 || i_nb_samples <= 0 || i_end_trim >= i_nb_samples)
     {
         block_Release(p_aout_buffer);
@@ -504,7 +543,7 @@ static void CloseDecoder( vlc_object_t *p_this )
    packet per page. */
 static const unsigned OPUS_FRAME_SIZE = 960; /* 48000 * 20 / 1000 */
 
-struct encoder_sys_t
+typedef struct
 {
     OpusMSEncoder *enc;
     float *buffer;
@@ -512,7 +551,7 @@ struct encoder_sys_t
     int i_samples_delay;
     block_t *padding;
     int nb_streams;
-};
+} encoder_sys_t;
 
 static unsigned fill_buffer(encoder_t *enc, unsigned src_start, block_t *src,
                             unsigned samples)
@@ -539,9 +578,9 @@ static block_t *Encode(encoder_t *enc, block_t *buf)
     if (!buf)
         return NULL;
 
-    mtime_t i_pts = buf->i_pts -
-                (mtime_t) CLOCK_FREQ * (mtime_t) sys->i_samples_delay /
-                (mtime_t) enc->fmt_in.audio.i_rate;
+    vlc_tick_t i_pts = buf->i_pts -
+                vlc_tick_from_samples( sys->i_samples_delay,
+                             enc->fmt_in.audio.i_rate );
 
     sys->i_samples_delay += buf->i_nb_samples;
 
@@ -586,8 +625,8 @@ static block_t *Encode(encoder_t *enc, block_t *buf)
         }
         else
         {
-            out_block->i_length = (mtime_t) CLOCK_FREQ *
-                (mtime_t) OPUS_FRAME_SIZE / (mtime_t) enc->fmt_in.audio.i_rate;
+            out_block->i_length = vlc_tick_from_samples( OPUS_FRAME_SIZE,
+                                                         enc->fmt_in.audio.i_rate );
 
             out_block->i_dts = out_block->i_pts = i_pts;
 
@@ -661,7 +700,7 @@ static int OpenEncoder(vlc_object_t *p_this)
     /* Buffer for incoming audio, since opus only accepts frame sizes that are
        multiples of 2.5ms */
     enc->p_sys = sys;
-    sys->buffer = malloc(OPUS_FRAME_SIZE * header.channels * sizeof(float));
+    sys->buffer = vlc_alloc(header.channels, sizeof(float) * OPUS_FRAME_SIZE);
     if (!sys->buffer) {
         status = VLC_ENOMEM;
         goto error;
@@ -670,7 +709,7 @@ static int OpenEncoder(vlc_object_t *p_this)
     sys->i_nb_samples = 0;
 
     sys->i_samples_delay = 0;
-    int ret = opus_multistream_encoder_ctl(enc->p_sys->enc,
+    int ret = opus_multistream_encoder_ctl(sys->enc,
             OPUS_GET_LOOKAHEAD(&sys->i_samples_delay));
     if (ret != OPUS_OK)
         msg_Err(enc, "Unable to get number of lookahead samples: %s\n",

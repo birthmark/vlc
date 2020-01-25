@@ -37,6 +37,7 @@
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_codec.h>
+#include <vlc_timestamp_helper.h>
 
 #include <schroedinger/schro.h>
 
@@ -361,7 +362,7 @@ vlc_module_begin ()
     set_subcategory( SUBCAT_INPUT_VCODEC )
     set_shortname( "Schroedinger" )
     set_description( N_("Dirac video decoder using libschroedinger") )
-    set_capability( "decoder", 200 )
+    set_capability( "video decoder", 200 )
     set_callbacks( OpenDecoder, CloseDecoder )
     add_shortcut( "schroedinger" )
 
@@ -524,7 +525,7 @@ vlc_module_end ()
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static picture_t *DecodeBlock  ( decoder_t *p_dec, block_t **pp_block );
+static int DecodeBlock  ( decoder_t *p_dec, block_t *p_block );
 static void Flush( decoder_t * );
 
 struct picture_free_t
@@ -536,16 +537,16 @@ struct picture_free_t
 /*****************************************************************************
  * decoder_sys_t : Schroedinger decoder descriptor
  *****************************************************************************/
-struct decoder_sys_t
+typedef struct
 {
     /*
      * Dirac properties
      */
-    mtime_t i_lastpts;
-    mtime_t i_frame_pts_delta;
+    vlc_tick_t i_lastpts;
+    vlc_tick_t i_frame_pts_delta;
     SchroDecoder *p_schro;
     SchroVideoFormat *p_format;
-};
+} decoder_sys_t;
 
 /*****************************************************************************
  * OpenDecoder: probe the decoder and return score
@@ -580,16 +581,15 @@ static int OpenDecoder( vlc_object_t *p_this )
     p_dec->p_sys = p_sys;
     p_sys->p_schro = p_schro;
     p_sys->p_format = NULL;
-    p_sys->i_lastpts = VLC_TS_INVALID;
+    p_sys->i_lastpts = VLC_TICK_INVALID;
     p_sys->i_frame_pts_delta = 0;
 
     /* Set output properties */
-    p_dec->fmt_out.i_cat = VIDEO_ES;
     p_dec->fmt_out.i_codec = VLC_CODEC_I420;
 
     /* Set callbacks */
-    p_dec->pf_decode_video = DecodeBlock;
-    p_dec->pf_flush        = Flush;
+    p_dec->pf_decode = DecodeBlock;
+    p_dec->pf_flush  = Flush;
 
     return VLC_SUCCESS;
 }
@@ -604,7 +604,7 @@ static void SetVideoFormat( decoder_t *p_dec )
     p_sys->p_format = schro_decoder_get_video_format(p_sys->p_schro);
     if( p_sys->p_format == NULL ) return;
 
-    p_sys->i_frame_pts_delta = CLOCK_FREQ
+    p_sys->i_frame_pts_delta = VLC_TICK_FROM_SEC(1)
                             * p_sys->p_format->frame_rate_denominator
                             / p_sys->p_format->frame_rate_numerator;
 
@@ -750,7 +750,7 @@ static void Flush( decoder_t *p_dec )
     decoder_sys_t *p_sys = p_dec->p_sys;
 
     schro_decoder_reset( p_sys->p_schro );
-    p_sys->i_lastpts = VLC_TS_INVALID;
+    p_sys->i_lastpts = VLC_TICK_INVALID;
 }
 
 /****************************************************************************
@@ -758,37 +758,33 @@ static void Flush( decoder_t *p_dec )
  ****************************************************************************
  * Blocks need not be Dirac dataunit aligned.
  * If a block has a PTS signaled, it applies to the first picture at or after p_block
- *
- * If this function returns a picture (!NULL), it is called again and the
- * same block is resubmitted.  To avoid this, set *pp_block to NULL;
- * If this function returns NULL, the *pp_block is lost (and leaked).
- * This function must free all blocks when finished with them.
  ****************************************************************************/
-static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
+static int DecodeBlock( decoder_t *p_dec, block_t *p_block )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
 
-    if( !pp_block ) return NULL;
-
-    if ( *pp_block ) {
-        block_t *p_block = *pp_block;
+    if( !p_block ) /* No Drain */
+        return VLCDEC_SUCCESS;
+    else {
 
         /* reset the decoder when seeking as the decode in progress is invalid */
         /* discard the block as it is just a null magic block */
-        if( p_block->i_flags & (BLOCK_FLAG_DISCONTINUITY | BLOCK_FLAG_CORRUPTED) ) {
+        if( p_block->i_flags & (BLOCK_FLAG_CORRUPTED|BLOCK_FLAG_DISCONTINUITY) )
+        {
             Flush( p_dec );
-
-            block_Release( p_block );
-            *pp_block = NULL;
-            return NULL;
+            if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
+            {
+                block_Release( p_block );
+                return VLCDEC_SUCCESS;
+            }
         }
 
         SchroBuffer *p_schrobuffer;
         p_schrobuffer = schro_buffer_new_with_data( p_block->p_buffer, p_block->i_buffer );
         p_schrobuffer->free = SchroBufferFree;
         p_schrobuffer->priv = p_block;
-        if( p_block->i_pts > VLC_TS_INVALID ) {
-            mtime_t *p_pts = malloc( sizeof(*p_pts) );
+        if( p_block->i_pts != VLC_TICK_INVALID ) {
+            vlc_tick_t *p_pts = malloc( sizeof(*p_pts) );
             if( p_pts ) {
                 *p_pts = p_block->i_pts;
                 /* if this call fails, p_pts is freed automatically */
@@ -798,7 +794,6 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
 
         /* this stops the same block being fed back into this function if
          * we were on the next iteration of this loop to output a picture */
-        *pp_block = NULL;
         schro_decoder_autoparse_push( p_sys->p_schro, p_schrobuffer );
         /* DO NOT refer to p_block after this point, it may have been freed */
     }
@@ -816,7 +811,7 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
             break;
 
         case SCHRO_DECODER_NEED_BITS:
-            return NULL;
+            return VLCDEC_SUCCESS;
 
         case SCHRO_DECODER_NEED_FRAME:
             p_schroframe = CreateSchroFrameFromPic( p_dec );
@@ -824,7 +819,7 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
             if( !p_schroframe )
             {
                 msg_Err( p_dec, "Could not allocate picture for decoder");
-                return NULL;
+                return VLCDEC_SUCCESS;
             }
 
             schro_decoder_add_output_picture( p_sys->p_schro, p_schroframe);
@@ -847,10 +842,10 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
             if( p_tag )
             {
                 /* free is handled by schro_frame_unref */
-                p_pic->date = *(mtime_t*) p_tag->value;
+                p_pic->date = *(vlc_tick_t*) p_tag->value;
                 schro_tag_free( p_tag );
             }
-            else if( p_sys->i_lastpts > VLC_TS_INVALID )
+            else if( p_sys->i_lastpts != VLC_TICK_INVALID )
             {
                 /* NB, this shouldn't happen since the packetizer does a
                  * very thorough job of inventing timestamps.  The
@@ -862,7 +857,8 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
             p_sys->i_lastpts = p_pic->date;
 
             schro_frame_unref( p_schroframe );
-            return p_pic;
+            decoder_QueueVideo( p_dec, p_pic );
+            return VLCDEC_SUCCESS;
         }
         case SCHRO_DECODER_EOS:
             /* NB, the new api will not emit _EOS, it handles the reset internally */
@@ -870,7 +866,7 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
 
         case SCHRO_DECODER_ERROR:
             msg_Err( p_dec, "SCHRO_DECODER_ERROR");
-            return NULL;
+            return VLCDEC_SUCCESS;
         }
     }
 }
@@ -887,7 +883,7 @@ static block_t *Encode( encoder_t *p_enc, picture_t *p_pict );
  *****************************************************************************/
 struct picture_pts_t
 {
-   mtime_t i_pts;    /* associated pts */
+   vlc_tick_t i_pts;    /* associated pts */
    uint32_t u_pnum;  /* dirac picture number */
    bool b_empty;     /* entry is invalid */
 };
@@ -896,7 +892,7 @@ struct picture_pts_t
  * encoder_sys_t : Schroedinger encoder descriptor
  *****************************************************************************/
 #define SCHRO_PTS_TLB_SIZE 256
-struct encoder_sys_t
+typedef struct
 {
     /*
      * Schro properties
@@ -907,17 +903,17 @@ struct encoder_sys_t
     bool b_auto_field_coding;
 
     uint32_t i_input_picnum;
-    block_fifo_t *p_dts_fifo;
+    timestamp_fifo_t *p_dts_fifo;
 
     block_t *p_chain;
 
     struct picture_pts_t pts_tlb[SCHRO_PTS_TLB_SIZE];
-    mtime_t i_pts_offset;
-    mtime_t i_field_time;
+    vlc_tick_t i_pts_offset;
+    vlc_tick_t i_field_duration;
 
     bool b_eos_signalled;
     bool b_eos_pulled;
-};
+} encoder_sys_t;
 
 static struct
 {
@@ -962,7 +958,7 @@ static void ResetPTStlb( encoder_t *p_enc )
 /*****************************************************************************
  * StorePicturePTS: Store the PTS value for a particular picture number
  *****************************************************************************/
-static void StorePicturePTS( encoder_t *p_enc, uint32_t u_pnum, mtime_t i_pts )
+static void StorePicturePTS( encoder_t *p_enc, uint32_t u_pnum, vlc_tick_t i_pts )
 {
     encoder_sys_t *p_sys = p_enc->p_sys;
 
@@ -984,7 +980,7 @@ static void StorePicturePTS( encoder_t *p_enc, uint32_t u_pnum, mtime_t i_pts )
 /*****************************************************************************
  * GetPicturePTS: Retrieve the PTS value for a particular picture number
  *****************************************************************************/
-static mtime_t GetPicturePTS( encoder_t *p_enc, uint32_t u_pnum )
+static vlc_tick_t GetPicturePTS( encoder_t *p_enc, uint32_t u_pnum )
 {
     encoder_sys_t *p_sys = p_enc->p_sys;
 
@@ -999,10 +995,10 @@ static mtime_t GetPicturePTS( encoder_t *p_enc, uint32_t u_pnum )
     }
 
     msg_Err( p_enc, "Could not retrieve PTS for picture %u", u_pnum );
-    return 0;
+    return VLC_TICK_INVALID;
 }
 
-static inline bool SchroSetEnum( const encoder_t *p_enc, int i_list_size, const char *list[],
+static inline bool SchroSetEnum( encoder_t *p_enc, int i_list_size, const char *list[],
                   const char *psz_name,  const char *psz_name_text,  const char *psz_value)
 {
     encoder_sys_t *p_sys = p_enc->p_sys;
@@ -1101,7 +1097,7 @@ static int OpenEncoder( vlc_object_t *p_this )
     p_enc->fmt_out.i_codec = VLC_CODEC_DIRAC;
     p_enc->fmt_out.i_cat = VIDEO_ES;
 
-    if( ( p_sys->p_dts_fifo = block_FifoNew() ) == NULL )
+    if( ( p_sys->p_dts_fifo = timestamp_FifoNew(32) ) == NULL )
     {
         CloseEncoder( p_this );
         return VLC_ENOMEM;
@@ -1460,16 +1456,17 @@ static block_t *Encode( encoder_t *p_enc, picture_t *p_pic )
             }
         }
 
-        date_Init( &date, p_enc->fmt_in.video.i_frame_rate, p_enc->fmt_in.video.i_frame_rate_base );
+        date_Init( &date, p_enc->fmt_in.video.i_frame_rate * 2, p_enc->fmt_in.video.i_frame_rate_base );
+        date_Set( &date, VLC_TICK_0 );
         /* FIXME - Unlike dirac-research codec Schro doesn't have a function that returns the delay in pics yet.
          *   Use a default of 1
          */
-        date_Increment( &date, 1 );
-        p_sys->i_pts_offset = date_Get( &date );
+        date_Increment( &date, 2 /* 2 fields, 1 frame */ );
+        p_sys->i_pts_offset = date_Get( &date ) - VLC_TICK_0;
         if( schro_encoder_setting_get_double( p_sys->p_schro, "interlaced_coding" ) > 0.0 ) {
-            date_Set( &date, 0 );
-            date_Increment( &date, 1);
-            p_sys->i_field_time = date_Get( &date ) / 2;
+            date_Set( &date, VLC_TICK_0 );
+            date_Increment( &date, 1 /* field */ );
+            p_sys->i_field_duration = date_Get( &date ) - VLC_TICK_0;
         }
 
         schro_video_format_set_std_signal_range( p_sys->p_format, SCHRO_SIGNAL_RANGE_8BIT_VIDEO );
@@ -1497,26 +1494,16 @@ static block_t *Encode( encoder_t *p_enc, picture_t *p_pic )
 
         /* store dts in a queue, so that they appear in order in
          * coded order */
-        p_block = block_Alloc( 1 );
-        if( !p_block )
-            return NULL;
-        p_block->i_dts = p_pic->date - p_sys->i_pts_offset;
-        block_FifoPut( p_sys->p_dts_fifo, p_block );
-        p_block = NULL;
+        timestamp_FifoPut( p_sys->p_dts_fifo, p_pic->date - p_sys->i_pts_offset );
 
         /* for field coding mode, insert an extra value into both the
          * pts lookaside buffer and dts queue, offset to correspond
          * to a one field delay. */
         if( schro_encoder_setting_get_double( p_sys->p_schro, "interlaced_coding" ) > 0.0 ) {
-            StorePicturePTS( p_enc, p_sys->i_input_picnum, p_pic->date + p_sys->i_field_time );
+            StorePicturePTS( p_enc, p_sys->i_input_picnum, p_pic->date + p_sys->i_field_duration );
             p_sys->i_input_picnum++;
 
-            p_block = block_Alloc( 1 );
-            if( !p_block )
-                return NULL;
-            p_block->i_dts = p_pic->date - p_sys->i_pts_offset + p_sys->i_field_time;
-            block_FifoPut( p_sys->p_dts_fifo, p_block );
-            p_block = NULL;
+            timestamp_FifoPut( p_sys->p_dts_fifo, p_pic->date - p_sys->i_pts_offset + p_sys->i_field_duration );
         }
     }
 
@@ -1577,10 +1564,8 @@ static block_t *Encode( encoder_t *p_enc, picture_t *p_pic )
             }
 
             if( ReadDiracPictureNumber( &u_pic_num, p_block ) ) {
-                block_t *p_dts_block = block_FifoGet( p_sys->p_dts_fifo );
-                p_block->i_dts = p_dts_block->i_dts;
-                   p_block->i_pts = GetPicturePTS( p_enc, u_pic_num );
-                block_Release( p_dts_block );
+                p_block->i_dts = timestamp_FifoGet( p_sys->p_dts_fifo );
+                p_block->i_pts = GetPicturePTS( p_enc, u_pic_num );
                 block_ChainAppend( &p_output_chain, p_block );
             } else {
                 /* End of sequence */
@@ -1611,7 +1596,7 @@ static void CloseEncoder( vlc_object_t *p_this )
     free( p_sys->p_format );
 
     if( p_sys->p_dts_fifo )
-        block_FifoRelease( p_sys->p_dts_fifo );
+        timestamp_FifoRelease( p_sys->p_dts_fifo );
 
     block_ChainRelease( p_sys->p_chain );
 

@@ -2,7 +2,6 @@
  * vlc_epg.h: Electronic Program Guide
  *****************************************************************************
  * Copyright (C) 2007 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
@@ -38,6 +37,12 @@ typedef struct
     char    *psz_name;
     char    *psz_short_description;
     char    *psz_description;
+    struct               /* Description items in tranmission order */
+    {
+        char *psz_key;
+        char *psz_value;
+    } * description_items;
+    int i_description_items;
 
     uint8_t i_rating;   /* Parental control, set to 0 when undefined */
 } vlc_epg_event_t;
@@ -103,12 +108,6 @@ VLC_API bool vlc_epg_AddEvent(vlc_epg_t *p_epg, vlc_epg_event_t *p_evt);
  * It set the current event of a vlc_epg_t given a start time
  */
 VLC_API void vlc_epg_SetCurrent(vlc_epg_t *p_epg, int64_t i_start);
-
-/**
- * It merges all the event of \p p_src and \p p_dst into \p p_dst.
- *
- */
-VLC_API void vlc_epg_Merge(vlc_epg_t *p_dst, const vlc_epg_t *p_src);
 
 /**
  * Returns a duplicated \p p_src and its associated events.

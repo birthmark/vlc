@@ -25,6 +25,8 @@
 #include "BaseRepresentation.h"
 #include "SegmentTemplate.h"
 
+#include <vlc_url.h>
+
 using namespace adaptive::playlist;
 
 Url::Url()
@@ -109,18 +111,33 @@ std::string Url::toString(size_t index, const BaseRepresentation *rep) const
 {
     std::string ret;
     std::vector<Component>::const_iterator it;
+
     for(it = components.begin(); it != components.end(); ++it)
     {
+        std::string part;
         const Component *comp = & (*it);
         if(rep)
-            ret.append(rep->contextualize(index, comp->component, comp->templ));
+            part = rep->contextualize(index, comp->component, comp->templ);
         else
-            ret.append(comp->component);
+            part = comp->component;
+
+        if( ret.empty() )
+            ret = part;
+        else
+        {
+            char *psz_resolved = vlc_uri_resolve( ret.c_str(), part.c_str() );
+            if( psz_resolved )
+            {
+                ret = std::string( psz_resolved );
+                free( psz_resolved );
+            }
+        }
     }
+
     return ret;
 }
 
-Url::Component::Component(const std::string & str, const MediaSegmentTemplate *templ_)
+Url::Component::Component(const std::string & str, const BaseSegmentTemplate *templ_)
  : component(str), templ(templ_), b_scheme(false), b_dir(false), b_absolute(false)
 {
     if(!component.empty())

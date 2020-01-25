@@ -3,7 +3,6 @@
  * Also contains some internal utility functions
  *****************************************************************************
  * Copyright (C) 2005-2009 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Clément Stenac <zorglub@videolan.org>
  *
@@ -31,6 +30,7 @@
 
 #include <vlc/libvlc.h>
 #include <vlc/libvlc_dialog.h>
+#include <vlc/libvlc_picture.h>
 #include <vlc/libvlc_media.h>
 #include <vlc/libvlc_events.h>
 
@@ -53,23 +53,13 @@ VLC_API void libvlc_InternalPlay( libvlc_int_t * );
 VLC_API void libvlc_InternalWait( libvlc_int_t * );
 VLC_API void libvlc_SetExitHandler( libvlc_int_t *, void (*) (void *), void * );
 
-typedef void (*libvlc_vlm_release_func_t)( libvlc_instance_t * ) ;
-
 /***************************************************************************
  * Opaque structures for libvlc API
  ***************************************************************************/
 
-typedef struct libvlc_vlm_t
-{
-    vlm_t                  *p_vlm;
-    libvlc_event_manager_t *p_event_manager;
-    libvlc_vlm_release_func_t pf_release;
-} libvlc_vlm_t;
-
 struct libvlc_instance_t
 {
     libvlc_int_t *p_libvlc_int;
-    libvlc_vlm_t  libvlc_vlm;
     unsigned      ref_count;
     vlc_mutex_t   instance_lock;
     struct libvlc_callback_entry_list_t *p_callback_list;
@@ -85,6 +75,12 @@ struct libvlc_instance_t
     } dialog;
 };
 
+struct libvlc_event_manager_t
+{
+    void * p_obj;
+    vlc_array_t listeners;
+    vlc_mutex_t lock;
+};
 
 /***************************************************************************
  * Other internal functions
@@ -95,23 +91,21 @@ void libvlc_threads_init (void);
 void libvlc_threads_deinit (void);
 
 /* Events */
-libvlc_event_manager_t * libvlc_event_manager_new(void * p_obj);
-
-void libvlc_event_manager_release(
-        libvlc_event_manager_t * p_em );
+void libvlc_event_manager_init(libvlc_event_manager_t *, void *);
+void libvlc_event_manager_destroy(libvlc_event_manager_t *);
 
 void libvlc_event_send(
         libvlc_event_manager_t * p_em,
         libvlc_event_t * p_event );
 
-static inline libvlc_time_t from_mtime(mtime_t time)
+static inline libvlc_time_t from_mtime(vlc_tick_t time)
 {
     return (time + 500ULL)/ 1000ULL;
 }
 
-static inline mtime_t to_mtime(libvlc_time_t time)
+static inline vlc_tick_t to_mtime(libvlc_time_t time)
 {
-    return time * 1000ULL;
+    return VLC_TICK_FROM_MS(time);
 }
 
 #endif

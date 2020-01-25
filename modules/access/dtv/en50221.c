@@ -47,9 +47,9 @@
 #   include <vlc_httpd.h>
 #endif
 
-#include "../demux/dvb-text.h"
-#include "dtv/en50221.h"
-#include "dtv/en50221_capmt.h"
+#include "../../demux/dvb-text.h"
+#include "en50221.h"
+#include "en50221_capmt.h"
 
 typedef struct en50221_session_t
 {
@@ -120,7 +120,7 @@ struct cam
     vlc_object_t *obj;
     int fd;
     int i_ca_type;
-    mtime_t i_timeout, i_next_event;
+    vlc_tick_t i_timeout, i_next_event;
 
     unsigned i_nb_slots;
     bool pb_active_slot[MAX_CI_SLOTS];
@@ -244,8 +244,8 @@ static int TPDUSend( cam_t * p_cam, uint8_t i_slot, uint8_t i_tag,
     Dump( true, p_data, p - p_data );
 
     const struct iovec iov[2] = {
-        { p_data, p - p_data },
-        { (void *)p_content, i_length },
+        { .iov_base = p_data, .iov_len = p - p_data },
+        { .iov_base = (void *)p_content, .iov_len = i_length },
     };
 
     if ( writev( p_cam->fd, iov, 2 ) <= 0 )
@@ -1267,7 +1267,7 @@ static void CAPMTAdd( cam_t * p_cam, int i_session_id,
     }
  
 #ifdef CAPMT_WAIT
-    msleep( CAPMT_WAIT * 1000 );
+    vlc_tick_sleep( VLC_TICK_FROM_MS(CAPMT_WAIT) );
 #endif
  
     msg_Dbg( p_cam->obj, "adding CAPMT for SID %d on session %d",
@@ -1404,7 +1404,7 @@ static void ConditionalAccessOpen( cam_t * p_cam, unsigned i_session_id )
 typedef struct
 {
     int i_interval;
-    mtime_t i_last;
+    vlc_tick_t i_last;
 } date_time_t;
 
 /*****************************************************************************
@@ -1439,7 +1439,7 @@ static void DateTimeSend( cam_t * p_cam, int i_session_id )
 
         APDUSend( p_cam, i_session_id, AOT_DATE_TIME, p_response, 7 );
 
-        p_date->i_last = mdate();
+        p_date->i_last = vlc_tick_now();
     }
 }
 
@@ -1488,7 +1488,7 @@ static void DateTimeManage( cam_t * p_cam, int i_session_id )
         (date_time_t *)p_cam->p_sessions[i_session_id - 1].p_sys;
 
     if ( p_date->i_interval
-          && mdate() > p_date->i_last + (mtime_t)p_date->i_interval * 1000000 )
+          && vlc_tick_now() > p_date->i_last + vlc_tick_from_sec( p_date->i_interval ) )
     {
         DateTimeSend( p_cam, i_session_id );
     }
@@ -1884,7 +1884,7 @@ static int InitSlot( cam_t * p_cam, int i_slot )
 
     if ( p_cam->pb_active_slot[i_slot] )
     {
-        p_cam->i_timeout = CLOCK_FREQ / 10;
+        p_cam->i_timeout = VLC_TICK_FROM_MS(100);
         return VLC_SUCCESS;
     }
 
@@ -1958,9 +1958,9 @@ cam_t *en50221_Init( vlc_object_t *obj, int fd )
             }
         }
 
-        p_cam->i_timeout = CLOCK_FREQ / 10;
+        p_cam->i_timeout = VLC_TICK_FROM_MS(100);
         /* Wait a bit otherwise it doesn't initialize properly... */
-        msleep( CLOCK_FREQ / 10 );
+        vlc_tick_sleep( VLC_TICK_FROM_MS(100) );
         p_cam->i_next_event = 0;
     }
     else
@@ -2030,7 +2030,7 @@ void en50221_Poll( cam_t * p_cam )
     switch( p_cam->i_ca_type )
     {
     case CA_CI_LINK:
-        if( mdate() > p_cam->i_next_event )
+        if( vlc_tick_now() > p_cam->i_next_event )
             break;
     case CA_CI:
         return;
@@ -2168,7 +2168,7 @@ void en50221_Poll( cam_t * p_cam )
         }
     }
 
-    p_cam->i_next_event = mdate() + p_cam->i_timeout;
+    p_cam->i_next_event = vlc_tick_now() + p_cam->i_timeout;
 }
 
 

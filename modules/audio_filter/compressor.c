@@ -2,7 +2,6 @@
  * compressor.c: dynamic range compressor, ported from plugins from LADSPA SWH
  *****************************************************************************
  * Copyright (C) 2010 Ronald Wright
- * $Id$
  *
  * Author: Ronald Wright <logiconcepts819@gmail.com>
  * Original author: Steve Harris <steve@plugin.org.uk>
@@ -80,7 +79,7 @@ typedef struct
 
 } lookahead;
 
-struct filter_sys_t
+typedef struct
 {
     float f_amp;
     float pf_as[A_TBL];
@@ -106,7 +105,7 @@ struct filter_sys_t
     float f_ratio;
     float f_knee;
     float f_makeup_gain;
-};
+} filter_sys_t;
 
 typedef union
 {
@@ -174,8 +173,8 @@ static int MakeupGainCallback   ( vlc_object_t *, char const *, vlc_value_t,
 #define MAKEUP_GAIN_LONGTEXT N_( "Set the makeup gain in dB (0 ... 24)." )
 
 vlc_module_begin()
-    set_shortname( _("Compressor") )
-    set_description( _("Dynamic range compressor") )
+    set_shortname( N_("Compressor") )
+    set_description( N_("Dynamic range compressor") )
     set_capability( "audio filter", 0 )
     set_category( CAT_AUDIO )
     set_subcategory( SUBCAT_AUDIO_AFILTER )
@@ -205,7 +204,7 @@ vlc_module_end ()
 static int Open( vlc_object_t *p_this )
 {
     filter_t *p_filter = (filter_t*)p_this;
-    vlc_object_t *p_aout = p_filter->obj.parent;
+    vlc_object_t *p_aout = vlc_object_parent(p_filter);
     float f_sample_rate = p_filter->fmt_in.audio.i_rate;
     float f_num;
 
@@ -255,6 +254,7 @@ static int Open( vlc_object_t *p_this )
 
     /* Set the filter function */
     p_filter->fmt_in.audio.i_format = VLC_CODEC_FL32;
+    aout_FormatPrepare(&p_filter->fmt_in.audio);
     p_filter->fmt_out.audio = p_filter->fmt_in.audio;
     p_filter->pf_audio_filter = DoWork;
 
@@ -270,7 +270,7 @@ static int Open( vlc_object_t *p_this )
 static void Close( vlc_object_t *p_this )
 {
     filter_t *p_filter = (filter_t*)p_this;
-    vlc_object_t *p_aout = p_filter->obj.parent;
+    vlc_object_t *p_aout = vlc_object_parent(p_filter);
     filter_sys_t *p_sys = p_filter->p_sys;
 
     /* Remove our callbacks */

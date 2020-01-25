@@ -3,7 +3,6 @@
  * mkv.cpp : matroska demuxer
  *****************************************************************************
  * Copyright (C) 2003-2004 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Steve Lhomme <steve.lhomme@free.fr>
@@ -27,23 +26,23 @@
 
 #include "mkv.hpp"
 
+namespace mkv {
+
 /*****************************************************************************
  * Ebml Stream parser
  *****************************************************************************/
 class EbmlParser
 {
   public:
-    EbmlParser( EbmlStream *es, EbmlElement *el_start, demux_t *p_demux,
-                bool b_with_dummy );
+    EbmlParser( EbmlStream *es, EbmlElement *el_start, demux_t *p_demux );
     ~EbmlParser( void );
 
     void reconstruct( EbmlStream*, EbmlElement*, demux_t*);
-    void reconstruct( EbmlStream*, EbmlElement*, demux_t*, bool b_with_dummy );
 
     void Up( void );
     void Down( void );
     void Reset( demux_t *p_demux );
-    EbmlElement *Get( int n_call = 0 );
+    EbmlElement *Get( bool allow_overshoot = true );
     void        Keep( void );
     void        Unkeep( void );
 
@@ -68,15 +67,6 @@ class EbmlParser
     bool         mb_dummy;
 };
 
-/* This class works around a bug in KaxBlockVirtual implementation */
-class KaxBlockVirtualWorkaround : public KaxBlockVirtual
-{
-public:
-    void Fix()
-    {
-        if( GetBuffer() == DataBlock )
-            SetBuffer( NULL, 0 );
-    }
-};
+} // namespace
 
 #endif

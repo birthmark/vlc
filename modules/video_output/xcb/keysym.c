@@ -79,9 +79,9 @@ static int parse (FILE *in)
         if (sym == NULL)
             abort ();
 
-        int val = sscanf (line,
-                          "#define XK_%31s %"SCNu32" /*%*cU+%"SCNx32" %63[^*]",
-                          sym->xname, &sym->xsym, &sym->usym, sym->uname);
+        int val = sscanf(line,
+                         "#define XK_%31s 0x%"SCNx32" /*%*cU+%"SCNx32" %63[^*]",
+                         sym->xname, &sym->xsym, &sym->usym, sym->uname);
         if (val < 3)
         {
             free (sym);
@@ -90,7 +90,7 @@ static int parse (FILE *in)
         if (val < 4)
             sym->uname[0] = '\0';
 
-        struct keysym **psym = tsearch (sym, &root, cmpkey);
+        void **psym = tsearch (sym, &root, cmpkey);
         if (psym == NULL)
             abort ();
         if (*psym != sym)

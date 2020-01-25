@@ -2,7 +2,6 @@
  * intf.c: interface configuration handling
  *****************************************************************************
  * Copyright (C) 2001-2007 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *
@@ -29,18 +28,15 @@
 
 #include <assert.h>
 
-#undef config_AddIntf
 /* Adds an extra interface to the configuration */
-void config_AddIntf( vlc_object_t *p_this, const char *psz_intf )
+void config_AddIntf( const char *psz_intf )
 {
-    vlc_object_t *libvlc = VLC_OBJECT(p_this->obj.libvlc);
-
     assert( psz_intf );
 
     char *psz_config, *psz_parser;
     size_t i_len = strlen( psz_intf );
 
-    psz_config = psz_parser = config_GetPsz( libvlc, "control" );
+    psz_config = psz_parser = config_GetPsz( "control" );
     while( psz_parser )
     {
         if( !strncmp( psz_intf, psz_parser, i_len ) )
@@ -53,7 +49,7 @@ void config_AddIntf( vlc_object_t *p_this, const char *psz_intf )
     }
     free( psz_config );
 
-    psz_config = psz_parser = config_GetPsz( libvlc, "extraintf" );
+    psz_config = psz_parser = config_GetPsz( "extraintf" );
     while( psz_parser )
     {
         if( !strncmp( psz_intf, psz_parser, i_len ) )
@@ -71,28 +67,25 @@ void config_AddIntf( vlc_object_t *p_this, const char *psz_intf )
         char *psz_newconfig;
         if( asprintf( &psz_newconfig, "%s:%s", psz_config, psz_intf ) != -1 )
         {
-            config_PutPsz( libvlc, "extraintf", psz_newconfig );
+            config_PutPsz( "extraintf", psz_newconfig );
             free( psz_newconfig );
         }
     }
     else
-        config_PutPsz( libvlc, "extraintf", psz_intf );
+        config_PutPsz( "extraintf", psz_intf );
 
     free( psz_config );
 }
 
-#undef config_RemoveIntf
 /* Removes an extra interface from the configuration */
-void config_RemoveIntf( vlc_object_t *p_this, const char *psz_intf )
+void config_RemoveIntf( const char *psz_intf )
 {
-    vlc_object_t *libvlc = VLC_OBJECT(p_this->obj.libvlc);
-
     assert( psz_intf );
 
     char *psz_config, *psz_parser;
     size_t i_len = strlen( psz_intf );
 
-    psz_config = psz_parser = config_GetPsz( libvlc, "extraintf" );
+    psz_config = psz_parser = config_GetPsz( "extraintf" );
     while( psz_parser )
     {
         if( !strncmp( psz_intf, psz_parser, i_len ) )
@@ -103,7 +96,7 @@ void config_RemoveIntf( vlc_object_t *p_this, const char *psz_intf )
             *psz_parser = '\0';
             if( asprintf( &psz_newconfig, "%s%s", psz_config, psz_end ) != -1 )
             {
-                config_PutPsz( libvlc, "extraintf", psz_newconfig );
+                config_PutPsz( "extraintf", psz_newconfig );
                 free( psz_newconfig );
             }
             break;
@@ -113,7 +106,7 @@ void config_RemoveIntf( vlc_object_t *p_this, const char *psz_intf )
     }
     free( psz_config );
 
-    psz_config = psz_parser = config_GetPsz( libvlc, "control" );
+    psz_config = psz_parser = config_GetPsz( "control" );
     while( psz_parser )
     {
         if( !strncmp( psz_intf, psz_parser, i_len ) )
@@ -124,7 +117,7 @@ void config_RemoveIntf( vlc_object_t *p_this, const char *psz_intf )
             *psz_parser = '\0';
             if( asprintf( &psz_newconfig, "%s%s", psz_config, psz_end ) != -1 )
             {
-                config_PutPsz( libvlc, "control", psz_newconfig );
+                config_PutPsz( "control", psz_newconfig );
                 free( psz_newconfig );
             }
             break;
@@ -135,21 +128,18 @@ void config_RemoveIntf( vlc_object_t *p_this, const char *psz_intf )
     free( psz_config );
 }
 
-#undef config_ExistIntf
 /*
  * Returns true if the specified extra interface is present in the
  * configuration, false if not
  */
-bool config_ExistIntf( vlc_object_t *p_this, const char *psz_intf )
+bool config_ExistIntf( const char *psz_intf )
 {
-    vlc_object_t *libvlc = VLC_OBJECT(p_this->obj.libvlc);
-
     assert( psz_intf );
 
     char *psz_config, *psz_parser;
     size_t i_len = strlen( psz_intf );
 
-    psz_config = psz_parser = config_GetPsz( libvlc, "extraintf" );
+    psz_config = psz_parser = config_GetPsz( "extraintf" );
     while( psz_parser )
     {
         if( !strncmp( psz_parser, psz_intf, i_len ) )
@@ -162,7 +152,7 @@ bool config_ExistIntf( vlc_object_t *p_this, const char *psz_intf )
     }
     free( psz_config );
 
-    psz_config = psz_parser = config_GetPsz( libvlc, "control" );
+    psz_config = psz_parser = config_GetPsz( "control" );
     while( psz_parser )
     {
         if( !strncmp( psz_parser, psz_intf, i_len ) )

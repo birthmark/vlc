@@ -22,8 +22,6 @@
 # include "config.h"
 #endif
 
-#include <assert.h>
-
 #include <vlc_common.h>
 #include <vlc_aout.h>
 #include <vlc_filter.h>
@@ -38,7 +36,7 @@ vlc_module_begin ()
     set_subcategory (SUBCAT_AUDIO_AFILTER)
 
     set_capability ("audio filter", 0)
-    set_callbacks (Open, NULL)
+    set_callback(Open)
 vlc_module_end ()
 
 static block_t *Process (filter_t *, block_t *);
@@ -54,6 +52,7 @@ static int Open (vlc_object_t *obj)
     }
 
     filter->fmt_in.audio.i_format = VLC_CODEC_FL32;
+    aout_FormatPrepare(&filter->fmt_in.audio);
     filter->fmt_out.audio = filter->fmt_in.audio;
     filter->pf_audio_filter = Process;
     return VLC_SUCCESS;

@@ -26,6 +26,7 @@
 
 #include "SmoothManager.hpp"
 
+#include "../adaptive/SharedResources.hpp"
 #include "../adaptive/tools/Retrieve.hpp"
 #include "playlist/Parser.hpp"
 #include "../adaptive/xml/DOMParser.h"
@@ -39,10 +40,12 @@ using namespace adaptive::logic;
 using namespace smooth;
 using namespace smooth::playlist;
 
-SmoothManager::SmoothManager(demux_t *demux_, Manifest *playlist,
+SmoothManager::SmoothManager(demux_t *demux_,
+                             SharedResources *res,
+                             Manifest *playlist,
                        AbstractStreamFactory *factory,
                        AbstractAdaptationLogic::LogicType type) :
-             PlaylistManager(demux_, playlist, factory, type)
+             PlaylistManager(demux_, res, playlist, factory, type)
 {
 }
 
@@ -52,11 +55,9 @@ SmoothManager::~SmoothManager()
 
 Manifest * SmoothManager::fetchManifest()
 {
-    std::string playlisturl(p_demux->psz_access);
-    playlisturl.append("://");
-    playlisturl.append(p_demux->psz_location);
+    std::string playlisturl(p_demux->psz_url);
 
-    block_t *p_block = Retrieve::HTTP(VLC_OBJECT(p_demux), playlisturl);
+    block_t *p_block = Retrieve::HTTP(resources, playlisturl);
     if(!p_block)
         return NULL;
 
@@ -100,8 +101,8 @@ bool SmoothManager::updatePlaylist()
     for(it=streams.begin(); it!=streams.end(); ++it)
     {
         const AbstractStream *st = *it;
-        const mtime_t m = st->getMinAheadTime();
-        if(st->isDisabled() || !st->isSelected())
+        const vlc_tick_t m = st->getMinAheadTime();
+        if(!st->isValid() || st->isDisabled() || !st->isSelected())
         {
             continue;
         }
@@ -118,14 +119,14 @@ void SmoothManager::scheduleNextUpdate()
 {
     time_t now = time(NULL);
 
-    mtime_t minbuffer = 0;
+    vlc_tick_t minbuffer = 0;
     std::vector<AbstractStream *>::const_iterator it;
     for(it=streams.begin(); it!=streams.end(); ++it)
     {
         const AbstractStream *st = *it;
-        if(st->isDisabled() || !st->isSelected())
+        if(!st->isValid() || st->isDisabled() || !st->isSelected())
             continue;
-        const mtime_t m = st->getMinAheadTime();
+        const vlc_tick_t m = st->getMinAheadTime();
         if(m > 0 && (m < minbuffer || minbuffer == 0))
             minbuffer = m;
     }
@@ -135,12 +136,11 @@ void SmoothManager::scheduleNextUpdate()
     if(playlist->minUpdatePeriod.Get() > minbuffer)
         minbuffer = playlist->minUpdatePeriod.Get();
 
-    if(minbuffer < 5 * CLOCK_FREQ)
-        minbuffer = 5 * CLOCK_FREQ;
+    minbuffer = std::max(minbuffer, VLC_TICK_FROM_SEC(5));
 
-    nextPlaylistupdate = now + minbuffer / CLOCK_FREQ;
+    nextPlaylistupdate = now + SEC_FROM_VLC_TICK(minbuffer);
 
-    msg_Dbg(p_demux, "Updated playlist, next update in %" PRId64 "s", (mtime_t) nextPlaylistupdate - now );
+    msg_Dbg(p_demux, "Updated playlist, next update in %" PRId64 "s", (int64_t) nextPlaylistupdate - now );
 }
 
 bool SmoothManager::needsUpdate() const
@@ -163,7 +163,7 @@ bool SmoothManager::updatePlaylist(bool forcemanifest)
         Manifest *newManifest = fetchManifest();
         if(newManifest)
         {
-            playlist->mergeWith(newManifest, 0);
+            playlist->updateWith(newManifest);
             delete newManifest;
 
 #ifdef NDEBUG
@@ -172,8 +172,6 @@ bool SmoothManager::updatePlaylist(bool forcemanifest)
         }
         else return false;
     }
-
-    pruneLiveStream();
 
     return true;
 }

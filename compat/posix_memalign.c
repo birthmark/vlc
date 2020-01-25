@@ -1,7 +1,7 @@
 /*****************************************************************************
  * posix_memalign.c: POSIX posix_memalign() replacement
  *****************************************************************************
- * Copyright © 2012 Rémi Denis-Courmont
+ * Copyright © 2012, 2019 Rémi Denis-Courmont
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -22,46 +22,59 @@
 # include <config.h>
 #endif
 
-#include <stdlib.h>
 #include <errno.h>
+#include <stdlib.h>
+#include <limits.h>
 
-static int check_align (size_t align)
+#ifdef HAVE_MEMALIGN
+# include <malloc.h>
+#else
+
+static void *memalign(size_t align, size_t size)
 {
-    for (size_t i = sizeof (void *); i != 0; i *= 2)
-        if (align == i)
-            return 0;
-    return EINVAL;
+    void *p = malloc(size);
+
+    if ((uintptr_t)p & (align - 1)) {
+        free(p);
+        p = NULL;
+    }
+
+    return p;
 }
 
-#if !defined (_WIN32) && !defined (__APPLE__)
-#include <malloc.h>
+#endif
 
-int posix_memalign (void **ptr, size_t align, size_t size)
+static int check_align(size_t align)
 {
-    if (check_align (align))
+    if (align & (align - 1)) /* must be a power of two */
         return EINVAL;
+    if (align < sizeof (void *)) /* must be a multiple of sizeof (void *) */
+        return EINVAL;
+    return 0;
+}
+
+int posix_memalign(void **ptr, size_t align, size_t size)
+{
+    int val = check_align(align);
+    if (val)
+        return val;
+
+    /* Unlike posix_memalign(), legacy memalign() requires that size be a
+     * multiple of align.
+     */
+    if (size > (SIZE_MAX / 2))
+        return ENOMEM;
+
+    size += (-size) & (align - 1);
 
     int saved_errno = errno;
-    void *p = memalign (align, size);
-    if (p == NULL)
-    {
+    void *p = memalign(align, size);
+    if (p == NULL) {
+        val = errno;
         errno = saved_errno;
-        return ENOMEM;
+        return val;
     }
 
     *ptr = p;
     return 0;
 }
-
-#else
-
-int posix_memalign (void **ptr, size_t align, size_t size)
-{
-    if (check_align (align))
-        return EINVAL;
-
-    *ptr = NULL;
-    return size ? ENOMEM : 0;
-}
-
-#endif

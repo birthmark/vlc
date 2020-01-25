@@ -18,8 +18,12 @@
  @ Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  @****************************************************************************/
 
+#include "asm.S"
+
 	.syntax unified
-	.fpu neon
+#if HAVE_AS_FPU_DIRECTIVE
+	.fpu	neon
+#endif
 	.text
 
 #define O	r0
@@ -33,9 +37,7 @@
 #define YPAD	lr
 
 	.align 2
-	.global i422_yuyv_neon
-	.type	i422_yuyv_neon, %function
-i422_yuyv_neon:
+function i422_yuyv_neon
 	push		{r4-r6,lr}
 	ldmia		r1,	{Y, U, V, YPAD}
 	ldmia		r0,	{O, OPAD}
@@ -43,6 +45,7 @@ i422_yuyv_neon:
 	sub		OPAD,	OPAD,	WIDTH,	lsl #1
 	sub		YPAD,	YPAD,	WIDTH
 1:
+	ite		gt
 	movsgt		COUNT,	WIDTH
 	pople		{r4-r6,pc}
 2:
@@ -66,9 +69,7 @@ i422_yuyv_neon:
 	add		O,	O,	OPAD
 	b		1b
 
-	.global i422_uyvy_neon
-	.type	i422_uyvy_neon, %function
-i422_uyvy_neon:
+function i422_uyvy_neon
 	push		{r4-r6,lr}
 	ldmia		r1,	{Y, U, V, YPAD}
 	ldmia		r0,	{O, OPAD}
@@ -76,6 +77,7 @@ i422_uyvy_neon:
 	sub		OPAD,	OPAD,	WIDTH,	lsl #1
 	sub		YPAD,	YPAD,	WIDTH
 1:
+	ite		gt
 	movsgt		COUNT,	WIDTH
 	pople		{r4-r6,pc}
 2:

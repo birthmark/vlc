@@ -2,7 +2,6 @@
  * intf.c: Generic lua interface functions
  *****************************************************************************
  * Copyright (C) 2007-2008 the VideoLAN team
- * $Id$
  *
  * Authors: Antoine Cellerier <dionoea at videolan tod org>
  *
@@ -59,13 +58,6 @@ struct intf_sys_t
 /*****************************************************************************
  *
  *****************************************************************************/
-static inline void luaL_register_submodule( lua_State *L, const char *psz_name,
-                                            const luaL_Reg *l )
-{
-    lua_newtable( L );
-    luaL_register( L, NULL, l );
-    lua_setfield( L, -2, psz_name );
-}
 
 static char *MakeConfig( intf_thread_t *p_intf, const char *name )
 {
@@ -133,21 +125,6 @@ static char *MakeConfig( intf_thread_t *p_intf, const char *name )
         free( psz_passwd );
         free( psz_host );
     }
-    else if( !strcmp( name, "cli" ) )
-    {
-        char *psz_rc_host = var_InheritString( p_intf, "rc-host" );
-        if( !psz_rc_host )
-            psz_rc_host = var_InheritString( p_intf, "cli-host" );
-        if( psz_rc_host )
-        {
-            char *psz_esc_host = config_StringEscape( psz_rc_host );
-
-            if( asprintf( &psz_config, "cli={host='%s'}", psz_esc_host ) == -1 )
-                psz_config = NULL;
-            free( psz_esc_host );
-            free( psz_rc_host );
-        }
-    }
 
     return psz_config;
 }
@@ -163,7 +140,7 @@ static char *StripPasswords( const char *psz_config )
     }
     if (n == 0)
         return strdup(psz_config);
- 
+
     char *psz_log = malloc(strlen(psz_config) + n * strlen("******") + 1);
     if (psz_log == NULL)
         return NULL;
@@ -208,30 +185,40 @@ static const luaL_Reg p_reg[] = { { NULL, NULL } };
 
 static int Start_LuaIntf( vlc_object_t *p_this, const char *name )
 {
+    if( lua_Disabled( p_this ) )
+        return VLC_EGENERIC;
+
     intf_thread_t *p_intf = (intf_thread_t*)p_this;
+    struct vlc_logger *logger = p_intf->obj.logger;
     lua_State *L;
+    char *namebuf = NULL;
 
     config_ChainParse( p_intf, "lua-", ppsz_intf_options, p_intf->p_cfg );
 
     if( name == NULL )
     {
-        char *n = var_InheritString( p_this, "lua-intf" );
-        if( unlikely(n == NULL) )
+        namebuf = var_InheritString( p_this, "lua-intf" );
+        if( unlikely(namebuf == NULL) )
             return VLC_EGENERIC;
-        name = p_intf->obj.header = n;
+        name = namebuf;
     }
-    else
-        /* Cleaned up by vlc_object_release() */
-        p_intf->obj.header = strdup( name );
 
     intf_sys_t *p_sys = malloc( sizeof(*p_sys) );
     if( unlikely(p_sys == NULL) )
     {
-        free( p_intf->obj.header );
-        p_intf->obj.header = NULL;
+        free( namebuf );
         return VLC_ENOMEM;
     }
     p_intf->p_sys = p_sys;
+
+    p_intf->obj.logger = vlc_LogHeaderCreate( logger, name );
+    if( p_intf->obj.logger == NULL )
+    {
+        p_intf->obj.logger = logger;
+        free( p_sys );
+        free( namebuf );
+        return VLC_ENOMEM;
+    }
 
     p_sys->psz_filename = vlclua_find_file( "intf", name );
     if( !p_sys->psz_filename )
@@ -250,7 +237,8 @@ static int Start_LuaIntf( vlc_object_t *p_this, const char *name )
     }
 
     vlclua_set_this( L, p_intf );
-    vlclua_set_playlist_internal( L, pl_Get(p_intf) );
+    vlc_playlist_t *playlist = vlc_intf_GetMainPlaylist(p_intf);
+    vlclua_set_playlist_internal(L, playlist);
 
     luaL_openlibs( L );
 
@@ -271,7 +259,6 @@ static int Start_LuaIntf( vlc_object_t *p_this, const char *name )
     luaopen_object( L );
     luaopen_osd( L );
     luaopen_playlist( L );
-    luaopen_sd_intf( L );
     luaopen_stream( L );
     luaopen_strings( L );
     luaopen_variables( L );
@@ -281,6 +268,9 @@ static int Start_LuaIntf( vlc_object_t *p_this, const char *name )
     luaopen_gettext( L );
     luaopen_xml( L );
     luaopen_equalizer( L );
+    luaopen_vlcio( L );
+    luaopen_errno( L );
+    luaopen_rand( L );
 #if defined(_WIN32) && !VLC_WINSTORE_APP
     luaopen_win( L );
 #endif
@@ -382,13 +372,14 @@ static int Start_LuaIntf( vlc_object_t *p_this, const char *name )
         lua_close( p_sys->L );
         goto error;
     }
-
+    free( namebuf );
     return VLC_SUCCESS;
 error:
     free( p_sys->psz_filename );
     free( p_sys );
-    free( p_intf->obj.header );
-    p_intf->obj.header = NULL;
+    vlc_LogDestroy( p_intf->obj.logger );
+    p_intf->obj.logger = logger;
+    free( namebuf );
     return VLC_EGENERIC;
 }
 
@@ -404,6 +395,7 @@ void Close_LuaIntf( vlc_object_t *p_this )
     vlclua_fd_cleanup( &p_sys->dtable );
     free( p_sys->psz_filename );
     free( p_sys );
+    vlc_LogDestroy( p_intf->obj.logger );
 }
 
 static void *Run( void *data )

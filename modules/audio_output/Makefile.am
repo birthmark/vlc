@@ -38,7 +38,6 @@ aout_LTLIBRARIES += libalsa_plugin.la
 endif
 
 libvlc_pulse_la_SOURCES = audio_output/vlcpulse.c audio_output/vlcpulse.h
-libvlc_pulse_la_CPPFLAGS = -DMODULE_STRING=\"pulse\"
 libvlc_pulse_la_CFLAGS = $(AM_CFLAGS) $(PULSE_CFLAGS)
 libvlc_pulse_la_LIBADD = $(PULSE_LIBS) $(LTLIBVLCCORE)
 libvlc_pulse_la_LDFLAGS = \
@@ -77,7 +76,7 @@ endif
 
 libdirectsound_plugin_la_SOURCES = audio_output/directsound.c \
 	audio_output/windows_audio_common.h
-libdirectsound_plugin_la_LIBADD = $(LIBCOM)
+libdirectsound_plugin_la_LIBADD = -ldsound $(LIBCOM)
 if HAVE_WIN32_DESKTOP
 aout_LTLIBRARIES += libdirectsound_plugin.la
 endif
@@ -102,27 +101,19 @@ aout_LTLIBRARIES += libwaveout_plugin.la
 endif
 
 libauhal_plugin_la_SOURCES = audio_output/auhal.c \
-	audio_output/TPCircularBuffer.h audio_output/TPCircularBuffer.c
-libauhal_plugin_la_LDFLAGS = $(AM_LDFLAGS) -Wl,-framework,CoreAudio,-framework,AudioUnit,-framework,AudioToolbox,-framework,CoreServices -rpath '$(aoutdir)'
+	audio_output/coreaudio_common.c audio_output/coreaudio_common.h
+libauhal_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(aoutdir)' \
+	-Wl,-framework,CoreAudio,-framework,AudioUnit,-framework,AudioToolbox,-framework,CoreServices
 if HAVE_OSX
 aout_LTLIBRARIES += libauhal_plugin.la
 endif
 libaudiounit_ios_plugin_la_SOURCES = audio_output/audiounit_ios.m \
-        audio_output/TPCircularBuffer.h audio_output/TPCircularBuffer.c
-libaudiounit_ios_plugin_la_LDFLAGS = $(AM_LDFLAGS) -Wl,-framework,CoreAudio,-framework,AudioUnit,-framework,AudioToolbox,-framework,CoreServices,-framework,UIKit,-framework,AVFoundation -rpath '$(aoutdir)'
+	audio_output/coreaudio_common.c audio_output/coreaudio_common.h
+libaudiounit_ios_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(aoutdir)' \
+	-Wl,-framework,CoreAudio,-framework,AudioUnit,-framework,AudioToolbox,-framework,CoreServices,-framework,UIKit,-framework,AVFoundation
 if HAVE_IOS
 aout_LTLIBRARIES += libaudiounit_ios_plugin.la
 endif
 if HAVE_TVOS
 aout_LTLIBRARIES += libaudiounit_ios_plugin.la
 endif
-
-libaudioqueue_plugin_la_SOURCES = audio_output/audioqueue.c
-libaudioqueue_plugin_la_LDFLAGS = $(AM_LDFLAGS) -Wl,-framework,CoreAudio,-framework,AudioUnit,-framework,AudioToolbox,-framework,CoreServices -rpath '$(aoutdir)'
-EXTRA_LTLIBRARIES += libaudioqueue_plugin.la
-aout_LTLIBRARIES += $(LTLIBaudioqueue)
-
-libtizen_audio_plugin_la_SOURCES = audio_output/tizen_audio.c
-libtizen_audio_plugin_la_CFLAGS = $(AM_CFLAGS)
-EXTRA_LTLIBRARIES += libtizen_audio_plugin.la
-aout_LTLIBRARIES += $(LTLIBtizen_audio)

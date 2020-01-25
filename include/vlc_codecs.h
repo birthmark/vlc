@@ -2,7 +2,6 @@
  * vlc_codecs.h: codec related structures needed by the demuxers and decoders
  *****************************************************************************
  * Copyright (C) 1999-2001 VLC authors and VideoLAN
- * $Id$
  *
  * Author: Gildas Bazin <gbazin@videolan.org>
  *
@@ -43,7 +42,7 @@ typedef struct _GUID
 } GUID, *REFGUID, *LPGUID;
 #endif /* GUID_DEFINED */
 
-typedef GUID guid_t;
+typedef GUID vlc_guid_t;
 
 #ifdef HAVE_ATTRIBUTE_PACKED
 #   define ATTR_PACKED __attribute__((__packed__))
@@ -178,50 +177,6 @@ ATTR_PACKED
 } VIDEOINFOHEADER;
 #endif
 
-#ifndef _RGBQUAD_
-#define _RGBQUAD_
-typedef struct
-ATTR_PACKED
-{
-    uint8_t rgbBlue;
-    uint8_t rgbGreen;
-    uint8_t rgbRed;
-    uint8_t rgbReserved;
-} RGBQUAD1;
-#endif
-
-#ifndef _TRUECOLORINFO_
-#define _TRUECOLORINFO_
-typedef struct
-ATTR_PACKED
-{
-    uint32_t dwBitMasks[3];
-    RGBQUAD1 bmiColors[256];
-} TRUECOLORINFO;
-#endif
-
-#ifndef _VIDEOINFO_
-#define _VIDEOINFO_
-typedef struct
-ATTR_PACKED
-{
-    RECT32                  rcSource;
-    RECT32                  rcTarget;
-    uint32_t                dwBitRate;
-    uint32_t                dwBitErrorRate;
-    REFERENCE_TIME          AvgTimePerFrame;
-    VLC_BITMAPINFOHEADER    bmiHeader;
-
-    union
-    {
-        RGBQUAD1 bmiColors[256]; /* Colour palette */
-        uint32_t dwBitMasks[3]; /* True colour masks */
-        TRUECOLORINFO TrueColorInfo; /* Both of the above */
-    };
-
-} VIDEOINFO;
-#endif
-
 #if defined(__SUNPRO_C) || defined(_MSC_VER)
 #   pragma pack()
 #elif defined(__APPLE__) && !HAVE_ATTRIBUTE_PACKED
@@ -278,8 +233,11 @@ ATTR_PACKED
 #define WAVE_FORMAT_ON2_AVC             0x0500 /* VP7 */
 #define WAVE_FORMAT_ON2_AVC_2           0x0501 /* VP6 */
 
+#define WAVE_FORMAT_QNAP_ADTS           0x0AAC /* Qnap ADTS */
+#define WAVE_FORMAT_AAC_ADTS            0x1600 /* AAC/ADTS */
 #define WAVE_FORMAT_AAC_2               0x1601 /* Other AAC */
 #define WAVE_FORMAT_AAC_LATM            0x1602 /* AAC/LATM */
+#define WAVE_FORMAT_HEAAC               0x1610
 
 #define WAVE_FORMAT_A52                 0x2000 /* a52 */
 #define WAVE_FORMAT_DTS                 0x2001 /* DTS */
@@ -397,9 +355,12 @@ wave_format_tag_to_fourcc[] =
     { WAVE_FORMAT_DTS_MS,           VLC_CODEC_DTS,                    "DTS Coherent Acoustics" },
     { WAVE_FORMAT_DIVIO_AAC,        VLC_CODEC_MP4A,                   "MPEG-4 Audio (Divio)" },
     { WAVE_FORMAT_AAC,              VLC_CODEC_MP4A,                   "MPEG-4 Audio" },
+    { WAVE_FORMAT_QNAP_ADTS,        VLC_CODEC_MP4A,                   "MPEG-4 ADTS Audio" },
+    { WAVE_FORMAT_AAC_ADTS,         VLC_CODEC_MP4A,                   "MPEG-4 ADTS Audio" },
     { WAVE_FORMAT_AAC_2,            VLC_CODEC_MP4A,                   "MPEG-4 Audio" },
     { WAVE_FORMAT_AAC_3,            VLC_CODEC_MP4A,                   "MPEG-4 Audio" },
-    { WAVE_FORMAT_AAC_LATM,         VLC_CODEC_MP4A,                   "MPEG-4 Audio" },
+    { WAVE_FORMAT_AAC_LATM,         VLC_CODEC_MP4A,                   "MPEG-4 LATM Audio" },
+    { WAVE_FORMAT_HEAAC,            VLC_CODEC_MP4A,                   "MPEG-4 Audio" },
     { WAVE_FORMAT_AVCODEC_AAC,      VLC_CODEC_MP4A,                   "MPEG-4 Audio" },
     { WAVE_FORMAT_AAC_MS,           VLC_CODEC_MP4A,                   "MPEG-4 Audio" },
     { WAVE_FORMAT_VORBIS,           VLC_CODEC_VORBIS,                 "Vorbis Audio" },
@@ -421,7 +382,7 @@ wave_format_tag_to_fourcc[] =
     { WAVE_FORMAT_ON2_AVC,          VLC_CODEC_ON2AVC,                 "On2 Audio for Video Codec (VP7)" },
     { WAVE_FORMAT_ON2_AVC_2,        VLC_CODEC_ON2AVC,                 "On2 Audio for Video Codec (VP6)" },
 
-    { WAVE_FORMAT_UNKNOWN,          VLC_FOURCC( 'u', 'n', 'd', 'f' ), "Unknown" }
+    { WAVE_FORMAT_UNKNOWN,          VLC_CODEC_UNKNOWN,                "Unknown" }
 };
 
 static inline void wf_tag_to_fourcc( uint16_t i_tag, vlc_fourcc_t *fcc,
@@ -461,7 +422,7 @@ sub_format_tag_to_fourcc[] =
     { VLC_AMBISONIC_SUBTYPE_PCM,        VLC_FOURCC( 'a', 'r', 'a', 'w' ), "Ambisonic B format (PCM)" },
     { VLC_AMBISONIC_SUBTYPE_IEEE_FLOAT, VLC_FOURCC( 'a', 'f', 'l', 't' ), "Ambisonic B format (IEEE float)" },
     { VLC_KSDATAFORMAT_SUBTYPE_ATRAC3P, VLC_CODEC_ATRAC3P,                "Sony Atrac3+" },
-    { VLC_KSDATAFORMAT_SUBTYPE_UNKNOWN, VLC_FOURCC( 'u', 'n', 'd', 'f' ), "Unknown" }
+    { VLC_KSDATAFORMAT_SUBTYPE_UNKNOWN, VLC_CODEC_UNKNOWN,      "Unknown" }
 };
 
 static inline int guidcmpbase( const GUID *s1, const GUID *s2 )

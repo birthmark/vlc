@@ -52,7 +52,7 @@ static inline const uint8_t * startcode_FindAnnexB_SSE2( const uint8_t *p, const
     /* First align to 16 */
     /* Skipping this step and doing unaligned loads isn't faster */
     const uint8_t *alignedend = p + 16 - ((intptr_t)p & 15);
-    for (end -= 3; p < alignedend && p < end; p++) {
+    for (end -= 3; p < alignedend && p <= end; p++) {
         if (p[0] == 0 && p[1] == 0 && p[2] == 1)
             return p;
     }
@@ -99,7 +99,7 @@ static inline const uint8_t * startcode_FindAnnexB_SSE2( const uint8_t *p, const
         }
     }
 
-    for (; p < end; p++) {
+    for (; p <= end; p++) {
         if (p[0] == 0 && p[1] == 0 && p[2] == 1)
             return p;
     }
@@ -113,15 +113,11 @@ static inline const uint8_t * startcode_FindAnnexB_SSE2( const uint8_t *p, const
  * and i believe the trick originated from
  * https://graphics.stanford.edu/~seander/bithacks.html#ZeroInWord
  */
-static inline const uint8_t * startcode_FindAnnexB( const uint8_t *p, const uint8_t *end )
+static inline const uint8_t * startcode_FindAnnexB_Bits( const uint8_t *p, const uint8_t *end )
 {
-#if defined(CAN_COMPILE_SSE2) || defined(HAVE_SSE2_INTRINSICS)
-    if (vlc_CPU_SSE2())
-        return startcode_FindAnnexB_SSE2(p, end);
-#endif
     const uint8_t *a = p + 4 - ((intptr_t)p & 3);
 
-    for (end -= 3; p < a && p < end; p++) {
+    for (end -= 3; p < a && p <= end; p++) {
         if (p[0] == 0 && p[1] == 0 && p[2] == 1)
             return p;
     }
@@ -135,31 +131,25 @@ static inline const uint8_t * startcode_FindAnnexB( const uint8_t *p, const uint
         }
     }
 
-    for (end += 3; p < end; p++) {
+    for (end += 3; p <= end; p++) {
         if (p[0] == 0 && p[1] == 0 && p[2] == 1)
             return p;
     }
 
     return NULL;
 }
-
-/* Special variation to return on prefix only and no data */
-static inline const uint8_t * startcode_FindAnyAnnexB( const uint8_t *p, const uint8_t *end )
-{
-    size_t i_size = end - p;
-    if( i_size <= 4 )
-    {
-        if( i_size == 4 )
-        {
-            TRY_MATCH(p, 0);
-        }
-        else  if ( i_size == 3 && p[0] == 0 && p[1] == 0 && p[2] == 1 )
-             return p;
-        return NULL;
-    }
-    else return startcode_FindAnnexB( p, end );
-}
-
 #undef TRY_MATCH
+
+#if defined(CAN_COMPILE_SSE2) || defined(HAVE_SSE2_INTRINSICS)
+static inline const uint8_t * startcode_FindAnnexB( const uint8_t *p, const uint8_t *end )
+{
+    if (vlc_CPU_SSE2())
+        return startcode_FindAnnexB_SSE2(p, end);
+    else
+        return startcode_FindAnnexB_Bits(p, end);
+}
+#else
+    #define startcode_FindAnnexB startcode_FindAnnexB_Bits
+#endif
 
 #endif

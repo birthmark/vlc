@@ -2,7 +2,6 @@
  * virtual_segment.cpp : virtual segment implementation in the MKV demuxer
  *****************************************************************************
  * Copyright © 2003-2011 VideoLAN and VLC authors
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Steve Lhomme <steve.lhomme@free.fr>
@@ -27,7 +26,9 @@
 
 #include "demux.hpp"
 
-/* FIXME move this */
+namespace mkv {
+
+/* FIXME move this, it's demux_sys_t::FindSegment */
 matroska_segment_c * getSegmentbyUID( KaxSegmentUID * p_uid, std::vector<matroska_segment_c*> & segments )
 {
     for( size_t i = 0; i < segments.size(); i++ )
@@ -42,13 +43,13 @@ matroska_segment_c * getSegmentbyUID( KaxSegmentUID * p_uid, std::vector<matrosk
 virtual_chapter_c * virtual_chapter_c::CreateVirtualChapter( chapter_item_c * p_chap,
                                                              matroska_segment_c & main_segment,
                                                              std::vector<matroska_segment_c*> & segments,
-                                                             int64_t & usertime_offset, bool b_ordered)
+                                                             vlc_tick_t & usertime_offset, bool b_ordered)
 {
     std::vector<virtual_chapter_c *> sub_chapters;
     if( !p_chap )
     {
         /* Dummy chapter use the whole segment */
-        return new (std::nothrow) virtual_chapter_c( main_segment, NULL, 0, main_segment.i_duration * 1000, sub_chapters );
+        return new (std::nothrow) virtual_chapter_c( main_segment, NULL, 0, main_segment.i_duration, sub_chapters );
     }
 
     matroska_segment_c * p_segment = &main_segment;
@@ -57,16 +58,14 @@ virtual_chapter_c * virtual_chapter_c::CreateVirtualChapter( chapter_item_c * p_
     {
         msg_Warn( &main_segment.sys.demuxer,
                   "Couldn't find segment 0x%x or not ordered... - ignoring chapter %s",
-                  *( (uint32_t *) p_chap->p_segment_uid->GetBuffer() ),p_chap->psz_name.c_str() );
+                  *( (uint32_t *) p_chap->p_segment_uid->GetBuffer() ),p_chap->str_name.c_str() );
         return NULL;
     }
 
-    /* Preload segment */
-    if ( !p_segment->b_preloaded )
-        p_segment->Preload();
+    p_segment->Preload();
 
-    int64_t start = ( b_ordered )? usertime_offset : p_chap->i_start_time;
-    int64_t tmp = usertime_offset;
+    vlc_tick_t start = ( b_ordered )? usertime_offset : p_chap->i_start_time;
+    vlc_tick_t tmp = usertime_offset;
 
     for( size_t i = 0; i < p_chap->sub_chapters.size(); i++ )
     {
@@ -75,7 +74,7 @@ virtual_chapter_c * virtual_chapter_c::CreateVirtualChapter( chapter_item_c * p_
         if( p_vsubchap )
             sub_chapters.push_back( p_vsubchap );
     }
-    int64_t stop = ( b_ordered )?
+    vlc_tick_t stop = ( b_ordered )?
             (((p_chap->i_end_time == -1 ||
                (p_chap->i_end_time - p_chap->i_start_time) < (tmp - usertime_offset) )) ? tmp :
              p_chap->i_end_time - p_chap->i_start_time + usertime_offset )
@@ -96,7 +95,7 @@ virtual_chapter_c * virtual_chapter_c::CreateVirtualChapter( chapter_item_c * p_
 
     msg_Dbg( &main_segment.sys.demuxer,
              "Virtual chapter %s from %" PRId64 " to %" PRId64 " - " ,
-             p_chap->psz_name.c_str(), p_vchap->i_mk_virtual_start_time, p_vchap->i_mk_virtual_stop_time );
+             p_chap->str_name.c_str(), p_vchap->i_mk_virtual_start_time, p_vchap->i_mk_virtual_stop_time );
 
     return p_vchap;
 }
@@ -114,7 +113,7 @@ virtual_edition_c::virtual_edition_c( chapter_edition_c * p_edit, matroska_segme
     p_edition = p_edit;
     b_ordered = false;
 
-    int64_t usertime_offset = 0;
+    vlc_tick_t usertime_offset = 0; // microseconds
 
     /* ordered chapters */
     if( p_edition && p_edition->b_ordered )
@@ -137,7 +136,7 @@ virtual_edition_c::virtual_edition_c( chapter_edition_c * p_edit, matroska_segme
     {
         matroska_segment_c * p_cur = &main_segment;
         virtual_chapter_c * p_vchap = NULL;
-        int64_t tmp = 0;
+        vlc_tick_t tmp = 0;
 
         /* check for prev linked segments */
         /* FIXME to avoid infinite recursion we limit to 10 prev should be better as parameter */
@@ -150,9 +149,7 @@ virtual_edition_c::virtual_edition_c( chapter_edition_c * p_edit, matroska_segme
                 msg_Dbg( &main_segment.sys.demuxer, "Prev segment 0x%x found\n",
                          *(int32_t*)p_cur->p_prev_segment_uid->GetBuffer() );
 
-                /* Preload segment */
-                if ( !p_prev->b_preloaded )
-                    p_prev->Preload();
+                p_prev->Preload();
 
                 /* Create virtual_chapter from the first edition if any */
                 chapter_item_c * p_chap = ( p_prev->stored_editions.size() > 0 )? ((chapter_item_c *)p_prev->stored_editions[0]) : NULL;
@@ -172,7 +169,7 @@ virtual_edition_c::virtual_edition_c( chapter_edition_c * p_edit, matroska_segme
         tmp = 0;
 
         /* Append the main segment */
-        p_vchap = virtual_chapter_c::CreateVirtualChapter( (chapter_item_c*) p_edit, main_segment,
+        p_vchap = virtual_chapter_c::CreateVirtualChapter( p_edit, main_segment,
                                                            opened_segments, tmp, b_ordered );
         if( p_vchap )
             vchapters.push_back( p_vchap );
@@ -187,9 +184,7 @@ virtual_edition_c::virtual_edition_c( chapter_edition_c * p_edit, matroska_segme
                 msg_Dbg( &main_segment.sys.demuxer, "Next segment 0x%x found\n",
                          *(int32_t*) p_cur->p_next_segment_uid->GetBuffer() );
 
-                /* Preload segment */
-                if ( !p_next->b_preloaded )
-                    p_next->Preload();
+                p_next->Preload();
 
                 /* Create virtual_chapter from the first edition if any */
                 chapter_item_c * p_chap = ( p_next->stored_editions.size() > 0 )?( (chapter_item_c *)p_next->stored_editions[0] ) : NULL;
@@ -213,9 +208,9 @@ virtual_edition_c::virtual_edition_c( chapter_edition_c * p_edit, matroska_segme
     }
 
 #ifdef MKV_DEBUG
-    msg_Dbg( &p_main_segment.sys.demuxer, "-- RECAP-BEGIN --" );
+    msg_Dbg( &main_segment.sys.demuxer, "-- RECAP-BEGIN --" );
     print();
-    msg_Dbg( &p_main_segment.sys.demuxer, "-- RECAP-END --" );
+    msg_Dbg( &main_segment.sys.demuxer, "-- RECAP-END --" );
 #endif
 }
 
@@ -227,7 +222,7 @@ virtual_edition_c::~virtual_edition_c()
 
 void virtual_edition_c::retimeSubChapters( virtual_chapter_c * p_vchap )
 {
-    mtime_t i_mk_stop_time = p_vchap->i_mk_virtual_stop_time;
+    vlc_tick_t i_mk_stop_time = p_vchap->i_mk_virtual_stop_time;
     for( size_t i = p_vchap->sub_vchapters.size(); i-- > 0; )
     {
         virtual_chapter_c * p_vsubchap = p_vchap->sub_vchapters[i];
@@ -256,7 +251,7 @@ void virtual_edition_c::retimeChapters()
         virtual_chapter_c * p_vchap = vchapters[i];
 
         p_vchap->i_mk_virtual_start_time = i_duration;
-        i_duration += p_vchap->segment.i_duration * 1000;
+        i_duration += p_vchap->segment.i_duration;
         p_vchap->i_mk_virtual_stop_time = i_duration;
 
         retimeSubChapters( p_vchap );
@@ -383,13 +378,13 @@ virtual_chapter_c * virtual_chapter_c::BrowseCodecPrivate( unsigned int codec_id
     return NULL;
 }
 
-bool virtual_chapter_c::ContainsTimestamp( int64_t time )
+bool virtual_chapter_c::ContainsTimestamp( vlc_tick_t time )
 {
     /*with the current implementation only the last chapter can have a negative virtual_stop_time*/
     return ( time >= i_mk_virtual_start_time && time < i_mk_virtual_stop_time );
 }
 
-virtual_chapter_c* virtual_chapter_c::getSubChapterbyTimecode( int64_t time )
+virtual_chapter_c* virtual_chapter_c::getSubChapterbyTimecode( vlc_tick_t time )
 {
     for( size_t i = 0; i < sub_vchapters.size(); i++ )
     {
@@ -400,7 +395,7 @@ virtual_chapter_c* virtual_chapter_c::getSubChapterbyTimecode( int64_t time )
     return this;
 }
 
-virtual_chapter_c* virtual_edition_c::getChapterbyTimecode( int64_t time )
+virtual_chapter_c* virtual_edition_c::getChapterbyTimecode( vlc_tick_t time )
 {
     for( size_t i = 0; i < vchapters.size(); i++ )
     {
@@ -424,9 +419,9 @@ virtual_chapter_c* virtual_edition_c::getChapterbyTimecode( int64_t time )
 
 bool virtual_segment_c::UpdateCurrentToChapter( demux_t & demux )
 {
-    demux_sys_t & sys = *demux.p_sys;
+    demux_sys_t & sys = *(demux_sys_t *)demux.p_sys;
     virtual_chapter_c *p_cur_vchapter = NULL;
-    virtual_edition_c *p_cur_vedition = veditions[ i_current_edition ];
+    virtual_edition_c *p_cur_vedition = CurrentEdition();
 
     bool b_has_seeked = false;
 
@@ -437,63 +432,66 @@ bool virtual_segment_c::UpdateCurrentToChapter( demux_t & demux )
             return true;
     }
 
-    if ( sys.i_pts != VLC_TS_INVALID )
+    if ( sys.i_pts != VLC_TICK_INVALID )
     {
-        if ( p_current_vchapter != NULL && p_current_vchapter->ContainsTimestamp( sys.i_pts - VLC_TS_0 ))
+        if ( p_current_vchapter != NULL && p_current_vchapter->ContainsTimestamp( sys.i_pts - VLC_TICK_0 ))
             p_cur_vchapter = p_current_vchapter;
-        else
-            p_cur_vchapter = p_cur_vedition->getChapterbyTimecode( sys.i_pts - VLC_TS_0 );
+        else if (p_cur_vedition != NULL)
+            p_cur_vchapter = p_cur_vedition->getChapterbyTimecode( sys.i_pts - VLC_TICK_0 );
     }
 
     /* we have moved to a new chapter */
     if ( p_cur_vchapter != NULL && p_current_vchapter != p_cur_vchapter )
+    {
+        msg_Dbg( &demux, "New Chapter %" PRId64 " uid=%" PRIu64, sys.i_pts - VLC_TICK_0,
+                 p_cur_vchapter->p_chapter ? p_cur_vchapter->p_chapter->i_uid : 0 );
+        if ( p_cur_vedition->b_ordered )
         {
-            msg_Dbg( &demux, "New Chapter %" PRId64 " uid=%" PRIu64, sys.i_pts - VLC_TS_0, p_cur_vchapter->p_chapter->i_uid );
-            if ( p_cur_vedition->b_ordered )
+            /* FIXME EnterAndLeave has probably been broken for a long time */
+            // Leave/Enter up to the link point
+            b_has_seeked = p_cur_vchapter->EnterAndLeave( p_current_vchapter );
+            if ( !b_has_seeked )
             {
-                /* FIXME EnterAndLeave has probably been broken for a long time */
-                // Leave/Enter up to the link point
-                b_has_seeked = p_cur_vchapter->EnterAndLeave( p_current_vchapter );
-                if ( !b_has_seeked )
+                // only physically seek if necessary
+                if ( p_current_vchapter == NULL ||
+                    ( p_current_vchapter && &p_current_vchapter->segment != &p_cur_vchapter->segment ) ||
+                    ( p_current_vchapter->p_chapter->i_end_time != p_cur_vchapter->p_chapter->i_start_time ))
                 {
-                    // only physically seek if necessary
-                    if ( p_current_vchapter == NULL ||
-                        ( p_current_vchapter && &p_current_vchapter->segment != &p_cur_vchapter->segment ) ||
-                        ( p_current_vchapter->p_chapter->i_end_time != p_cur_vchapter->p_chapter->i_start_time ))
-                    {
-                        /* Forcing reset pcr */
-                        es_out_Control( demux.out, ES_OUT_RESET_PCR);
-                        Seek( demux, p_cur_vchapter->i_mk_virtual_start_time, p_cur_vchapter );
-                        return true;
-                    }
-                    sys.i_start_pts = p_cur_vchapter->i_mk_virtual_start_time + VLC_TS_0;
-                }
-            }
-
-            p_current_vchapter = p_cur_vchapter;
-            if ( p_cur_vchapter->i_seekpoint_num > 0 )
-            {
-                demux.info.i_update |= INPUT_UPDATE_TITLE | INPUT_UPDATE_SEEKPOINT;
-                demux.info.i_title = sys.i_current_title = i_sys_title;
-                demux.info.i_seekpoint = p_cur_vchapter->i_seekpoint_num - 1;
-            }
-
-            return b_has_seeked;
-        }
-        else if ( p_cur_vchapter == NULL )
-        {
-            /* out of the scope of the data described by chapters, leave the edition */
-            if ( p_cur_vedition->b_ordered && p_current_vchapter != NULL )
-            {
-                if ( !p_current_vchapter->Leave( ) )
-                {
-                    p_current_vchapter = NULL;
-                    b_current_vchapter_entered = false;
-                }
-                else
+                    /* Forcing reset pcr */
+                    es_out_Control( demux.out, ES_OUT_RESET_PCR);
+                    Seek( demux, p_cur_vchapter->i_mk_virtual_start_time, p_cur_vchapter );
                     return true;
+                }
+                sys.i_start_pts = p_cur_vchapter->i_mk_virtual_start_time + VLC_TICK_0;
+                sys.i_mk_chapter_time = p_cur_vchapter->i_mk_virtual_start_time - p_cur_vchapter->segment.i_mk_start_time - ( ( p_cur_vchapter->p_chapter )? p_cur_vchapter->p_chapter->i_start_time : 0 ) /* + VLC_TICK_0 */;
             }
         }
+
+        p_current_vchapter = p_cur_vchapter;
+        if ( p_cur_vchapter->i_seekpoint_num > 0 )
+        {
+            sys.i_updates |= INPUT_UPDATE_TITLE | INPUT_UPDATE_SEEKPOINT;
+            sys.i_current_title = i_sys_title;
+            sys.i_current_seekpoint = p_cur_vchapter->i_seekpoint_num - 1;
+        }
+
+        return b_has_seeked;
+    }
+    else if ( p_cur_vchapter == NULL && p_cur_vedition != NULL )
+    {
+        /* out of the scope of the data described by chapters, leave the edition */
+        if ( p_cur_vedition->b_ordered && p_current_vchapter != NULL )
+        {
+            if ( !p_current_vchapter->Leave( ) )
+            {
+                p_current_vchapter->segment.ESDestroy();
+                p_current_vchapter = NULL;
+                b_current_vchapter_entered = false;
+            }
+            else
+                return true;
+        }
+    }
     return false;
 }
 
@@ -513,26 +511,27 @@ bool virtual_chapter_c::EnterAndLeave( virtual_chapter_c *p_leaving_vchapter, bo
     return p_chapter->EnterAndLeave( p_leaving_vchapter->p_chapter, b_enter );
 }
 
-void virtual_segment_c::Seek( demux_t & demuxer, mtime_t i_mk_date,
+bool virtual_segment_c::Seek( demux_t & demuxer, vlc_tick_t i_mk_date,
                               virtual_chapter_c *p_vchapter, bool b_precise )
 {
-    demux_sys_t *p_sys = demuxer.p_sys;
+    demux_sys_t *p_sys = (demux_sys_t *)demuxer.p_sys;
 
 
     /* find the actual time for an ordered edition */
-    if ( p_vchapter == NULL )
+    if ( p_vchapter == NULL && CurrentEdition() )
         /* 1st, we need to know in which chapter we are */
-        p_vchapter = veditions[ i_current_edition ]->getChapterbyTimecode( i_mk_date );
+        p_vchapter = CurrentEdition()->getChapterbyTimecode( i_mk_date );
 
-    if ( p_vchapter != NULL )
+    if ( p_vchapter != NULL && CurrentEdition() )
     {
-        mtime_t i_mk_time_offset = p_vchapter->i_mk_virtual_start_time - ( ( p_vchapter->p_chapter )? p_vchapter->p_chapter->i_start_time : 0 );
-        p_sys->i_mk_chapter_time = i_mk_time_offset - p_vchapter->segment.i_mk_start_time /* + VLC_TS_0 */;
+        vlc_tick_t i_mk_time_offset = p_vchapter->i_mk_virtual_start_time - ( ( p_vchapter->p_chapter )? p_vchapter->p_chapter->i_start_time : 0 );
+        if (CurrentEdition()->b_ordered)
+            p_sys->i_mk_chapter_time = p_vchapter->i_mk_virtual_start_time - p_vchapter->segment.i_mk_start_time - ( ( p_vchapter->p_chapter )? p_vchapter->p_chapter->i_start_time : 0 ) /* + VLC_TICK_0 */;
         if ( p_vchapter->p_chapter && p_vchapter->i_seekpoint_num > 0 )
         {
-            demuxer.info.i_update |= INPUT_UPDATE_TITLE | INPUT_UPDATE_SEEKPOINT;
-            demuxer.info.i_title = p_sys->i_current_title = i_sys_title;
-            demuxer.info.i_seekpoint = p_vchapter->i_seekpoint_num - 1;
+            p_sys->i_updates |= INPUT_UPDATE_TITLE | INPUT_UPDATE_SEEKPOINT;
+            p_sys->i_current_title = i_sys_title;
+            p_sys->i_current_seekpoint = p_vchapter->i_seekpoint_num - 1;
         }
 
         if( p_current_vchapter == NULL || &p_current_vchapter->segment != &p_vchapter->segment )
@@ -544,22 +543,21 @@ void virtual_segment_c::Seek( demux_t & demuxer, mtime_t i_mk_date,
             }
             msg_Dbg( &demuxer, "SWITCH CHAPTER uid=%" PRId64, p_vchapter->p_chapter ? p_vchapter->p_chapter->i_uid : 0 );
             p_current_vchapter = p_vchapter;
+
+            /* only use for soft linking, hard linking should be continous */
+            es_out_Control( demuxer.out, ES_OUT_RESET_PCR );
+
             p_sys->PreparePlayback( *this, i_mk_date );
+            return true;
         }
         else
         {
-            typedef void( matroska_segment_c::* seek_callback_t )( mtime_t, mtime_t );
-
-            seek_callback_t pf_seek = &matroska_segment_c::Seek;
-
-            if( ! b_precise )
-                pf_seek = &matroska_segment_c::FastSeek;
-
             p_current_vchapter = p_vchapter;
 
-            ( p_current_vchapter->segment.*pf_seek )( i_mk_date, i_mk_time_offset );
+            return p_current_vchapter->segment.Seek( demuxer, i_mk_date, i_mk_time_offset, b_precise );
         }
     }
+    return false;
 }
 
 virtual_chapter_c * virtual_chapter_c::FindChapter( int64_t i_find_uid )
@@ -579,7 +577,9 @@ virtual_chapter_c * virtual_chapter_c::FindChapter( int64_t i_find_uid )
 
 virtual_chapter_c * virtual_segment_c::FindChapter( int64_t i_find_uid )
 {
-    virtual_edition_c * p_edition = veditions[i_current_edition];
+    virtual_edition_c * p_edition = CurrentEdition();
+    if (unlikely(p_edition == NULL))
+        return NULL;
 
     for( size_t i = 0; i < p_edition->vchapters.size(); i++ )
     {
@@ -590,23 +590,26 @@ virtual_chapter_c * virtual_segment_c::FindChapter( int64_t i_find_uid )
     return NULL;
 }
 
-int virtual_chapter_c::PublishChapters( input_title_t & title, int & i_user_chapters, int i_level )
+int virtual_chapter_c::PublishChapters( input_title_t & title, int & i_user_chapters, int i_level, bool allow_no_name )
 {
-    if ( p_chapter && ( !p_chapter->b_display_seekpoint || p_chapter->psz_name == "" ) )
-    {
-        p_chapter->psz_name = p_chapter->GetCodecName();
-        if ( p_chapter->psz_name != "" )
-            p_chapter->b_display_seekpoint = true;
-    }
-
     if ( p_chapter && p_chapter->b_display_seekpoint )
     {
-        if( p_chapter->b_user_display )
+        std::string chap_name;
+        if ( p_chapter->b_user_display )
+            chap_name = p_chapter->str_name;
+        if (chap_name == "")
+            chap_name = p_chapter->GetCodecName();
+
+        if (allow_no_name || chap_name != "")
         {
             seekpoint_t *sk = vlc_seekpoint_New();
 
+            if( unlikely( !sk ) )
+                return 0;
+
             sk->i_time_offset = i_mk_virtual_start_time;
-            sk->psz_name = strdup( p_chapter->psz_name.c_str() );
+            if (chap_name != "")
+                sk->psz_name = strdup( chap_name.c_str() );
 
             /* A start time of '0' is ok. A missing ChapterTime element is ok, too, because '0' is its default value. */
             title.i_seekpoint++;
@@ -620,7 +623,7 @@ int virtual_chapter_c::PublishChapters( input_title_t & title, int & i_user_chap
     i_seekpoint_num = i_user_chapters;
 
     for( size_t i = 0; i < sub_vchapters.size(); i++ )
-        sub_vchapters[i]->PublishChapters( title, i_user_chapters, i_level + 1 );
+        sub_vchapters[i]->PublishChapters( title, i_user_chapters, i_level + 1, true );
 
     return i_user_chapters;
 }
@@ -631,11 +634,15 @@ int virtual_edition_c::PublishChapters( input_title_t & title, int & i_user_chap
 
     /* HACK for now don't expose edition as a seekpoint if its start time is the same than it's first chapter */
     if( vchapters.size() > 0 &&
-        vchapters[0]->i_mk_virtual_start_time && p_edition )
+        vchapters[0]->i_mk_virtual_start_time && p_edition && !p_edition->b_hidden )
     {
         seekpoint_t *sk = vlc_seekpoint_New();
+
+        if( unlikely( !sk ) )
+            return 0;
+
         sk->i_time_offset = 0;
-        sk->psz_name = strdup( p_edition->psz_name.c_str() );
+        sk->psz_name = strdup( p_edition->str_name.c_str() );
 
         title.i_seekpoint++;
         title.seekpoint = static_cast<seekpoint_t**>( xrealloc( title.seekpoint,
@@ -649,7 +656,7 @@ int virtual_edition_c::PublishChapters( input_title_t & title, int & i_user_chap
 
 //    if( chapters.size() > 1 )
         for( size_t i = 0; i < vchapters.size(); i++ )
-            vchapters[i]->PublishChapters( title, i_user_chapters, i_level );
+            vchapters[i]->PublishChapters( title, i_user_chapters, i_level, false );
 
     return i_user_chapters;
 }
@@ -679,10 +686,10 @@ bool virtual_chapter_c::Leave( bool b_do_subs )
 #ifdef MKV_DEBUG
 void virtual_chapter_c::print()
 {
-    msg_Dbg( &p_segment->sys.demuxer, "*** chapter %" PRId64 " - %" PRId64 " (%u)",
-             i_mk_virtual_start_time, i_mk_virtual_stop_time, sub_chapters.size() );
-    for( size_t i = 0; i < sub_chapters.size(); i++ )
-        sub_chapters[i]->print();
+    msg_Dbg( &segment.sys.demuxer, "*** chapter %" PRId64 " - %" PRId64 " (%zu)",
+             i_mk_virtual_start_time, i_mk_virtual_stop_time, sub_vchapters.size() );
+    for( size_t i = 0; i < sub_vchapters.size(); i++ )
+        sub_vchapters[i]->print();
 }
 #endif
 
@@ -693,7 +700,7 @@ void virtual_segment_c::KeepTrackSelection( matroska_segment_c & old, matroska_s
     char *sub_lang = NULL, *aud_lang = NULL;
     for( tracks_map_t::iterator it = old.tracks.begin(); it != old.tracks.end(); ++it )
     {
-        tracks_map_t::mapped_type& track = it->second;
+        mkv_track_t &track = *it->second;
         if( track.p_es )
         {
             bool state = false;
@@ -709,8 +716,8 @@ void virtual_segment_c::KeepTrackSelection( matroska_segment_c & old, matroska_s
     }
     for( tracks_map_t::iterator it = next.tracks.begin(); it != next.tracks.end(); ++it )
     {
-        tracks_map_t::mapped_type& new_track = it->second;
-        es_format_t &              new_fmt   = new_track.fmt;
+        mkv_track_t & new_track = *it->second;
+        es_format_t & new_fmt   = new_track.fmt;
 
         /* Let's only do that for audio and video for now */
         if( new_fmt.i_cat == AUDIO_ES || new_fmt.i_cat == VIDEO_ES )
@@ -718,7 +725,7 @@ void virtual_segment_c::KeepTrackSelection( matroska_segment_c & old, matroska_s
             /* check for a similar elementary stream */
             for( tracks_map_t::iterator old_it = old.tracks.begin(); old_it != old.tracks.end(); ++old_it )
             {
-                tracks_map_t::mapped_type& old_track = old_it->second;
+                mkv_track_t& old_track = *old_it->second;
                 es_format_t& old_fmt = old_track.fmt;
 
                 if( !old_track.p_es )
@@ -756,3 +763,5 @@ void virtual_segment_c::KeepTrackSelection( matroska_segment_c & old, matroska_s
         }
     }
 }
+
+} // namespace

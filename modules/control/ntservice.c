@@ -2,7 +2,6 @@
  * ntservice.c: Windows NT/2K/XP service interface
  *****************************************************************************
  * Copyright (C) 2004 the VideoLAN team
- * $Id$
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *
@@ -33,6 +32,7 @@
 #include <vlc_plugin.h>
 #include <vlc_interface.h>
 #include <vlc_charset.h>
+#include <vlc_memstream.h>
 
 #define VLCSERVICENAME "VLC media player"
 
@@ -141,7 +141,7 @@ static void *Run( void *data )
     intf_thread_t *p_intf = data;
     SERVICE_TABLE_ENTRY dispatchTable[] =
     {
-        { TEXT(VLCSERVICENAME), &ServiceDispatch },
+        { (WCHAR*) TEXT(VLCSERVICENAME), (LPSERVICE_MAIN_FUNCTION) &ServiceDispatch },
         { NULL, NULL }
     };
 
@@ -170,7 +170,7 @@ static void *Run( void *data )
     free( p_intf->p_sys->psz_service );
 
     /* Make sure we exit (In case other interfaces have been spawned) */
-    libvlc_Quit( p_intf->obj.libvlc );
+    libvlc_Quit( vlc_object_instance(p_intf) );
     return NULL;
 }
 
@@ -180,8 +180,9 @@ static void *Run( void *data )
 static int NTServiceInstall( intf_thread_t *p_intf )
 {
     intf_sys_t *p_sys  = p_intf->p_sys;
-    char psz_path[10*MAX_PATH], *psz_extra;
-    TCHAR psz_pathtmp[MAX_PATH];
+    char *psz_extra;
+    struct vlc_memstream path_stream;
+    WCHAR psz_pathtmp[MAX_PATH];
 
     SC_HANDLE handle = OpenSCManager( NULL, NULL, SC_MANAGER_ALL_ACCESS );
     if( handle == NULL )
@@ -191,25 +192,31 @@ static int NTServiceInstall( intf_thread_t *p_intf )
         return VLC_EGENERIC;
     }
 
+    if( vlc_memstream_open(&path_stream) != 0 )
+    {
+        CloseServiceHandle( handle );
+        return VLC_ENOMEM;
+    }
+
     /* Find out the filename of ourselves so we can install it to the
      * service control manager */
     GetModuleFileName( NULL, psz_pathtmp, MAX_PATH );
-    sprintf( psz_path, "\"%s\" -I "MODULE_STRING, FromT(psz_pathtmp) );
+    vlc_memstream_printf( &path_stream, "\"%ls\" -I ntservice", psz_pathtmp );
 
     psz_extra = var_InheritString( p_intf, "ntservice-extraintf" );
-    if( psz_extra )
-    {
-        strcat( psz_path, " --ntservice-extraintf " );
-        strcat( psz_path, psz_extra );
-        free( psz_extra );
-    }
+    if( psz_extra && *psz_extra )
+        vlc_memstream_printf( &path_stream, " --ntservice-extraintf %s", psz_extra );
+    free( psz_extra );
 
     psz_extra = var_InheritString( p_intf, "ntservice-options" );
     if( psz_extra && *psz_extra )
+        vlc_memstream_printf( &path_stream, " %s", psz_extra );
+    free( psz_extra );
+
+    if ( vlc_memstream_close( &path_stream ) != 0 )
     {
-        strcat( psz_path, " " );
-        strcat( psz_path, psz_extra );
-        free( psz_extra );
+        CloseServiceHandle( handle );
+        return VLC_ENOMEM;
     }
 
     SC_HANDLE service =
@@ -217,13 +224,14 @@ static int NTServiceInstall( intf_thread_t *p_intf )
                        GENERIC_READ | GENERIC_EXECUTE,
                        SERVICE_WIN32_OWN_PROCESS,
                        SERVICE_AUTO_START, SERVICE_ERROR_IGNORE,
-                       psz_path, NULL, NULL, NULL, NULL, NULL );
+                       path_stream.ptr, NULL, NULL, NULL, NULL, NULL );
     if( service == NULL )
     {
         if( GetLastError() != ERROR_SERVICE_EXISTS )
         {
             msg_Err( p_intf, "could not create new service: \"%s\" (%s)",
-                     p_sys->psz_service ,psz_path );
+                     p_sys->psz_service, path_stream.ptr );
+            free( path_stream.ptr );
             CloseServiceHandle( handle );
             return VLC_EGENERIC;
         }
@@ -237,6 +245,8 @@ static int NTServiceInstall( intf_thread_t *p_intf )
     {
         msg_Warn( p_intf, "service successfuly created" );
     }
+
+    free( path_stream.ptr );
 
     if( service ) CloseServiceHandle( service );
     CloseServiceHandle( handle );
@@ -323,7 +333,7 @@ static void WINAPI ServiceDispatch( DWORD numArgs, char **args )
         if( asprintf( &psz_temp, "%s,none", psz_module ) != -1 )
         {
             /* Try to create the interface */
-            if( intf_Create( pl_Get(p_intf), psz_temp ) )
+            if( intf_Create( vlc_object_instance(p_intf), psz_temp ) )
             {
                 msg_Err( p_intf, "interface \"%s\" initialization failed",
                          psz_temp );

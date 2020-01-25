@@ -31,19 +31,19 @@
 #include <vlc_picture.h>
 #include "vlc_vdpau.h"
 
-struct filter_sys_t
+typedef struct
 {
-    mtime_t last_pts;
-};
+    vlc_tick_t last_pts;
+} filter_sys_t;
 
 static picture_t *Deinterlace(filter_t *filter, picture_t *src)
 {
     filter_sys_t *sys = filter->p_sys;
-    mtime_t last_pts = sys->last_pts;
+    vlc_tick_t last_pts = sys->last_pts;
 
     sys->last_pts = src->date;
 
-    vlc_vdp_video_field_t *f1 = src->context;
+    vlc_vdp_video_field_t *f1 = VDPAU_FIELD_FROM_PICCTX(src->context);
     if (unlikely(f1 == NULL))
         return src;
     if (f1->structure != VDP_VIDEO_MIXER_PICTURE_STRUCTURE_FRAME)
@@ -65,14 +65,14 @@ static picture_t *Deinterlace(filter_t *filter, picture_t *src)
     }
 
     picture_CopyProperties(dst, src);
-    dst->context = f2;
+    dst->context = &f2->context;
 
-    if (last_pts != VLC_TS_INVALID)
+    if (last_pts != VLC_TICK_INVALID)
         dst->date = (3 * src->date - last_pts) / 2;
     else
     if (filter->fmt_in.video.i_frame_rate != 0)
-        dst->date = src->date + ((filter->fmt_in.video.i_frame_rate_base
-                            * CLOCK_FREQ) / filter->fmt_in.video.i_frame_rate);
+        dst->date = src->date + vlc_tick_from_samples(filter->fmt_in.video.i_frame_rate_base
+                            ,filter->fmt_in.video.i_frame_rate);
     dst->b_top_field_first = !src->b_top_field_first;
     dst->i_nb_fields = 1;
     src->i_nb_fields = 1;
@@ -100,6 +100,9 @@ static int Open(vlc_object_t *obj)
 {
     filter_t *filter = (filter_t *)obj;
 
+    if ( filter->vctx_in == NULL ||
+         vlc_video_context_GetType(filter->vctx_in) != VLC_VIDEO_CONTEXT_VDPAU )
+        return VLC_EGENERIC;
     if (filter->fmt_in.video.i_chroma != VLC_CODEC_VDPAU_VIDEO_420
      && filter->fmt_in.video.i_chroma != VLC_CODEC_VDPAU_VIDEO_422
      && filter->fmt_in.video.i_chroma != VLC_CODEC_VDPAU_VIDEO_444)
@@ -114,11 +117,12 @@ static int Open(vlc_object_t *obj)
     /* NOTE: Only weave and bob are mandatory for the hardware to implement.
      * The other modes and IVTC should be checked. */
 
-    sys->last_pts = VLC_TS_INVALID;
+    sys->last_pts = VLC_TICK_INVALID;
 
     filter->pf_video_filter = Deinterlace;
     filter->p_sys = sys;
     filter->fmt_out.video.i_frame_rate *= 2;
+    filter->vctx_out = vlc_video_context_Hold(filter->vctx_in);
     return VLC_SUCCESS;
 }
 
@@ -127,6 +131,7 @@ static void Close(vlc_object_t *obj)
     filter_t *filter = (filter_t *)obj;
     filter_sys_t *sys = filter->p_sys;
 
+    vlc_video_context_Release(filter->vctx_out);
     free(sys);
 }
 

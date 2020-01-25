@@ -4,7 +4,6 @@
  * Copyright (C) 2003-2004, 2010 VLC authors and VideoLAN
  * Copyright © 2007 Rémi Denis-Courmont
  *
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Pierre Ynard
@@ -69,7 +68,7 @@ struct rtsp_stream_t
     int             sessionc;
     rtsp_session_t **sessionv;
 
-    int             timeout;
+    vlc_tick_t      timeout;
     vlc_timer_t     timer;
 };
 
@@ -96,8 +95,8 @@ rtsp_stream_t *RtspSetup( vlc_object_t *owner, vod_media_t *media,
     rtsp->vod_media = media;
     vlc_mutex_init( &rtsp->lock );
 
-    rtsp->timeout = var_InheritInteger(owner, "rtsp-timeout");
-    if (rtsp->timeout > 0)
+    rtsp->timeout = vlc_tick_from_sec(__MAX(0,var_InheritInteger(owner, "rtsp-timeout")));
+    if (rtsp->timeout != 0)
     {
         if (vlc_timer_create(&rtsp->timer, RtspTimeOut, rtsp))
             goto error;
@@ -148,7 +147,7 @@ void RtspUnsetup( rtsp_stream_t *rtsp )
     while( rtsp->sessionc > 0 )
         RtspClientDel( rtsp, rtsp->sessionv[0] );
 
-    if (rtsp->timeout > 0)
+    if (rtsp->timeout != 0)
         vlc_timer_destroy(rtsp->timer);
 
     free( rtsp->psz_path );
@@ -177,7 +176,7 @@ struct rtsp_session_t
 {
     rtsp_stream_t *stream;
     uint64_t       id;
-    mtime_t        last_seen; /* for timeouts */
+    vlc_tick_t     last_seen; /* for timeouts */
 
     /* output (id-access) */
     int            trackc;
@@ -287,7 +286,7 @@ void RtspDelId( rtsp_stream_t *rtsp, rtsp_stream_id_t *id )
             {
                 rtsp_strack_t *tr = ses->trackv + j;
                 RtspTrackClose( tr );
-                REMOVE_ELEM( ses->trackv, ses->trackc, j );
+                TAB_ERASE(ses->trackc, ses->trackv, j);
             }
         }
     }
@@ -300,18 +299,24 @@ void RtspDelId( rtsp_stream_t *rtsp, rtsp_stream_id_t *id )
 /** rtsp must be locked */
 static void RtspUpdateTimer( rtsp_stream_t *rtsp )
 {
-    if (rtsp->timeout <= 0)
+    if (rtsp->timeout == 0)
         return;
 
-    mtime_t timeout = 0;
+    vlc_tick_t timeout = 0;
     for (int i = 0; i < rtsp->sessionc; i++)
     {
         if (timeout == 0 || rtsp->sessionv[i]->last_seen < timeout)
             timeout = rtsp->sessionv[i]->last_seen;
     }
     if (timeout != 0)
-        timeout += rtsp->timeout * CLOCK_FREQ;
-    vlc_timer_schedule(rtsp->timer, true, timeout, 0);
+    {
+        timeout += rtsp->timeout;
+        vlc_timer_schedule(rtsp->timer, true, timeout, VLC_TIMER_FIRE_ONCE);
+    }
+    else
+    {
+        vlc_timer_disarm(rtsp->timer);
+    }
 }
 
 
@@ -320,10 +325,10 @@ static void RtspTimeOut( void *data )
     rtsp_stream_t *rtsp = data;
 
     vlc_mutex_lock(&rtsp->lock);
-    mtime_t now = mdate();
+    vlc_tick_t now = vlc_tick_now();
     for (int i = rtsp->sessionc - 1; i >= 0; i--)
     {
-        if (rtsp->sessionv[i]->last_seen + rtsp->timeout * CLOCK_FREQ < now)
+        if (rtsp->sessionv[i]->last_seen + rtsp->timeout < now)
         {
             if (rtsp->vod_media != NULL)
             {
@@ -403,10 +408,10 @@ void RtspClientDel( rtsp_stream_t *rtsp, rtsp_session_t *session )
 /** rtsp must be locked */
 static void RtspClientAlive( rtsp_session_t *session )
 {
-    if (session->stream->timeout <= 0)
+    if (session->stream->timeout == 0)
         return;
 
-    session->last_seen = mdate();
+    session->last_seen = vlc_tick_now();
     RtspUpdateTimer(session->stream);
 }
 
@@ -463,7 +468,7 @@ int RtspTrackAttach( rtsp_stream_t *rtsp, const char *name,
         vlc_rand_bytes (&track.seq_init, sizeof (track.seq_init));
         vlc_rand_bytes (&track.ssrc, sizeof (track.ssrc));
 
-        INSERT_ELEM(session->trackv, session->trackc, session->trackc, track);
+        TAB_APPEND(session->trackc, session->trackv, track);
         tr = session->trackv + session->trackc - 1;
     }
 
@@ -509,7 +514,7 @@ void RtspTrackDetach( rtsp_stream_t *rtsp, const char *name,
                 /* No (more) SETUP information: better get rid of the
                  * track so that we can have new random ssrc and
                  * seq_init next time. */
-                REMOVE_ELEM( session->trackv, session->trackc, i );
+                TAB_ERASE(session->trackc, session->trackv, i);
                 break;
             }
             /* We keep the SETUP information of the track, but stop it */
@@ -570,7 +575,7 @@ static inline const char *parameter_next( const char *str )
 }
 
 
-static int64_t ParseNPT (const char *str)
+static vlc_tick_t ParseNPT (const char *str)
 {
     locale_t loc = newlocale (LC_NUMERIC_MASK, "C", NULL);
     locale_t oldloc = uselocale (loc);
@@ -588,7 +593,7 @@ static int64_t ParseNPT (const char *str)
         uselocale (oldloc);
         freelocale (loc);
     }
-    return sec < 0 ? -1 : sec * CLOCK_FREQ;
+    return sec < 0 ? -1 : vlc_tick_from_sec( sec );
 }
 
 
@@ -705,7 +710,9 @@ static int RtspHandler( rtsp_stream_t *rtsp, rtsp_stream_id_t *id,
                  tpt = transport_next( tpt ) )
             {
                 bool b_multicast = true, b_unsupp = false;
+                bool b_multicast_port_set = false;
                 unsigned loport = 5004, hiport; /* from RFC3551 */
+                unsigned mloport = 5004, mhiport = mloport + 1;
 
                 /* Check transport protocol. */
                 /* Currently, we only support RTP/AVP over UDP */
@@ -732,6 +739,10 @@ static int RtspHandler( rtsp_stream_t *rtsp, rtsp_stream_id_t *id,
                                 == 2 )
                         ;
                     else
+                    if( sscanf( opt, "port=%u-%u", &mloport, &mhiport )
+                                == 2 )
+                        b_multicast_port_set = true;
+                    else
                     if( strncmp( opt, "mode=", 5 ) == 0 )
                     {
                         if( strncasecmp( opt + 5, "play", 4 )
@@ -756,7 +767,7 @@ static int RtspHandler( rtsp_stream_t *rtsp, rtsp_stream_id_t *id,
                      * "source" and "append" are invalid (server-only);
                      * "ssrc" also (as clarified per RFC2326bis).
                      *
-                     * For multicast, "port", "layers", "ttl" are set by the
+                     * For multicast, "layers", "ttl" are set by the
                      * stream output configuration.
                      *
                      * For unicast, we want to decide "server_port" values.
@@ -779,6 +790,15 @@ static int RtspHandler( rtsp_stream_t *rtsp, rtsp_stream_id_t *id,
                         continue;
 
                     net_GetPeerAddress(id->mcast_fd, dst, &dport);
+
+                    /* Checking for multicast port override */
+                    if( b_multicast_port_set
+                     && ((unsigned)dport != mloport
+                      || (unsigned)dport + 1 != mhiport))
+                    {
+                        answer->i_status = 551;
+                        continue;
+                    }
 
                     ttl = var_InheritInteger(owner, "ttl");
                     if (ttl <= 0)
@@ -879,8 +899,7 @@ static int RtspHandler( rtsp_stream_t *rtsp, rtsp_stream_id_t *id,
                         else
                             ssrc = id->ssrc;
 
-                        INSERT_ELEM( ses->trackv, ses->trackc, ses->trackc,
-                                     track );
+                        TAB_APPEND(ses->trackc, ses->trackv, track);
                     }
                     else if (tr->setup_fd == -1)
                     {
@@ -932,7 +951,7 @@ static int RtspHandler( rtsp_stream_t *rtsp, rtsp_stream_id_t *id,
             answer->i_status = 200;
 
             psz_session = httpd_MsgGet( query, "Session" );
-            int64_t start = -1, end = -1, npt;
+            vlc_tick_t start = -1, end = -1, npt;
             const char *range = httpd_MsgGet (query, "Range");
             if (range != NULL)
             {
@@ -992,7 +1011,7 @@ static int RtspHandler( rtsp_stream_t *rtsp, rtsp_stream_id_t *id,
                             break;
                     }
                 }
-                int64_t ts = rtp_get_ts(vod ? NULL : (sout_stream_t *)owner,
+                vlc_tick_t ts = rtp_get_ts(vod ? NULL : (sout_stream_t *)owner,
                                         sout_id, rtsp->vod_media, psz_session,
                                         vod ? NULL : &npt);
 
@@ -1053,7 +1072,7 @@ static int RtspHandler( rtsp_stream_t *rtsp, rtsp_stream_id_t *id,
                     npt = start;
                 }
 
-                double f_npt = (double) npt / CLOCK_FREQ;
+                double f_npt = secf_from_vlc_tick(npt);
                 httpd_MsgAdd( answer, "Range", "npt=%f-", f_npt );
             }
 
@@ -1109,15 +1128,16 @@ static int RtspHandler( rtsp_stream_t *rtsp, rtsp_stream_id_t *id,
             if (ses != NULL && id == NULL)
             {
                 assert(vod);
-                int64_t npt = 0;
+                vlc_tick_t npt = 0;
                 vod_pause(rtsp->vod_media, psz_session, &npt);
-                double f_npt = (double) npt / CLOCK_FREQ;
+                double f_npt = secf_from_vlc_tick(npt);
                 httpd_MsgAdd( answer, "Range", "npt=%f-", f_npt );
             }
             break;
         }
 
         case HTTPD_MSG_GETPARAMETER:
+        {
             if( query->i_body > 0 )
             {
                 answer->i_status = 451;
@@ -1132,6 +1152,7 @@ static int RtspHandler( rtsp_stream_t *rtsp, rtsp_stream_id_t *id,
                 RtspClientAlive(ses);
             vlc_mutex_unlock( &rtsp->lock );
             break;
+        }
 
         case HTTPD_MSG_TEARDOWN:
         {
@@ -1162,7 +1183,7 @@ static int RtspHandler( rtsp_stream_t *rtsp, rtsp_stream_id_t *id,
                             /* Keep VoD tracks whose instance is still
                              * running */
                             if (!(vod && ses->trackv[i].sout_id != NULL))
-                                REMOVE_ELEM( ses->trackv, ses->trackc, i );
+                                TAB_ERASE(ses->trackc, ses->trackv, i);
                         }
                     }
                     RtspClientAlive(ses);
@@ -1178,9 +1199,9 @@ static int RtspHandler( rtsp_stream_t *rtsp, rtsp_stream_id_t *id,
 
     if( psz_session )
     {
-        if (rtsp->timeout > 0)
-            httpd_MsgAdd( answer, "Session", "%s;timeout=%d", psz_session,
-                                                              rtsp->timeout );
+        if (rtsp->timeout != 0)
+            httpd_MsgAdd( answer, "Session", "%s;timeout=%" PRIu64, psz_session,
+                                                              SEC_FROM_VLC_TICK(rtsp->timeout) );
         else
             httpd_MsgAdd( answer, "Session", "%s", psz_session );
     }

@@ -2,7 +2,6 @@
  * ctrl_tree.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
- * $Id$
  *
  * Authors: Antoine Cellerier <dionoea@videolan.org>
  *          Clément Stenac <zorglub@videolan.org>
@@ -39,7 +38,7 @@
 #include "../events/evt_scroll.hpp"
 #include "../events/evt_dragndrop.hpp"
 #include "../vars/playtree.hpp"
-#include <vlc_keys.h>
+#include <vlc_actions.h>
 
 #define LINE_INTERVAL 1  // Number of pixels inserted between 2 lines
 

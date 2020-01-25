@@ -25,6 +25,7 @@
 
 #include "ts_pid.h"
 #include "ts_streams.h"
+#include "timestamps.h"
 
 #include "ts.h"
 
@@ -53,6 +54,8 @@ void ts_pid_list_Release( demux_t *p_demux, ts_pid_list_t *p_list )
 #ifndef NDEBUG
         if( pid->type != TYPE_FREE )
             msg_Err( p_demux, "PID %d type %d not freed refcount %d", pid->i_pid, pid->type, pid->i_refcount );
+#else
+        VLC_UNUSED(p_demux);
 #endif
         free( pid );
     }
@@ -62,14 +65,16 @@ void ts_pid_list_Release( demux_t *p_demux, ts_pid_list_t *p_list )
 struct searchkey
 {
     int16_t i_pid;
-    ts_pid_t **pp_last;
+    ts_pid_t *const *pp_last;
 };
 
-static int ts_bsearch_searchkey_Compare( void *key, void *other )
+static int ts_bsearch_searchkey_Compare( const void *key, const void *other )
 {
-    struct searchkey *p_key = (struct searchkey *) key;
-    ts_pid_t *p_pid = *((ts_pid_t **) other);
-    p_key->pp_last = (ts_pid_t **) other;
+    struct searchkey *p_key = (void *)key;
+    ts_pid_t *const *pp_pid = other;
+
+    ts_pid_t *p_pid = *pp_pid;
+    p_key->pp_last = other;
     return ( p_key->i_pid >= p_pid->i_pid ) ? p_key->i_pid - p_pid->i_pid : -1;
 }
 
@@ -167,8 +172,10 @@ static void PIDReset( ts_pid_t *pid )
 {
     assert(pid->i_refcount == 0);
     pid->i_cc       = 0xff;
+    pid->i_dup      = 0;
     pid->i_flags    &= ~FLAG_SCRAMBLED;
     pid->type = TYPE_FREE;
+    memset(pid->prevpktbytes, 0, PREVPKTKEEPBYTES);
 }
 
 bool PIDSetup( demux_t *p_demux, ts_pid_type_t i_type, ts_pid_t *pid, ts_pid_t *p_parent )
@@ -202,10 +209,10 @@ bool PIDSetup( demux_t *p_demux, ts_pid_type_t i_type, ts_pid_t *pid, ts_pid_t *
                 return false;
             break;
 
-        case TYPE_PES:
+        case TYPE_STREAM:
             PIDReset( pid );
-            pid->u.p_pes = ts_pes_New( p_demux, p_parent->u.p_pmt );
-            if( !pid->u.p_pes )
+            pid->u.p_stream = ts_stream_New( p_demux, p_parent->u.p_pmt );
+            if( !pid->u.p_stream )
                 return false;
             break;
 
@@ -284,9 +291,9 @@ void PIDRelease( demux_t *p_demux, ts_pid_t *pid )
             pid->u.p_pmt = NULL;
             break;
 
-        case TYPE_PES:
-            ts_pes_Del( p_demux, pid->u.p_pes );
-            pid->u.p_pes = NULL;
+        case TYPE_STREAM:
+            ts_stream_Del( p_demux, pid->u.p_stream );
+            pid->u.p_stream = NULL;
             break;
 
         case TYPE_SI:

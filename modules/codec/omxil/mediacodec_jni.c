@@ -34,11 +34,12 @@
 #include <OMX_Core.h>
 #include <OMX_Component.h>
 #include "omxil_utils.h"
+#include "../../packetizer/hevc_nal.h"
 
 #include "mediacodec.h"
 
 char* MediaCodec_GetName(vlc_object_t *p_obj, const char *psz_mime,
-                         size_t h264_profile);
+                         int profile, int *p_quirks);
 
 #define THREAD_NAME "mediacodec_jni"
 
@@ -58,6 +59,7 @@ struct jfields
     jclass buffer_info_class, byte_buffer_class;
     jmethodID tostring;
     jmethodID get_codec_count, get_codec_info_at, is_encoder, get_capabilities_for_type;
+    jmethodID is_feature_supported;
     jfieldID profile_levels_field, profile_field, level_field;
     jmethodID get_supported_types, get_name;
     jmethodID create_by_codec_name, configure, start, stop, flush, release;
@@ -113,7 +115,7 @@ static const struct member members[] = {
     { "getSupportedTypes", "()[Ljava/lang/String;", "android/media/MediaCodecInfo", OFF(get_supported_types), METHOD, true },
     { "getName", "()Ljava/lang/String;", "android/media/MediaCodecInfo", OFF(get_name), METHOD, true },
     { "getCapabilitiesForType", "(Ljava/lang/String;)Landroid/media/MediaCodecInfo$CodecCapabilities;", "android/media/MediaCodecInfo", OFF(get_capabilities_for_type), METHOD, true },
-
+    { "isFeatureSupported", "(Ljava/lang/String;)Z", "android/media/MediaCodecInfo$CodecCapabilities", OFF(is_feature_supported), METHOD, false },
     { "profileLevels", "[Landroid/media/MediaCodecInfo$CodecProfileLevel;", "android/media/MediaCodecInfo$CodecCapabilities", OFF(profile_levels_field), FIELD, true },
     { "profile", "I", "android/media/MediaCodecInfo$CodecProfileLevel", OFF(profile_field), FIELD, true },
     { "level", "I", "android/media/MediaCodecInfo$CodecProfileLevel", OFF(level_field), FIELD, true },
@@ -235,13 +237,18 @@ InitJNIFields (vlc_object_t *p_obj, JNIEnv *env)
         }
         *(jclass*)((uint8_t*)&jfields + classes[i].offset) =
             (jclass) (*env)->NewGlobalRef(env, clazz);
+        (*env)->DeleteLocalRef(env, clazz);
     }
 
-    jclass last_class;
+    jclass last_class = NULL;
     for (int i = 0; members[i].name; i++)
     {
         if (i == 0 || strcmp(members[i].class, members[i - 1].class))
+        {
+            if (last_class != NULL)
+                (*env)->DeleteLocalRef(env, last_class);
             last_class = (*env)->FindClass(env, members[i].class);
+        }
 
         if (CHECK_EXCEPTION())
         {
@@ -271,6 +278,8 @@ InitJNIFields (vlc_object_t *p_obj, JNIEnv *env)
                 goto end;
         }
     }
+    if (last_class != NULL)
+        (*env)->DeleteLocalRef(env, last_class);
     /* getInputBuffers and getOutputBuffers are deprecated if API >= 21
      * use getInputBuffer and getOutputBuffer instead. */
     if (jfields.get_input_buffer && jfields.get_output_buffer)
@@ -305,11 +314,41 @@ struct mc_api_sys
     jobject input_buffers, output_buffers;
 };
 
+static char *GetManufacturer(JNIEnv *env)
+{
+    char *manufacturer = NULL;
+
+    jclass clazz = (*env)->FindClass(env, "android/os/Build");
+    if (CHECK_EXCEPTION())
+        return NULL;
+
+    jfieldID id = (*env)->GetStaticFieldID(env, clazz, "MANUFACTURER",
+                                           "Ljava/lang/String;");
+    if (CHECK_EXCEPTION())
+        goto end;
+
+    jstring jstr = (*env)->GetStaticObjectField(env, clazz, id);
+
+    if (CHECK_EXCEPTION())
+        goto end;
+
+    const char *str = (*env)->GetStringUTFChars(env, jstr, 0);
+    if (str)
+    {
+        manufacturer = strdup(str);
+        (*env)->ReleaseStringUTFChars(env, jstr, str);
+    }
+
+end:
+    (*env)->DeleteLocalRef(env, clazz);
+    return manufacturer;
+}
+
 /*****************************************************************************
  * MediaCodec_GetName
  *****************************************************************************/
 char* MediaCodec_GetName(vlc_object_t *p_obj, const char *psz_mime,
-                         size_t h264_profile)
+                         int profile, int *p_quirks)
 {
     JNIEnv *env;
     int num_codecs;
@@ -341,6 +380,7 @@ char* MediaCodec_GetName(vlc_object_t *p_obj, const char *psz_mime,
         int profile_levels_len = 0, num_types = 0;
         const char *name_ptr = NULL;
         bool found = false;
+        bool b_adaptive = false;
 
         info = (*env)->CallStaticObjectMethod(env, jfields.media_codec_list_class,
                                               jfields.get_codec_info_at, i);
@@ -368,6 +408,16 @@ char* MediaCodec_GetName(vlc_object_t *p_obj, const char *psz_mime,
             profile_levels = (*env)->GetObjectField(env, codec_capabilities, jfields.profile_levels_field);
             if (profile_levels)
                 profile_levels_len = (*env)->GetArrayLength(env, profile_levels);
+            if (jfields.is_feature_supported)
+            {
+                jstring jfeature = JNI_NEW_STRING("adaptive-playback");
+                b_adaptive =
+                    (*env)->CallBooleanMethod(env, codec_capabilities,
+                                              jfields.is_feature_supported,
+                                              jfeature);
+                CHECK_EXCEPTION();
+                (*env)->DeleteLocalRef(env, jfeature);
+            }
         }
         msg_Dbg(p_obj, "Number of profile levels: %d", profile_levels_len);
 
@@ -383,7 +433,7 @@ char* MediaCodec_GetName(vlc_object_t *p_obj, const char *psz_mime,
                 /* The mime type is matching for this component. We
                    now check if the capabilities of the codec is
                    matching the video format. */
-                if (h264_profile)
+                if (profile > 0)
                 {
                     /* This decoder doesn't expose its profiles and is high
                      * profile capable */
@@ -395,9 +445,25 @@ char* MediaCodec_GetName(vlc_object_t *p_obj, const char *psz_mime,
                         jobject profile_level = (*env)->GetObjectArrayElement(env, profile_levels, i);
 
                         int omx_profile = (*env)->GetIntField(env, profile_level, jfields.profile_field);
-                        size_t codec_profile = convert_omx_to_profile_idc(omx_profile);
                         (*env)->DeleteLocalRef(env, profile_level);
-                        if (codec_profile != h264_profile)
+
+                        int codec_profile = 0;
+                        if (strcmp(psz_mime, "video/avc") == 0)
+                            codec_profile = convert_omx_to_profile_idc(omx_profile);
+                        else if (strcmp(psz_mime, "video/hevc") == 0)
+                        {
+                            switch (omx_profile)
+                            {
+                                case 0x1: /* OMX_VIDEO_HEVCProfileMain */
+                                    codec_profile = VLC_HEVC_PROFILE_MAIN;
+                                    break;
+                                case 0x2:    /* OMX_VIDEO_HEVCProfileMain10 */
+                                case 0x1000: /* OMX_VIDEO_HEVCProfileMain10HDR10 */
+                                    codec_profile = VLC_HEVC_PROFILE_MAIN_10;
+                                    break;
+                            }
+                        }
+                        if (codec_profile != profile)
                             continue;
                         /* Some encoders set the level too high, thus we ignore it for the moment.
                            We could try to guess the actual profile based on the resolution. */
@@ -417,6 +483,35 @@ char* MediaCodec_GetName(vlc_object_t *p_obj, const char *psz_mime,
             {
                 memcpy(psz_name, name_ptr, name_len);
                 psz_name[name_len] = '\0';
+
+                bool ignore_size = false;
+
+                /* The AVC/HEVC MediaCodec implementation on Amazon fire TV
+                 * seems to report the Output surface size instead of the Video
+                 * size. This bug is specific to Amazon devices since other MTK
+                 * implementations report the correct size. The manufacturer is
+                 * checked only if the codec matches the MTK one in order to
+                 * avoid extra manufacturer check for other every devices.
+                 * */
+                static const char mtk_dec[] = "OMX.MTK.VIDEO.DECODER.";
+                if (strncmp(psz_name, mtk_dec, sizeof(mtk_dec) - 1) == 0)
+                {
+                    char *manufacturer = GetManufacturer(env);
+                    if (manufacturer && strcmp(manufacturer, "Amazon") == 0)
+                        ignore_size = true;
+                    free(manufacturer);
+                }
+
+                if (ignore_size)
+                {
+                    *p_quirks |= MC_API_VIDEO_QUIRKS_IGNORE_SIZE;
+                    /* If the MediaCodec size is ignored, the adaptive mode
+                     * should be disabled in order to trigger the hxxx_helper
+                     * parsers that will parse the correct video size. Hence
+                     * the following 'else if' */
+                }
+                else if (b_adaptive)
+                    *p_quirks |= MC_API_VIDEO_QUIRKS_ADAPTIVE;
             }
         }
 loopclean:
@@ -439,6 +534,122 @@ loopclean:
     (*env)->DeleteLocalRef(env, jmime);
 
     return psz_name;
+}
+
+/*****************************************************************************
+ * ConfigureDecoder
+ *****************************************************************************/
+static int ConfigureDecoder(mc_api *api, union mc_api_args* p_args)
+{
+    mc_api_sys *p_sys = api->p_sys;
+    JNIEnv* env = NULL;
+    int i_ret = MC_API_ERROR;
+    bool b_direct_rendering = false;
+    jstring jmime = NULL;
+    jstring jcodec_name = NULL;
+    jobject jcodec = NULL;
+    jobject jformat = NULL;
+    jobject jsurface = NULL;
+
+    assert(api->psz_mime && api->psz_name);
+
+    GET_ENV();
+
+    jmime = JNI_NEW_STRING(api->psz_mime);
+    jcodec_name = JNI_NEW_STRING(api->psz_name);
+    if (!jmime || !jcodec_name)
+        goto error;
+
+    /* This method doesn't handle errors nicely, it crashes if the codec isn't
+     * found.  (The same goes for createDecoderByType.) This is fixed in latest
+     * AOSP and in 4.2, but not in 4.1 devices. */
+    jcodec = (*env)->CallStaticObjectMethod(env, jfields.media_codec_class,
+                                            jfields.create_by_codec_name,
+                                            jcodec_name);
+    if (CHECK_EXCEPTION())
+    {
+        msg_Warn(api->p_obj, "Exception occurred in MediaCodec.createByCodecName");
+        goto error;
+    }
+    p_sys->codec = (*env)->NewGlobalRef(env, jcodec);
+
+    if (api->i_cat == VIDEO_ES)
+    {
+        assert(p_args->video.i_angle == 0 || api->b_support_rotation);
+        jformat = (*env)->CallStaticObjectMethod(env,
+                                                 jfields.media_format_class,
+                                                 jfields.create_video_format,
+                                                 jmime,
+                                                 p_args->video.i_width,
+                                                 p_args->video.i_height);
+        jsurface = p_args->video.p_jsurface;
+        b_direct_rendering = !!jsurface;
+
+        if (p_args->video.i_angle != 0)
+            SET_INTEGER(jformat, "rotation-degrees", p_args->video.i_angle);
+
+        if (b_direct_rendering)
+        {
+            /* feature-tunneled-playback available since API 21 */
+            if (jfields.get_input_buffer && p_args->video.b_tunneled_playback)
+                SET_INTEGER(jformat, "feature-tunneled-playback", 1);
+
+            if (p_args->video.b_adaptive_playback)
+                SET_INTEGER(jformat, "feature-adaptive-playback", 1);
+        }
+    }
+    else
+    {
+        jformat = (*env)->CallStaticObjectMethod(env,
+                                                 jfields.media_format_class,
+                                                 jfields.create_audio_format,
+                                                 jmime,
+                                                 p_args->audio.i_sample_rate,
+                                                 p_args->audio.i_channel_count);
+    }
+
+    /* No limits for input size */
+    SET_INTEGER(jformat, "max-input-size", 0);
+
+    if (b_direct_rendering)
+    {
+        // Configure MediaCodec with the Android surface.
+        (*env)->CallVoidMethod(env, p_sys->codec, jfields.configure,
+                               jformat, jsurface, NULL, 0);
+        if (CHECK_EXCEPTION())
+        {
+            msg_Warn(api->p_obj, "Exception occurred in MediaCodec.configure "
+                                 "with an output surface.");
+            goto error;
+        }
+
+        api->b_direct_rendering = b_direct_rendering;
+    }
+    else
+    {
+        (*env)->CallVoidMethod(env, p_sys->codec, jfields.configure,
+                               jformat, NULL, NULL, 0);
+        if (CHECK_EXCEPTION())
+        {
+            msg_Warn(api->p_obj, "Exception occurred in MediaCodec.configure");
+            goto error;
+        }
+        api->b_direct_rendering = false;
+    }
+
+    i_ret = 0;
+
+error:
+    if (jmime)
+        (*env)->DeleteLocalRef(env, jmime);
+    if (jcodec_name)
+        (*env)->DeleteLocalRef(env, jcodec_name);
+    if (jcodec)
+        (*env)->DeleteLocalRef(env, jcodec);
+    if (jformat)
+        (*env)->DeleteLocalRef(env, jformat);
+
+    return i_ret;
 }
 
 /*****************************************************************************
@@ -491,97 +702,17 @@ static int Stop(mc_api *api)
 /*****************************************************************************
  * Start
  *****************************************************************************/
-static int Start(mc_api *api, union mc_api_args *p_args)
+static int Start(mc_api *api)
 {
     mc_api_sys *p_sys = api->p_sys;
     JNIEnv* env = NULL;
-    int i_ret = MC_API_ERROR;
-    bool b_direct_rendering = false;
-    jstring jmime = NULL;
-    jstring jcodec_name = NULL;
-    jobject jcodec = NULL;
-    jobject jformat = NULL;
     jobject jinput_buffers = NULL;
     jobject joutput_buffers = NULL;
     jobject jbuffer_info = NULL;
-    jobject jsurface = NULL;
-
-    assert(api->psz_mime && api->psz_name);
 
     GET_ENV();
 
-    jmime = JNI_NEW_STRING(api->psz_mime);
-    jcodec_name = JNI_NEW_STRING(api->psz_name);
-    if (!jmime || !jcodec_name)
-        goto error;
-
-    /* This method doesn't handle errors nicely, it crashes if the codec isn't
-     * found.  (The same goes for createDecoderByType.) This is fixed in latest
-     * AOSP and in 4.2, but not in 4.1 devices. */
-    jcodec = (*env)->CallStaticObjectMethod(env, jfields.media_codec_class,
-                                            jfields.create_by_codec_name,
-                                            jcodec_name);
-    if (CHECK_EXCEPTION())
-    {
-        msg_Warn(api->p_obj, "Exception occurred in MediaCodec.createByCodecName");
-        goto error;
-    }
-    p_sys->codec = (*env)->NewGlobalRef(env, jcodec);
-
-    if (api->i_cat == VIDEO_ES)
-    {
-        assert(p_args->video.i_angle == 0 || api->b_support_rotation);
-        jformat = (*env)->CallStaticObjectMethod(env,
-                                                 jfields.media_format_class,
-                                                 jfields.create_video_format,
-                                                 jmime,
-                                                 p_args->video.i_width,
-                                                 p_args->video.i_height);
-        jsurface = p_args->video.p_jsurface;
-        b_direct_rendering = !!jsurface;
-
-        if (p_args->video.i_angle != 0)
-            SET_INTEGER(jformat, "rotation-degrees", p_args->video.i_angle);
-
-        /* feature-tunneled-playback available since API 21 */
-        if (b_direct_rendering && jfields.get_input_buffer)
-            SET_INTEGER(jformat, "feature-tunneled-playback",
-                        p_args->video.b_tunneled_playback);
-    }
-    else
-    {
-        jformat = (*env)->CallStaticObjectMethod(env,
-                                                 jfields.media_format_class,
-                                                 jfields.create_audio_format,
-                                                 jmime,
-                                                 p_args->audio.i_sample_rate,
-                                                 p_args->audio.i_channel_count);
-    }
-    /* No limits for input size */
-    SET_INTEGER(jformat, "max-input-size", 0);
-
-    if (b_direct_rendering)
-    {
-        // Configure MediaCodec with the Android surface.
-        (*env)->CallVoidMethod(env, p_sys->codec, jfields.configure,
-                               jformat, jsurface, NULL, 0);
-        if (CHECK_EXCEPTION())
-        {
-            msg_Warn(api->p_obj, "Exception occurred in MediaCodec.configure "
-                                 "with an output surface.");
-            goto error;
-        }
-    }
-    else
-    {
-        (*env)->CallVoidMethod(env, p_sys->codec, jfields.configure,
-                               jformat, NULL, NULL, 0);
-        if (CHECK_EXCEPTION())
-        {
-            msg_Warn(api->p_obj, "Exception occurred in MediaCodec.configure");
-            goto error;
-        }
-    }
+    int i_ret = MC_API_ERROR;
 
     (*env)->CallVoidMethod(env, p_sys->codec, jfields.start);
     if (CHECK_EXCEPTION())
@@ -593,7 +724,6 @@ static int Start(mc_api *api, union mc_api_args *p_args)
 
     if (jfields.get_input_buffers && jfields.get_output_buffers)
     {
-
         jinput_buffers = (*env)->CallObjectMethod(env, p_sys->codec,
                                                   jfields.get_input_buffers);
         if (CHECK_EXCEPTION())
@@ -616,19 +746,10 @@ static int Start(mc_api *api, union mc_api_args *p_args)
                                      jfields.buffer_info_ctor);
     p_sys->buffer_info = (*env)->NewGlobalRef(env, jbuffer_info);
 
-    api->b_direct_rendering = b_direct_rendering;
     i_ret = 0;
     msg_Dbg(api->p_obj, "MediaCodec via JNI opened");
 
 error:
-    if (jmime)
-        (*env)->DeleteLocalRef(env, jmime);
-    if (jcodec_name)
-        (*env)->DeleteLocalRef(env, jcodec_name);
-    if (jcodec)
-        (*env)->DeleteLocalRef(env, jcodec);
-    if (jformat)
-        (*env)->DeleteLocalRef(env, jformat);
     if (jinput_buffers)
         (*env)->DeleteLocalRef(env, jinput_buffers);
     if (joutput_buffers)
@@ -663,7 +784,7 @@ static int Flush(mc_api *api)
 /*****************************************************************************
  * DequeueInput
  *****************************************************************************/
-static int DequeueInput(mc_api *api, mtime_t i_timeout)
+static int DequeueInput(mc_api *api, vlc_tick_t i_timeout)
 {
     mc_api_sys *p_sys = api->p_sys;
     JNIEnv *env;
@@ -689,7 +810,7 @@ static int DequeueInput(mc_api *api, mtime_t i_timeout)
  * QueueInput
  *****************************************************************************/
 static int QueueInput(mc_api *api, int i_index, const void *p_buf,
-                      size_t i_size, mtime_t i_ts, bool b_config)
+                      size_t i_size, vlc_tick_t i_ts, bool b_config)
 {
     mc_api_sys *p_sys = api->p_sys;
     JNIEnv *env;
@@ -743,7 +864,7 @@ static int QueueInput(mc_api *api, int i_index, const void *p_buf,
 /*****************************************************************************
  * DequeueOutput
  *****************************************************************************/
-static int DequeueOutput(mc_api *api, mtime_t i_timeout)
+static int DequeueOutput(mc_api *api, vlc_tick_t i_timeout)
 {
     mc_api_sys *p_sys = api->p_sys;
     JNIEnv *env;
@@ -755,7 +876,7 @@ static int DequeueOutput(mc_api *api, mtime_t i_timeout)
                                     p_sys->buffer_info, i_timeout);
     if (CHECK_EXCEPTION())
     {
-        msg_Err(api->p_obj, "Exception in MediaCodec.dequeueOutputBuffer");
+        msg_Warn(api->p_obj, "Exception in MediaCodec.dequeueOutputBuffer");
         return MC_API_ERROR;
     }
     if (i_index >= 0)
@@ -941,17 +1062,19 @@ static void Clean(mc_api *api)
 }
 
 /*****************************************************************************
- * Configure
+ * Prepare
  *****************************************************************************/
-static int Configure(mc_api *api, size_t i_h264_profile)
+static int Prepare(mc_api *api, int i_profile)
 {
     free(api->psz_name);
+
+    api->i_quirks = 0;
     api->psz_name = MediaCodec_GetName(api->p_obj, api->psz_mime,
-                                       i_h264_profile);
+                                       i_profile, &api->i_quirks);
     if (!api->psz_name)
         return MC_API_ERROR;
-    api->i_quirks = OMXCodec_GetQuirks(api->i_cat, api->i_codec, api->psz_name,
-                                       strlen(api->psz_name));
+    api->i_quirks |= OMXCodec_GetQuirks(api->i_cat, api->i_codec, api->psz_name,
+                                        strlen(api->psz_name));
 
     /* Allow interlaced picture after API 21 */
     if (jfields.get_input_buffer && jfields.get_output_buffer)
@@ -976,7 +1099,8 @@ int MediaCodecJni_Init(mc_api *api)
         return MC_API_ERROR;
 
     api->clean = Clean;
-    api->configure = Configure;
+    api->prepare = Prepare;
+    api->configure_decoder = ConfigureDecoder;
     api->start = Start;
     api->stop = Stop;
     api->flush = Flush;
@@ -985,6 +1109,7 @@ int MediaCodecJni_Init(mc_api *api)
     api->dequeue_out = DequeueOutput;
     api->get_out = GetOutput;
     api->release_out = ReleaseOutput;
+    api->release_out_ts = NULL;
     api->set_output_surface = SetOutputSurface;
 
     /* Allow rotation only after API 21 */

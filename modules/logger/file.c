@@ -65,6 +65,21 @@ static void LogText(void *opaque, int type, const vlc_log_t *meta,
     funlockfile(stream);
 }
 
+static void Close(void *opaque)
+{
+    vlc_logger_sys_t *sys = opaque;
+
+    fputs(sys->footer, sys->stream);
+    fclose(sys->stream);
+    free(sys);
+}
+
+static const struct vlc_logger_operations text_ops =
+{
+    LogText,
+    Close
+};
+
 #define HTML_FILENAME "vlc-log.html"
 #define HTML_HEADER \
     "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.01//EN\"\n" \
@@ -105,7 +120,14 @@ static void LogHtml(void *opaque, int type, const vlc_log_t *meta,
     funlockfile(stream);
 }
 
-static vlc_log_cb Open(vlc_object_t *obj, void **restrict sysp)
+static const struct vlc_logger_operations html_ops =
+{
+    LogHtml,
+    Close
+};
+
+static const struct vlc_logger_operations *Open(vlc_object_t *obj,
+                                                void **restrict sysp)
 {
     if (!var_InheritBool(obj, "file-logging"))
         return NULL;
@@ -125,7 +147,7 @@ static vlc_log_cb Open(vlc_object_t *obj, void **restrict sysp)
     const char *filename = TEXT_FILENAME;
     const char *header = TEXT_HEADER;
 
-    vlc_log_cb cb = LogText;
+    const struct vlc_logger_operations *ops = &text_ops;
     sys->footer = TEXT_FOOTER;
     sys->verbosity = verbosity;
 
@@ -136,7 +158,7 @@ static vlc_log_cb Open(vlc_object_t *obj, void **restrict sysp)
         {
             filename = HTML_FILENAME;
             header = HTML_HEADER;
-            cb = LogHtml;
+            ops = &html_ops;
             sys->footer = HTML_FOOTER;
         }
         else if (strcmp(mode, "text"))
@@ -173,34 +195,38 @@ static vlc_log_cb Open(vlc_object_t *obj, void **restrict sysp)
     }
     free(path);
 
-    setvbuf(sys->stream, NULL, _IONBF, 0);
+    setvbuf(sys->stream, NULL, _IOLBF, 0);
     fputs(header, sys->stream);
 
     *sysp = sys;
-    return cb;
-}
-
-static void Close(void *opaque)
-{
-    vlc_logger_sys_t *sys = opaque;
-
-    fputs(sys->footer, sys->stream);
-    fclose(sys->stream);
-    free(sys);
+    return ops;
 }
 
 static const char *const mode_list[] = { "text", "html" };
 static const char *const mode_list_text[] = { N_("Text"), N_("HTML") };
 
+static const int verbosity_values[] = {
+    -1,
+    VLC_MSG_INFO,
+    VLC_MSG_ERR,
+    VLC_MSG_WARN,
+    VLC_MSG_DBG
+};
+
+static const char *const verbosity_text[] = { N_("Default"), N_("Info"), N_("Error"), N_("Warning"), N_("Debug") };
+
 #define FILE_LOG_TEXT N_("Log to file")
 #define FILE_LOG_LONGTEXT N_("Log all VLC messages to a text file.")
+
+#define LOGFILE_NAME_TEXT N_("Log filename")
+#define LOGFILE_NAME_LONGTEXT N_("Specify the log filename.")
 
 #define LOGMODE_TEXT N_("Log format")
 #define LOGMODE_LONGTEXT N_("Specify the logging format.")
 
 #define LOGVERBOSE_TEXT N_("Verbosity")
-#define LOGVERBOSE_LONGTEXT N_("Select the verbosity to use for log or -1 to " \
-"use the same verbosity given by --verbose.")
+#define LOGVERBOSE_LONGTEXT N_("Select the logging verbosity or " \
+"default to use the same verbosity given by --verbose.")
 
 vlc_module_begin()
     set_shortname(N_("Logger"))
@@ -208,13 +234,12 @@ vlc_module_begin()
     set_category(CAT_ADVANCED)
     set_subcategory(SUBCAT_ADVANCED_MISC)
     set_capability("logger", 15)
-    set_callbacks(Open, Close)
+    set_callback(Open)
 
     add_bool("file-logging", false, FILE_LOG_TEXT, FILE_LOG_LONGTEXT, false)
-    add_savefile("logfile", NULL,
-                 N_("Log filename"), N_("Specify the log filename."), false)
+    add_savefile("logfile", NULL, LOGFILE_NAME_TEXT, LOGFILE_NAME_LONGTEXT)
     add_string("logmode", "text", LOGMODE_TEXT, LOGMODE_LONGTEXT, false)
         change_string_list(mode_list, mode_list_text)
-    add_integer("log-verbose", -1, LOGVERBOSE_TEXT, LOGVERBOSE_LONGTEXT,
-                false)
+    add_integer("log-verbose", -1, LOGVERBOSE_TEXT, LOGVERBOSE_LONGTEXT, false)
+        change_integer_list(verbosity_values, verbosity_text)
 vlc_module_end ()

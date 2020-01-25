@@ -2,7 +2,6 @@
  * libvlc_media.h:  libvlc external API
  *****************************************************************************
  * Copyright (C) 1998-2009 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Clément Stenac <zorglub@videolan.org>
  *          Jean-Paul Saman <jpsaman@videolan.org>
@@ -28,6 +27,8 @@
 
 # ifdef __cplusplus
 extern "C" {
+# else
+#  include <stdbool.h>
 # endif
 
 /** \defgroup libvlc_media LibVLC media
@@ -132,39 +133,7 @@ typedef struct libvlc_media_stats_t
     /* Audio output */
     int         i_played_abuffers;
     int         i_lost_abuffers;
-
-    /* Stream output */
-    int         i_sent_packets;
-    int         i_sent_bytes;
-    float       f_send_bitrate;
 } libvlc_media_stats_t;
-
-typedef struct libvlc_media_track_info_t
-{
-    /* Codec fourcc */
-    uint32_t    i_codec;
-    int         i_id;
-    libvlc_track_type_t i_type;
-
-    /* Codec specific */
-    int         i_profile;
-    int         i_level;
-
-    union {
-        struct {
-            /* Audio specific */
-            unsigned    i_channels;
-            unsigned    i_rate;
-        } audio;
-        struct {
-            /* Video specific */
-            unsigned    i_height;
-            unsigned    i_width;
-        } video;
-    } u;
-
-} libvlc_media_track_info_t;
-
 
 typedef struct libvlc_audio_track_t
 {
@@ -192,6 +161,30 @@ typedef enum libvlc_video_projection_t
     libvlc_video_projection_cubemap_layout_standard = 0x100,
 } libvlc_video_projection_t;
 
+/**
+ * Viewpoint
+ *
+ * \warning allocate using libvlc_video_new_viewpoint()
+ */
+typedef struct libvlc_video_viewpoint_t
+{
+    float f_yaw;           /**< view point yaw in degrees  ]-180;180] */
+    float f_pitch;         /**< view point pitch in degrees  ]-90;90] */
+    float f_roll;          /**< view point roll in degrees ]-180;180] */
+    float f_field_of_view; /**< field of view in degrees ]0;180[ (default 80.)*/
+} libvlc_video_viewpoint_t;
+
+typedef enum libvlc_video_multiview_t
+{
+    libvlc_video_multiview_2d,                  /**< No stereoscopy: 2D picture. */
+    libvlc_video_multiview_stereo_sbs,          /**< Side-by-side */
+    libvlc_video_multiview_stereo_tb,           /**< Top-bottom */
+    libvlc_video_multiview_stereo_row,          /**< Row sequential */
+    libvlc_video_multiview_stereo_col,          /**< Column sequential */
+    libvlc_video_multiview_stereo_frame,        /**< Frame sequential */
+    libvlc_video_multiview_stereo_checkerboard, /**< Checkerboard pattern */
+} libvlc_video_multiview_t;
+
 typedef struct libvlc_video_track_t
 {
     unsigned    i_height;
@@ -203,12 +196,8 @@ typedef struct libvlc_video_track_t
 
     libvlc_video_orient_t       i_orientation;
     libvlc_video_projection_t   i_projection;
-    struct {
-        float f_yaw_degrees;    /**< View point yaw in degrees ]-180;180] */
-        float f_pitch_degrees;  /**< View point pitch in degrees ]-90;90] */
-        float f_roll_degrees;   /**< View point roll in degrees ]-180;180] */
-        float f_fov_degrees;    /**< View point fov in degrees ]0;180[ */
-    } pose; /**< Initial view point */
+    libvlc_video_viewpoint_t    pose; /**< Initial view point */
+    libvlc_video_multiview_t    i_multiview;
 } libvlc_video_track_t;
 
 typedef struct libvlc_subtitle_track_t
@@ -354,8 +343,6 @@ typedef int (*libvlc_media_open_cb)(void *opaque, void **datap,
  *
  * \note If no data is immediately available, then the callback should sleep.
  * \warning The application is responsible for avoiding deadlock situations.
- * In particular, the callback should return an error if playback is stopped;
- * if it does not return, then libvlc_media_player_stop() will never return.
  */
 typedef ssize_t (*libvlc_media_read_cb)(void *opaque, unsigned char *buf,
                                         size_t len);
@@ -569,9 +556,10 @@ LIBVLC_API libvlc_media_t *libvlc_media_duplicate( libvlc_media_t *p_md );
 /**
  * Read the meta of the media.
  *
+ * Note, you need to call libvlc_media_parse_with_options() or play the media
+ * at least once before calling this function.
  * If the media has not yet been parsed this will return NULL.
  *
- * \see libvlc_media_parse
  * \see libvlc_media_parse_with_options
  * \see libvlc_MediaMetaChanged
  *
@@ -622,12 +610,11 @@ LIBVLC_API libvlc_state_t libvlc_media_get_state(
  * \param p_md: media descriptor object
  * \param p_stats: structure that contain the statistics about the media
  *                 (this structure must be allocated by the caller)
- * \return true if the statistics are available, false otherwise
- *
- * \libvlc_return_bool
+ * \retval true statistics are available
+ * \retval false otherwise
  */
-LIBVLC_API int libvlc_media_get_stats( libvlc_media_t *p_md,
-                                           libvlc_media_stats_t *p_stats );
+LIBVLC_API bool libvlc_media_get_stats(libvlc_media_t *p_md,
+                                       libvlc_media_stats_t *p_stats);
 
 /* The following method uses libvlc_media_list_t, however, media_list usage is optionnal
  * and this is here for convenience */
@@ -657,6 +644,12 @@ LIBVLC_API libvlc_event_manager_t *
 /**
  * Get duration (in ms) of media descriptor object item.
  *
+ * Note, you need to call libvlc_media_parse_with_options() or play the media
+ * at least once before calling this function.
+ * Not doing this will result in an undefined result.
+ *
+ * \see libvlc_media_parse_with_options
+ *
  * \param p_md media descriptor object
  * \return duration of media item or -1 on error
  */
@@ -667,7 +660,6 @@ LIBVLC_API libvlc_time_t
  * Parse the media asynchronously with options.
  *
  * This fetches (local or network) art, meta data and/or tracks information.
- * This method is the extended version of libvlc_media_parse_with_options().
  *
  * To track when this is over you can listen to libvlc_MediaParsedChanged
  * event. However if this functions returns an error, you will not receive any
@@ -717,6 +709,7 @@ libvlc_media_parse_stop( libvlc_media_t *p_md );
  *
  * \see libvlc_MediaParsedChanged
  * \see libvlc_media_parsed_status_t
+ * \see libvlc_media_parse_with_options
  *
  * \param p_md media descriptor object
  * \return a value of the libvlc_media_parsed_status_t enum
@@ -741,6 +734,8 @@ LIBVLC_API void
  * accessed by the host application, VLC.framework uses it as a pointer to
  * an native object that references a libvlc_media_t pointer
  *
+ * \see libvlc_media_set_user_data
+ *
  * \param p_md media descriptor object
  */
 LIBVLC_API void *libvlc_media_get_user_data( libvlc_media_t *p_md );
@@ -748,11 +743,12 @@ LIBVLC_API void *libvlc_media_get_user_data( libvlc_media_t *p_md );
 /**
  * Get media descriptor's elementary streams description
  *
- * Note, you need to call libvlc_media_parse() or play the media at least once
- * before calling this function.
+ * Note, you need to call libvlc_media_parse_with_options() or play the media
+ * at least once before calling this function.
  * Not doing this will result in an empty array.
  *
  * \version LibVLC 2.1.0 and later.
+ * \see libvlc_media_parse_with_options
  *
  * \param p_md media descriptor object
  * \param tracks address to store an allocated array of Elementary Streams
@@ -768,9 +764,13 @@ unsigned libvlc_media_tracks_get( libvlc_media_t *p_md,
 /**
  * Get codec description from media elementary stream
  *
+ * Note, you need to call libvlc_media_parse_with_options() or play the media
+ * at least once before calling this function.
+ *
  * \version LibVLC 3.0.0 and later.
  *
  * \see libvlc_media_track_t
+ * \see libvlc_media_parse_with_options
  *
  * \param i_type i_type from libvlc_media_track_t
  * \param i_codec i_codec or i_original_fourcc from libvlc_media_track_t
@@ -806,6 +806,100 @@ void libvlc_media_tracks_release( libvlc_media_track_t **p_tracks,
  */
 LIBVLC_API
 libvlc_media_type_t libvlc_media_get_type( libvlc_media_t *p_md );
+
+/**
+ * \brief libvlc_media_thumbnail_request_t An opaque thumbnail request object
+ */
+typedef struct libvlc_media_thumbnail_request_t libvlc_media_thumbnail_request_t;
+
+typedef enum libvlc_thumbnailer_seek_speed_t
+{
+    libvlc_media_thumbnail_seek_precise,
+    libvlc_media_thumbnail_seek_fast,
+} libvlc_thumbnailer_seek_speed_t;
+
+/**
+ * \brief libvlc_media_get_thumbnail_by_time Start an asynchronous thumbnail generation
+ *
+ * If the request is successfuly queued, the libvlc_MediaThumbnailGenerated
+ * is guaranteed to be emited.
+ *
+ * \param md media descriptor object
+ * \param time The time at which the thumbnail should be generated
+ * \param speed The seeking speed \sa{libvlc_thumbnailer_seek_speed_t}
+ * \param width The thumbnail width
+ * \param height the thumbnail height
+ * \param picture_type The thumbnail picture type \sa{libvlc_picture_type_t}
+ * \param timeout A timeout value in ms, or 0 to disable timeout
+ *
+ * \return A valid opaque request object, or NULL in case of failure.
+ * It may be cancelled by libvlc_media_thumbnail_request_cancel().
+ * It must be released by libvlc_media_thumbnail_request_destroy().
+ *
+ * \version libvlc 4.0 or later
+ *
+ * \see libvlc_picture_t
+ * \see libvlc_picture_type_t
+ */
+LIBVLC_API libvlc_media_thumbnail_request_t*
+libvlc_media_thumbnail_request_by_time( libvlc_media_t *md,
+                                        libvlc_time_t time,
+                                        libvlc_thumbnailer_seek_speed_t speed,
+                                        unsigned int width, unsigned int height,
+                                        bool crop, libvlc_picture_type_t picture_type,
+                                        libvlc_time_t timeout );
+
+/**
+ * \brief libvlc_media_get_thumbnail_by_pos Start an asynchronous thumbnail generation
+ *
+ * If the request is successfuly queued, the libvlc_MediaThumbnailGenerated
+ * is guaranteed to be emited.
+ *
+ * \param md media descriptor object
+ * \param pos The position at which the thumbnail should be generated
+ * \param speed The seeking speed \sa{libvlc_thumbnailer_seek_speed_t}
+ * \param width The thumbnail width
+ * \param height the thumbnail height
+ * \param picture_type The thumbnail picture type \sa{libvlc_picture_type_t}
+ * \param timeout A timeout value in ms, or 0 to disable timeout
+ *
+ * \return A valid opaque request object, or NULL in case of failure.
+ * It may be cancelled by libvlc_media_thumbnail_request_cancel().
+ * It must be released by libvlc_media_thumbnail_request_destroy().
+ *
+ * \version libvlc 4.0 or later
+ *
+ * \see libvlc_picture_t
+ * \see libvlc_picture_type_t
+ */
+LIBVLC_API libvlc_media_thumbnail_request_t*
+libvlc_media_thumbnail_request_by_pos( libvlc_media_t *md,
+                                       float pos,
+                                       libvlc_thumbnailer_seek_speed_t speed,
+                                       unsigned int width, unsigned int height,
+                                       bool crop, libvlc_picture_type_t picture_type,
+                                       libvlc_time_t timeout );
+
+/**
+ * @brief libvlc_media_thumbnail_cancel cancels a thumbnailing request
+ * @param p_req An opaque thumbnail request object.
+ *
+ * Cancelling the request will still cause libvlc_MediaThumbnailGenerated event
+ * to be emited, with a NULL libvlc_picture_t
+ * If the request is cancelled after its completion, the behavior is undefined.
+ */
+LIBVLC_API void
+libvlc_media_thumbnail_request_cancel( libvlc_media_thumbnail_request_t *p_req );
+
+/**
+ * @brief libvlc_media_thumbnail_destroy destroys a thumbnail request
+ * @param p_req An opaque thumbnail request object.
+ *
+ * If the request has not completed or hasn't been cancelled yet, the behavior
+ * is undefined
+ */
+LIBVLC_API void
+libvlc_media_thumbnail_request_destroy( libvlc_media_thumbnail_request_t *p_req );
 
 /**
  * Add a slave to the current media.

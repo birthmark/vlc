@@ -381,9 +381,9 @@ static int ScanParametersDvbS( vlc_object_t *p_access, dvb_sys_t *p_sys, scan_pa
     char *psz_name = var_InheritString( p_access, "dvb-satellite" );
     if( psz_name )
     {
-        char *data_dir = config_GetDataDir();
+        char *data_dir = config_GetSysPath(VLC_SYSDATA_DIR, "dvb/dvb-s");
         if( !data_dir || -1 ==  asprintf( &p_scan->psz_scanlist_file,
-            "%s" DIR_SEP "dvb" DIR_SEP "dvb-s" DIR_SEP "%s", data_dir, psz_name ) )
+            "%s/%s", data_dir, psz_name ) )
         {
             p_scan->psz_scanlist_file = NULL;
         }
@@ -685,7 +685,7 @@ static int DoDiseqc( vlc_object_t *p_access, dvb_sys_t *p_sys )
     }
 
     /* Wait for at least 15 ms. */
-    msleep(15000);
+    vlc_tick_sleep(VLC_TICK_FROM_MS(15));
 
     i_val = var_GetInteger( p_access, "dvb-satno" );
     if( i_val > 0 && i_val < 5 )
@@ -713,7 +713,7 @@ static int DoDiseqc( vlc_object_t *p_access, dvb_sys_t *p_sys )
             return VLC_EGENERIC;
         }
 
-        msleep(15000 + cmd.wait * 1000);
+        vlc_tick_sleep(VLC_TICK_FROM_MS(15 + cmd.wait));
 
         /* A or B simple diseqc ("diseqc-compatible") */
         if( ioctl( p_sys->i_frontend_handle, FE_DISEQC_SEND_BURST,
@@ -724,7 +724,7 @@ static int DoDiseqc( vlc_object_t *p_access, dvb_sys_t *p_sys )
             return VLC_EGENERIC;
         }
 
-        msleep(15000);
+        vlc_tick_sleep(VLC_TICK_FROM_MS(15));
     }
 
     if( ioctl( p_sys->i_frontend_handle, FE_SET_TONE, fe_tone ) )
@@ -735,7 +735,7 @@ static int DoDiseqc( vlc_object_t *p_access, dvb_sys_t *p_sys )
         return VLC_EGENERIC;
     }
 
-    msleep(50000);
+    vlc_tick_sleep(VLC_TICK_FROM_MS(50));
     return 0;
 }
 

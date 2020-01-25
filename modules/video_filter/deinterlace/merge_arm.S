@@ -18,10 +18,15 @@
  @ Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  @****************************************************************************/
 
+#include "../../arm_neon/asm.S"
+
 	.syntax	unified
-	.arm
+#if HAVE_AS_ARCH_DIRECTIVE
 	.arch	armv6
+#endif
+#if HAVE_AS_FPU_DIRECTIVE
 	.fpu	neon
+#endif
 	.text
 
 #define	DEST	r0
@@ -30,10 +35,8 @@
 #define	SIZE	r3
 
 	.align 2
-	.global merge8_arm_neon
-	.type	merge8_arm_neon, %function
 	@ NOTE: Offset and pitch must be multiple of 16-bytes in VLC.
-merge8_arm_neon:
+function merge8_arm_neon
 	cmp		SIZE,	#64
 	blo		2f
 1:
@@ -63,6 +66,7 @@ merge8_arm_neon:
 	vst1.u8		{q0-q1},	[DEST,:128]!
 3:
 	cmp		SIZE,	#16
+	it		lo
 	bxlo		lr
 	vld1.u8		{q0},		[SRC1,:128]!
 	sub		SIZE,	SIZE,	#16
@@ -72,9 +76,7 @@ merge8_arm_neon:
 	bx		lr
 
 	.align 2
-	.global merge16_arm_neon
-	.type	merge16_arm_neon, %function
-merge16_arm_neon:
+function merge16_arm_neon
 	cmp		SIZE,	#64
 	blo		2f
 1:
@@ -104,6 +106,7 @@ merge16_arm_neon:
 	vst1.u16	{q0-q1},	[DEST,:128]!
 3:
 	cmp		SIZE,	#16
+	it		lo
 	bxlo		lr
 	vld1.u16	{q0},		[SRC1,:128]!
 	sub		SIZE,	SIZE,	#16
@@ -113,9 +116,7 @@ merge16_arm_neon:
 	bx		lr
 
 	.align 2
-	.global merge8_armv6
-	.type	merge8_armv6, %function
-merge8_armv6:
+function merge8_armv6
 	push		{r4-r9,lr}
 1:
 	pld		[SRC1, #64]
@@ -131,13 +132,12 @@ merge8_armv6:
 	stm		DEST!,	{r4-r5}
 	uhadd8		r7,	r7,	lr
 	stm		DEST!,	{r6-r7}
+	it		eq
 	popeq		{r4-r9,pc}
 	b		1b
 
 	.align 2
-	.global merge16_armv6
-	.type	merge16_armv6, %function
-merge16_armv6:
+function merge16_armv6
 	push		{r4-r9,lr}
 1:
 	pld		[SRC1, #64]
@@ -153,5 +153,6 @@ merge16_armv6:
 	stm		DEST!,	{r4-r5}
 	uhadd16		r7,	r7,	lr
 	stm		DEST!,	{r6-r7}
+	it		eq
 	popeq		{r4-r9,pc}
 	b		1b

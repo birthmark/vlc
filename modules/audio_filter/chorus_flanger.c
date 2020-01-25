@@ -2,7 +2,6 @@
  * chorus_flanger: Basic chorus/flanger/delay audio filter
  *****************************************************************************
  * Copyright (C) 2009-12 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Srikanth Raju < srikiraju at gmail dot com >
  *          Sukrit Sangwan < sukritsangwan at gmail dot com >
@@ -37,6 +36,8 @@
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
+
+typedef struct filter_sys_t filter_sys_t;
 
 static int  Open     ( vlc_object_t * );
 static void Close    ( vlc_object_t * );
@@ -193,6 +194,7 @@ static int Open( vlc_object_t *p_this )
     p_sys->i_sampleRate = p_filter->fmt_in.audio.i_rate;
 
     p_filter->fmt_in.audio.i_format = VLC_CODEC_FL32;
+    aout_FormatPrepare(&p_filter->fmt_in.audio);
     p_filter->fmt_out.audio = p_filter->fmt_in.audio;
     p_filter->pf_audio_filter = DoWork;
 

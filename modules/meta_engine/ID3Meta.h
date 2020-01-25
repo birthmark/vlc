@@ -21,10 +21,10 @@
 #define ID3META_H
 
 #include <vlc_meta.h>
-#include <vlc_charset.h>
+#include "ID3Text.h"
 
 #define vlc_meta_extra vlc_meta_Title
-struct
+static struct
 {
     uint32_t i_tag;
     vlc_meta_type_t type;
@@ -47,58 +47,28 @@ static bool ID3TextTagHandler( const uint8_t *p_buf, size_t i_buf,
                                vlc_meta_type_t type, const char *psz_extra,
                                vlc_meta_t *p_meta, bool *pb_updated )
 {
-    char *p_alloc = NULL;
-    const char *psz;
-    if( i_buf > 3 && p_meta && p_buf[0] < 0x04 )
+    if( p_meta == NULL )
+        return false;
+
+    char *p_alloc;
+    const char *psz = ID3TextConvert( p_buf, i_buf, &p_alloc );
+    if( psz && *psz )
     {
-        switch( p_buf[0] )
+        const char *psz_old = ( psz_extra ) ? vlc_meta_GetExtra( p_meta, psz_extra ):
+                                              vlc_meta_Get( p_meta, type );
+        if( !psz_old || strcmp( psz_old, psz ) )
         {
-            case 0x00:
-                psz = p_alloc = FromCharset( "ISO_8859-1", &p_buf[1], i_buf - 1 );
-                break;
-            case 0x01:
-                psz = p_alloc = FromCharset( "UTF-16LE", &p_buf[1], i_buf - 1 );
-                break;
-            case 0x02:
-                psz = p_alloc = FromCharset( "UTF-16BE", &p_buf[1], i_buf - 1 );
-                break;
-            default:
-            case 0x03:
-                if( p_buf[ i_buf - 1 ] != 0x00 )
-                {
-                    psz = p_alloc = (char *) malloc( i_buf );
-                    if( p_alloc )
-                    {
-                        memcpy( p_alloc, &p_buf[1], i_buf - 1 );
-                        p_alloc[i_buf - 1] = 0;
-                    }
-                }
-                else
-                {
-                    psz = (const char *) &p_buf[1];
-                }
-                break;
+            if( pb_updated )
+                *pb_updated = true;
+            if( psz_extra )
+                vlc_meta_AddExtra( p_meta, psz_extra, psz );
+            else
+                vlc_meta_Set( p_meta, type, psz );
         }
-
-        if( psz && *psz )
-        {
-            const char *psz_old = ( psz_extra ) ? vlc_meta_GetExtra( p_meta, psz_extra ):
-                                                  vlc_meta_Get( p_meta, type );
-            if( !psz_old || strcmp( psz_old, psz ) )
-            {
-                if( pb_updated )
-                    *pb_updated = true;
-                if( psz_extra )
-                    vlc_meta_AddExtra( p_meta, psz_extra, psz );
-                else
-                    vlc_meta_Set( p_meta, type, psz );
-            }
-        }
-
-        free( p_alloc );
-        return true;
     }
-    return false;
+    free( p_alloc );
+
+    return (psz != NULL);
 }
 
 static bool ID3LinkFrameTagHandler( const uint8_t *p_buf, size_t i_buf,
@@ -130,7 +100,37 @@ static bool ID3HandleTag( const uint8_t *p_buf, size_t i_buf,
                           uint32_t i_tag,
                           vlc_meta_t *p_meta, bool *pb_updated )
 {
-    if( ((const char *) &i_tag)[0] == 'T' )
+    if( i_tag == VLC_FOURCC('W', 'X', 'X', 'X') )
+    {
+        return ID3LinkFrameTagHandler( p_buf, i_buf, p_meta, pb_updated );
+    }
+    else if( i_tag == VLC_FOURCC('T', 'X', 'X', 'X') )
+    {
+        char *psz_key_alloc;
+        const char *psz_key = ID3TextConvert( p_buf, i_buf, &psz_key_alloc );
+        if( psz_key )
+        {
+            const size_t i_len = strlen( psz_key ) + 2;
+            if( i_len < i_buf )
+            {
+                /* Only set those which are known as non binary */
+                if( !strncasecmp( psz_key, "REPLAYGAIN_", 11 ) )
+                {
+                    char *psz_val_alloc;
+                    const char *psz_val = ID3TextConv( &p_buf[i_len], i_buf - i_len,
+                                                       p_buf[0], &psz_val_alloc );
+                    if( psz_val )
+                    {
+                        vlc_meta_AddExtra( p_meta, psz_key, psz_val );
+                        free( psz_val_alloc );
+                    }
+                }
+            }
+            free( psz_key_alloc );
+            return (vlc_meta_GetExtraCount( p_meta ) > 0);
+        }
+    }
+    else if ( ((const char *) &i_tag)[0] == 'T' )
     {
         for( size_t i=0; i<ARRAY_SIZE(ID3_tag_to_metatype); i++ )
         {
@@ -140,10 +140,6 @@ static bool ID3HandleTag( const uint8_t *p_buf, size_t i_buf,
                                           ID3_tag_to_metatype[i].psz,
                                           p_meta, pb_updated );
         }
-    }
-    else if( i_tag == VLC_FOURCC('W', 'X', 'X', 'X') )
-    {
-        return ID3LinkFrameTagHandler( p_buf, i_buf, p_meta, pb_updated );
     }
 
     return false;

@@ -28,6 +28,9 @@
 #ifdef HAVE_POLL
 # include <poll.h>
 #endif
+#ifdef HAVE_SYS_UIO_H
+# include <sys/uio.h>
+#endif
 #include <vlc_common.h>
 #include <vlc_tls.h>
 #include "h2frame.h"
@@ -189,19 +192,16 @@ static void vlc_h2_output_flush_unlocked(struct vlc_h2_output *out)
  */
 static ssize_t vlc_https_send(vlc_tls_t *tls, const void *buf, size_t len)
 {
-    struct pollfd ufd;
     struct iovec iov;
     size_t count = 0;
 
-    ufd.fd = vlc_tls_GetFD(tls);
-    ufd.events = POLLOUT;
     iov.iov_base = (void *)buf;
     iov.iov_len = len;
 
     while (count < len)
     {
         int canc = vlc_savecancel();
-        ssize_t val = tls->writev(tls, &iov, 1);
+        ssize_t val = tls->ops->writev(tls, &iov, 1);
 
         vlc_restorecancel(canc);
 
@@ -219,6 +219,10 @@ static ssize_t vlc_https_send(vlc_tls_t *tls, const void *buf, size_t len)
         if (errno != EINTR && errno != EAGAIN)
             return count ? (ssize_t)count : -1;
 
+        struct pollfd ufd;
+
+        ufd.events = POLLOUT;
+        ufd.fd = vlc_tls_GetPollFD(tls, &ufd.events);
         poll(&ufd, 1, -1);
     }
 
@@ -258,8 +262,6 @@ static void *vlc_h2_output_thread(void *data)
 
     while ((frame = vlc_h2_output_dequeue(out)) != NULL)
     {
-        vlc_h2_frame_dump(out->tls->obj, frame, "out");
-
         if (vlc_h2_frame_send(out->tls, frame))
         {   /* The connection failed asynchronously. The caller will be
              * notified at the next attempt to queue (as with TCP sockets). */

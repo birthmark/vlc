@@ -2,7 +2,6 @@
  * algo_ivtc.c : IVTC (inverse telecine) algorithm for the VLC deinterlacer
  *****************************************************************************
  * Copyright (C) 2010-2011 the VideoLAN team
- * $Id$
  *
  * Author: Juha Jeronen <juha.jeronen@jyu.fi>
  *
@@ -176,6 +175,7 @@ static const ivtc_field_pair pi_best_field_pairs[NUM_CADENCE_POS][3] = {
  * best or worst, the resulting detected cadence positions are identical
  * (neither strategy performs any different from the other).
  */
+#if 0
 static const ivtc_field_pair pi_worst_field_pairs[NUM_CADENCE_POS][4] = {
     {FIELD_PAIR_TPBC, FIELD_PAIR_TCBP,
         FIELD_PAIR_TCBN, FIELD_PAIR_TNBC}, /* prog. */
@@ -198,6 +198,7 @@ static const ivtc_field_pair pi_worst_field_pairs[NUM_CADENCE_POS][4] = {
     {FIELD_PAIR_TCBP, FIELD_PAIR_TPBC,
         FIELD_PAIR_TNBC, FIELD_PAIR_TNBN}, /* BFF EAB */
 };
+#endif
 
 /**
  * Table for extracting the i_cadence_pos part of detected cadence position
@@ -406,8 +407,8 @@ static void IVTCLowLevelDetect( filter_t *p_filter )
 
     filter_sys_t *p_sys = p_filter->p_sys;
     ivtc_sys_t *p_ivtc  = &p_sys->ivtc;
-    picture_t *p_curr = p_sys->pp_history[1];
-    picture_t *p_next = p_sys->pp_history[2];
+    picture_t *p_curr = p_sys->context.pp_history[1];
+    picture_t *p_next = p_sys->context.pp_history[2];
 
     assert( p_next != NULL );
     assert( p_curr != NULL );
@@ -458,7 +459,7 @@ static void IVTCCadenceDetectAlgoScores( filter_t *p_filter )
 
     filter_sys_t *p_sys = p_filter->p_sys;
     ivtc_sys_t *p_ivtc  = &p_sys->ivtc;
-    picture_t *p_next = p_sys->pp_history[2];
+    picture_t *p_next = p_sys->context.pp_history[2];
 
     assert( p_next != NULL );
 
@@ -632,7 +633,7 @@ static void IVTCCadenceDetectAlgoVektor( filter_t *p_filter )
     filter_sys_t *p_sys = p_filter->p_sys;
     ivtc_sys_t *p_ivtc  = &p_sys->ivtc;
 
-    picture_t *p_next = p_sys->pp_history[2];
+    picture_t *p_next = p_sys->context.pp_history[2];
 
     assert( p_next != NULL );
 
@@ -860,9 +861,9 @@ static void IVTCSoftTelecineDetect( filter_t *p_filter )
 
     filter_sys_t *p_sys = p_filter->p_sys;
     ivtc_sys_t *p_ivtc  = &p_sys->ivtc;
-    picture_t *p_prev = p_sys->pp_history[0];
-    picture_t *p_curr = p_sys->pp_history[1];
-    picture_t *p_next = p_sys->pp_history[2];
+    picture_t *p_prev = p_sys->context.pp_history[0];
+    picture_t *p_curr = p_sys->context.pp_history[1];
+    picture_t *p_next = p_sys->context.pp_history[2];
 
     assert( p_next != NULL );
     assert( p_curr != NULL );
@@ -977,9 +978,9 @@ static void IVTCCadenceAnalyze( filter_t *p_filter )
 
     filter_sys_t *p_sys = p_filter->p_sys;
     ivtc_sys_t *p_ivtc  = &p_sys->ivtc;
-    picture_t *p_prev = p_sys->pp_history[0];
-    picture_t *p_curr = p_sys->pp_history[1];
-    picture_t *p_next = p_sys->pp_history[2];
+    picture_t *p_prev = p_sys->context.pp_history[0];
+    picture_t *p_curr = p_sys->context.pp_history[1];
+    picture_t *p_next = p_sys->context.pp_history[2];
 
     assert( p_next != NULL );
     assert( p_curr != NULL );
@@ -1214,10 +1215,10 @@ static bool IVTCOutputOrDropFrame( filter_t *p_filter, picture_t *p_dst )
 
     filter_sys_t *p_sys = p_filter->p_sys;
     ivtc_sys_t *p_ivtc  = &p_sys->ivtc;
-    mtime_t t_final = VLC_TS_INVALID; /* for custom timestamp mangling */
+    vlc_tick_t t_final = VLC_TICK_INVALID; /* for custom timestamp mangling */
 
-    picture_t *p_curr = p_sys->pp_history[1];
-    picture_t *p_next = p_sys->pp_history[2];
+    picture_t *p_curr = p_sys->context.pp_history[1];
+    picture_t *p_next = p_sys->context.pp_history[2];
 
     assert( p_next != NULL );
     assert( p_curr != NULL );
@@ -1410,7 +1411,7 @@ static bool IVTCOutputOrDropFrame( filter_t *p_filter, picture_t *p_dst )
         {
             /* Approximate field duration from the PTS difference. */
             /* FIXME: use field length as measured by Deinterlace()? */
-            mtime_t i_half_field_dur = ( (p_next->date - p_curr->date)/3 ) / 2;
+            vlc_tick_t i_half_field_dur = ( (p_next->date - p_curr->date)/3 ) / 2;
             t_final = p_curr->date + i_half_field_dur;
         }
         else /* Otherwise, use original PTS of the outgoing frame. */
@@ -1456,7 +1457,7 @@ static bool IVTCOutputOrDropFrame( filter_t *p_filter, picture_t *p_dst )
     /* Note that picture_Copy() copies the PTS, too. Apply timestamp mangling
        now, if any was needed.
     */
-    if( t_final > VLC_TS_INVALID )
+    if( t_final != VLC_TICK_INVALID )
         p_dst->date = t_final;
 
     return true;
@@ -1467,17 +1468,18 @@ static bool IVTCOutputOrDropFrame( filter_t *p_filter, picture_t *p_dst )
  *****************************************************************************/
 
 /* See function doc in header. */
-int RenderIVTC( filter_t *p_filter, picture_t *p_dst )
+int RenderIVTC( filter_t *p_filter, picture_t *p_dst, picture_t *p_pic )
 {
+    VLC_UNUSED(p_pic);
     assert( p_filter != NULL );
     assert( p_dst != NULL );
 
     filter_sys_t *p_sys = p_filter->p_sys;
     ivtc_sys_t *p_ivtc  = &p_sys->ivtc;
 
-    picture_t *p_prev = p_sys->pp_history[0];
-    picture_t *p_curr = p_sys->pp_history[1];
-    picture_t *p_next = p_sys->pp_history[2];
+    picture_t *p_prev = p_sys->context.pp_history[0];
+    picture_t *p_curr = p_sys->context.pp_history[1];
+    picture_t *p_next = p_sys->context.pp_history[2];
 
     /* If the history mechanism has failed, we have nothing to do. */
     if( !p_next )
@@ -1517,9 +1519,6 @@ int RenderIVTC( filter_t *p_filter, picture_t *p_dst )
 
         /* Now we can... */
         bool b_have_output_frame = IVTCOutputOrDropFrame( p_filter, p_dst );
-
-        /* The next frame will get a custom timestamp, too. */
-        p_sys->i_frame_offset = CUSTOM_PTS;
 
         if( b_have_output_frame )
             return VLC_SUCCESS;
@@ -1565,10 +1564,6 @@ int RenderIVTC( filter_t *p_filter, picture_t *p_dst )
            when the actual filter does.
         */
         p_ivtc->pi_final_scores[1] = p_ivtc->pi_scores[FIELD_PAIR_TNBN];
-
-        /* At the next frame, the filter starts. The next frame will get
-           a custom timestamp. */
-        p_sys->i_frame_offset = CUSTOM_PTS;
 
         picture_Copy( p_dst, p_next );
         return VLC_SUCCESS;

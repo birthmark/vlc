@@ -4,7 +4,7 @@
  * Copyright (C) 2005-2006 VLC authors and VideoLAN
  * Copyright © 2005-2010 Rémi Denis-Courmont
  *
- * Authors: Rémi Denis-Courmont <rem # videolan.org>
+ * Authors: Rémi Denis-Courmont
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -121,7 +121,7 @@ size_t vlc_towc (const char *str, uint32_t *restrict pwc)
     if (unlikely(c > 0xF4))
         return -1;
 
-    int charlen = clz8 (c ^ 0xFF);
+    int charlen = clz((unsigned char)(c ^ 0xFF));
     switch (charlen)
     {
         case 0: // 7-bit ASCII character -> short cut

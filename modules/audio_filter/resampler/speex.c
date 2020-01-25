@@ -32,8 +32,7 @@
 #include <speex/speex_resampler.h>
 
 #define QUALITY_TEXT N_("Resampling quality")
-#define QUALITY_LONGTEXT N_( \
-    "Resampling quality (0 = worst and fastest, 10 = best and slowest).")
+#define QUALITY_LONGTEXT N_( "Resampling quality, from worst to best" )
 
 static int Open (vlc_object_t *);
 static int OpenResampler (vlc_object_t *);
@@ -65,10 +64,8 @@ static int OpenResampler (vlc_object_t *obj)
     /* Cannot convert format */
     if (filter->fmt_in.audio.i_format != filter->fmt_out.audio.i_format
     /* Cannot remix */
-     || filter->fmt_in.audio.i_physical_channels
-                                  != filter->fmt_out.audio.i_physical_channels
-     || filter->fmt_in.audio.i_original_channels
-                                  != filter->fmt_out.audio.i_original_channels)
+     || filter->fmt_in.audio.i_channels != filter->fmt_out.audio.i_channels
+     || filter->fmt_in.audio.i_physical_channels == 0 )
         return VLC_EGENERIC;
 
     switch (filter->fmt_in.audio.i_format)
@@ -80,13 +77,13 @@ static int OpenResampler (vlc_object_t *obj)
 
     SpeexResamplerState *st;
 
-    unsigned channels = aout_FormatNbChannels (&filter->fmt_in.audio);
     unsigned q = var_InheritInteger (obj, "speex-resampler-quality");
     if (unlikely(q > 10))
         q = 3;
 
     int err;
-    st = speex_resampler_init(channels, filter->fmt_in.audio.i_rate,
+    st = speex_resampler_init(filter->fmt_in.audio.i_channels,
+                              filter->fmt_in.audio.i_rate,
                               filter->fmt_out.audio.i_rate, q, &err);
     if (unlikely(st == NULL))
     {
@@ -95,7 +92,7 @@ static int OpenResampler (vlc_object_t *obj)
         return VLC_ENOMEM;
     }
 
-    filter->p_sys = (filter_sys_t *)st;
+    filter->p_sys = st;
     filter->pf_audio_filter = Resample;
     return VLC_SUCCESS;
 }
@@ -159,7 +156,7 @@ static block_t *Resample (filter_t *filter, block_t *in)
     out->i_buffer = olen * framesize;
     out->i_nb_samples = olen;
     out->i_pts = in->i_pts;
-    out->i_length = olen * CLOCK_FREQ / filter->fmt_out.audio.i_rate;
+    out->i_length = vlc_tick_from_samples(olen, filter->fmt_out.audio.i_rate);
 error:
     block_Release (in);
     return out;

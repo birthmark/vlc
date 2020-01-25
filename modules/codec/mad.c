@@ -3,7 +3,6 @@
  * using MAD (MPEG Audio Decoder)
  *****************************************************************************
  * Copyright (C) 2001-2016 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Christophe Massiot <massiot@via.ecp.fr>
  *          Jean-Paul Saman <jpsaman _at_ videolan _dot_ org>
@@ -59,7 +58,7 @@ static void Close( vlc_object_t * );
 /*****************************************************************************
  * Local structures
  *****************************************************************************/
-struct decoder_sys_t
+typedef struct
 {
     struct mad_stream mad_stream;
     struct mad_frame  mad_frame;
@@ -67,7 +66,7 @@ struct decoder_sys_t
 
     int               i_reject_count;
     block_t          *p_last_buf;
-};
+} decoder_sys_t;
 
 /*****************************************************************************
  * Module descriptor
@@ -76,12 +75,12 @@ vlc_module_begin ()
     set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_ACODEC )
     set_description( N_("MPEG audio layer I/II/III decoder") )
-    set_capability( "decoder", 99 )
+    set_capability( "audio decoder", 99 )
     set_callbacks( Open, Close )
 vlc_module_end ()
 
 /*****************************************************************************
- * DecodeBLock: decode an MPEG audio frame.
+ * DecodeBlock: decode an MPEG audio frame.
  *****************************************************************************/
 static block_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
 {
@@ -212,8 +211,19 @@ end:
 reject:
     p_sys->i_reject_count--;
     if( p_out_buf )
+    {
         block_Release( p_out_buf );
+        p_out_buf = NULL;
+    }
     goto end;
+}
+
+static int DecodeAudio( decoder_t *p_dec, block_t *p_block )
+{
+    block_t **pp_block = p_block ? &p_block : NULL, *p_out;
+    while( ( p_out = DecodeBlock( p_dec, pp_block ) ) != NULL )
+        decoder_QueueAudio( p_dec, p_out );
+    return VLCDEC_SUCCESS;
 }
 
 static void DecodeFlush( decoder_t *p_dec )
@@ -238,7 +248,6 @@ static int Open( vlc_object_t *p_this )
      && p_dec->fmt_in.i_codec != VLC_FOURCC('m','p','g','3') )
      || p_dec->fmt_in.audio.i_rate == 0
      || p_dec->fmt_in.audio.i_physical_channels == 0
-     || p_dec->fmt_in.audio.i_original_channels == 0
      || p_dec->fmt_in.audio.i_bytes_per_frame == 0
      || p_dec->fmt_in.audio.i_frame_length == 0 )
         return VLC_EGENERIC;
@@ -256,7 +265,6 @@ static int Open( vlc_object_t *p_this )
     mad_synth_init( &p_sys->mad_synth );
     mad_stream_options( &p_sys->mad_stream, MAD_OPTION_IGNORECRC );
 
-    p_dec->fmt_out.i_cat = AUDIO_ES;
     p_dec->fmt_out.audio = p_dec->fmt_in.audio;
     p_dec->fmt_out.audio.i_format = VLC_CODEC_FL32;
     p_dec->fmt_out.i_codec = p_dec->fmt_out.audio.i_format;
@@ -265,13 +273,12 @@ static int Open( vlc_object_t *p_this )
 
     if( decoder_UpdateAudioFormat( p_dec ) )
     {
-        es_format_Init( &p_dec->fmt_out, UNKNOWN_ES, 0 );
         Close( p_this );
         return VLC_EGENERIC;
     }
 
-    p_dec->pf_decode_audio = DecodeBlock;
-    p_dec->pf_flush = DecodeFlush;
+    p_dec->pf_decode = DecodeAudio;
+    p_dec->pf_flush  = DecodeFlush;
 
     return VLC_SUCCESS;
 }

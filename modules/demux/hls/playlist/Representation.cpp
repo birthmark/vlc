@@ -28,9 +28,9 @@
 #include "M3U8.hpp"
 #include "Parser.hpp"
 #include "HLSSegment.hpp"
-#include "../adaptive/playlist/BasePeriod.h"
-#include "../adaptive/playlist/BaseAdaptationSet.h"
-#include "../adaptive/playlist/SegmentList.h"
+#include "../../adaptive/playlist/BasePeriod.h"
+#include "../../adaptive/playlist/BaseAdaptationSet.h"
+#include "../../adaptive/playlist/SegmentList.h"
 
 #include <ctime>
 
@@ -42,7 +42,6 @@ Representation::Representation  ( BaseAdaptationSet *set ) :
 {
     b_live = true;
     b_loaded = false;
-    switchpolicy = SegmentInformation::SWITCH_SEGMENT_ALIGNED; /* FIXME: based on streamformat */
     nextUpdateTime = 0;
     targetDuration = 0;
     streamFormat = StreamFormat::UNKNOWN;
@@ -105,29 +104,29 @@ void Representation::scheduleNextUpdate(uint64_t number)
     const time_t now = time(NULL);
 
     /* Compute new update time */
-    mtime_t minbuffer = getMinAheadTime(number);
+    vlc_tick_t minbuffer = getMinAheadTime(number);
 
     /* Update frequency must always be at least targetDuration (if any)
      * but we need to update before reaching that last segment, thus -1 */
     if(targetDuration)
     {
-        if(minbuffer > CLOCK_FREQ * ( 2 * targetDuration + 1 ))
-            minbuffer -= CLOCK_FREQ * ( targetDuration + 1 );
+        if(minbuffer > vlc_tick_from_sec( 2 * targetDuration + 1 ))
+            minbuffer -= vlc_tick_from_sec( targetDuration + 1 );
         else
-            minbuffer = CLOCK_FREQ * ( targetDuration - 1 );
+            minbuffer = vlc_tick_from_sec( targetDuration - 1 );
     }
     else
     {
-        if(minbuffer < 10 * CLOCK_FREQ)
-            minbuffer = 4 * CLOCK_FREQ;
+        if(minbuffer < VLC_TICK_FROM_SEC(10))
+            minbuffer = VLC_TICK_FROM_SEC(4);
         else
             minbuffer /= 2;
     }
 
-    nextUpdateTime = now + minbuffer / CLOCK_FREQ;
+    nextUpdateTime = now + SEC_FROM_VLC_TICK(minbuffer);
 
     msg_Dbg(playlist->getVLCObject(), "Updated playlist ID %s, next update in %" PRId64 "s",
-            getID().str().c_str(), (mtime_t) nextUpdateTime - now);
+            getID().str().c_str(), (int64_t) nextUpdateTime - now);
 
     debug(playlist->getVLCObject(), 0);
 }
@@ -137,18 +136,16 @@ bool Representation::needsUpdate() const
     return !b_loaded || (isLive() && nextUpdateTime < time(NULL));
 }
 
-bool Representation::runLocalUpdates(mtime_t, uint64_t number, bool prune)
+bool Representation::runLocalUpdates(SharedResources *res,
+                                     vlc_tick_t, uint64_t, bool)
 {
     const time_t now = time(NULL);
-    const AbstractPlaylist *playlist = getPlaylist();
+    AbstractPlaylist *playlist = getPlaylist();
     if(!b_loaded || (isLive() && nextUpdateTime < now))
     {
-        M3U8Parser parser;
+        M3U8Parser parser(res);
         parser.appendSegmentsFromPlaylistURI(playlist->getVLCObject(), this);
         b_loaded = true;
-
-        if(prune)
-            pruneBySegmentNumber(number);
 
         return true;
     }
@@ -160,15 +157,15 @@ uint64_t Representation::translateSegmentNumber(uint64_t num, const SegmentInfor
 {
     if(consistentSegmentNumber())
         return num;
-    ISegment *fromSeg = from->getSegment(SegmentInfoType::INFOTYPE_MEDIA, num);
+    ISegment *fromSeg = from->getSegment(INFOTYPE_MEDIA, num);
     HLSSegment *fromHlsSeg = dynamic_cast<HLSSegment *>(fromSeg);
     if(!fromHlsSeg)
         return 1;
-    const mtime_t utcTime = fromHlsSeg->getUTCTime();
+    const vlc_tick_t utcTime = fromHlsSeg->getUTCTime();
 
     std::vector<ISegment *> list;
     std::vector<ISegment *>::const_iterator it;
-    getSegments(SegmentInfoType::INFOTYPE_MEDIA, list);
+    getSegments(INFOTYPE_MEDIA, list);
     for(it=list.begin(); it != list.end(); ++it)
     {
         const HLSSegment *hlsSeg = dynamic_cast<HLSSegment *>(*it);

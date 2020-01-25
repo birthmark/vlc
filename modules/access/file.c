@@ -3,10 +3,9 @@
  *****************************************************************************
  * Copyright (C) 2001-2006 VLC authors and VideoLAN
  * Copyright © 2006-2007 Rémi Denis-Courmont
- * $Id$
  *
  * Authors: Christophe Massiot <massiot@via.ecp.fr>
- *          Rémi Denis-Courmont <rem # videolan # org>
+ *          Rémi Denis-Courmont
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -55,9 +54,7 @@
 
 #include <vlc_common.h>
 #include "fs.h"
-#include <vlc_input.h>
 #include <vlc_access.h>
-#include <vlc_dialog.h>
 #ifdef _WIN32
 # include <vlc_charset.h>
 #endif
@@ -65,12 +62,12 @@
 #include <vlc_url.h>
 #include <vlc_interrupt.h>
 
-struct access_sys_t
+typedef struct
 {
     int fd;
 
     bool b_pace_control;
-};
+} access_sys_t;
 
 #if !defined (_WIN32) && !defined (__OS2__)
 static bool IsRemote (int fd)
@@ -128,17 +125,16 @@ static bool IsRemote (const char *path)
 # define posix_fadvise(fd, off, len, adv)
 #endif
 
-static ssize_t Read (access_t *, void *, size_t);
-static int FileSeek (access_t *, uint64_t);
-static int NoSeek (access_t *, uint64_t);
-static int FileControl (access_t *, int, va_list);
+static ssize_t Read (stream_t *, void *, size_t);
+static int FileSeek (stream_t *, uint64_t);
+static int FileControl (stream_t *, int, va_list);
 
 /*****************************************************************************
  * FileOpen: open the file
  *****************************************************************************/
 int FileOpen( vlc_object_t *p_this )
 {
-    access_t *p_access = (access_t*)p_this;
+    stream_t *p_access = (stream_t*)p_this;
 
     /* Open file */
     int fd = -1;
@@ -174,11 +170,6 @@ int FileOpen( vlc_object_t *p_this )
                  p_access->psz_filepath ? p_access->psz_filepath
                                         : p_access->psz_location,
                  vlc_strerror_c(errno));
-        vlc_dialog_display_error (p_access, _("File reading failed"),
-            _("VLC could not open the file \"%s\" (%s)."),
-            p_access->psz_filepath ? p_access->psz_filepath
-                                   : p_access->psz_location,
-            vlc_strerror(errno));
         return VLC_EGENERIC;
     }
 
@@ -211,7 +202,7 @@ int FileOpen( vlc_object_t *p_this )
 #endif
     }
 
-    access_sys_t *p_sys = malloc (sizeof (*p_sys));
+    access_sys_t *p_sys = vlc_obj_malloc(p_this, sizeof (*p_sys));
     if (unlikely(p_sys == NULL))
         goto error;
     p_access->pf_read = Read;
@@ -241,7 +232,7 @@ int FileOpen( vlc_object_t *p_this )
     }
     else
     {
-        p_access->pf_seek = NoSeek;
+        p_access->pf_seek = NULL;
         p_sys->b_pace_control = strcasecmp (p_access->psz_name, "stream");
     }
 
@@ -257,7 +248,7 @@ error:
  *****************************************************************************/
 void FileClose (vlc_object_t * p_this)
 {
-    access_t     *p_access = (access_t*)p_this;
+    stream_t     *p_access = (stream_t*)p_this;
 
     if (p_access->pf_read == NULL)
     {
@@ -268,11 +259,10 @@ void FileClose (vlc_object_t * p_this)
     access_sys_t *p_sys = p_access->p_sys;
 
     vlc_close (p_sys->fd);
-    free (p_sys);
 }
 
 
-static ssize_t Read (access_t *p_access, void *p_buffer, size_t i_len)
+static ssize_t Read (stream_t *p_access, void *p_buffer, size_t i_len)
 {
     access_sys_t *p_sys = p_access->p_sys;
     int fd = p_sys->fd;
@@ -288,9 +278,6 @@ static ssize_t Read (access_t *p_access, void *p_buffer, size_t i_len)
         }
 
         msg_Err (p_access, "read error: %s", vlc_strerror_c(errno));
-        vlc_dialog_display_error (p_access, _("File reading failed"),
-            _("VLC could not read the file (%s)."),
-            vlc_strerror(errno));
         val = 0;
     }
 
@@ -300,7 +287,7 @@ static ssize_t Read (access_t *p_access, void *p_buffer, size_t i_len)
 /*****************************************************************************
  * Seek: seek to a specific location in a file
  *****************************************************************************/
-static int FileSeek (access_t *p_access, uint64_t i_pos)
+static int FileSeek (stream_t *p_access, uint64_t i_pos)
 {
     access_sys_t *sys = p_access->p_sys;
 
@@ -309,33 +296,26 @@ static int FileSeek (access_t *p_access, uint64_t i_pos)
     return VLC_SUCCESS;
 }
 
-static int NoSeek (access_t *p_access, uint64_t i_pos)
-{
-    /* vlc_assert_unreachable(); ?? */
-    (void) p_access; (void) i_pos;
-    return VLC_EGENERIC;
-}
-
 /*****************************************************************************
  * Control:
  *****************************************************************************/
-static int FileControl( access_t *p_access, int i_query, va_list args )
+static int FileControl( stream_t *p_access, int i_query, va_list args )
 {
     access_sys_t *p_sys = p_access->p_sys;
     bool    *pb_bool;
-    int64_t *pi_64;
+    vlc_tick_t *pi_64;
 
     switch( i_query )
     {
         case STREAM_CAN_SEEK:
         case STREAM_CAN_FASTSEEK:
-            pb_bool = (bool*)va_arg( args, bool* );
-            *pb_bool = (p_access->pf_seek != NoSeek);
+            pb_bool = va_arg( args, bool * );
+            *pb_bool = (p_access->pf_seek != NULL);
             break;
 
         case STREAM_CAN_PAUSE:
         case STREAM_CAN_CONTROL_PACE:
-            pb_bool = (bool*)va_arg( args, bool* );
+            pb_bool = va_arg( args, bool * );
             *pb_bool = p_sys->b_pace_control;
             break;
 
@@ -350,12 +330,13 @@ static int FileControl( access_t *p_access, int i_query, va_list args )
         }
 
         case STREAM_GET_PTS_DELAY:
-            pi_64 = (int64_t*)va_arg( args, int64_t * );
+            pi_64 = va_arg( args, vlc_tick_t * );
             if (IsRemote (p_sys->fd, p_access->psz_filepath))
-                *pi_64 = var_InheritInteger (p_access, "network-caching");
+                *pi_64 = VLC_TICK_FROM_MS(
+                        var_InheritInteger (p_access, "network-caching") );
             else
-                *pi_64 = var_InheritInteger (p_access, "file-caching");
-            *pi_64 *= 1000;
+                *pi_64 = VLC_TICK_FROM_MS(
+                        var_InheritInteger (p_access, "file-caching") );
             break;
 
         case STREAM_SET_PAUSE_STATE:

@@ -28,6 +28,7 @@
 #include "../logic/IDownloadRateObserver.h"
 
 #include <vlc_common.h>
+
 #include <vector>
 #include <string>
 
@@ -36,8 +37,9 @@ namespace adaptive
     namespace http
     {
         class ConnectionParams;
-        class ConnectionFactory;
+        class AbstractConnectionFactory;
         class AbstractConnection;
+        class AuthStorage;
         class Downloader;
         class AbstractChunkSource;
 
@@ -51,7 +53,7 @@ namespace adaptive
                 virtual void start(AbstractChunkSource *) = 0;
                 virtual void cancel(AbstractChunkSource *) = 0;
 
-                virtual void updateDownloadRate(const ID &, size_t, mtime_t); /* impl */
+                virtual void updateDownloadRate(const ID &, size_t, vlc_tick_t); /* impl */
                 void setDownloadRateObserver(IDownloadRateObserver *);
 
             protected:
@@ -64,7 +66,7 @@ namespace adaptive
         class HTTPConnectionManager : public AbstractConnectionManager
         {
             public:
-                HTTPConnectionManager           (vlc_object_t *p_object, ConnectionFactory * = NULL);
+                HTTPConnectionManager           (vlc_object_t *p_object, AuthStorage *);
                 virtual ~HTTPConnectionManager  ();
 
                 virtual void    closeAllConnections () /* impl */;
@@ -72,13 +74,15 @@ namespace adaptive
 
                 virtual void start(AbstractChunkSource *) /* impl */;
                 virtual void cancel(AbstractChunkSource *) /* impl */;
+                void         setLocalConnectionsAllowed();
 
             private:
                 void    releaseAllConnections ();
                 Downloader                                         *downloader;
                 vlc_mutex_t                                         lock;
                 std::vector<AbstractConnection *>                   connectionPool;
-                ConnectionFactory                                  *factory;
+                AbstractConnectionFactory                          *factory;
+                bool                                                localAllowed;
                 AbstractConnection * reuseConnection(ConnectionParams &);
         };
     }

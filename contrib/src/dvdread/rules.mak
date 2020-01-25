@@ -1,13 +1,15 @@
 # DVDREAD
-LIBDVDREAD_VERSION := 5.0.3
+LIBDVDREAD_VERSION := 6.0.2
 LIBDVDREAD_URL := $(VIDEOLAN)/libdvdread/$(LIBDVDREAD_VERSION)/libdvdread-$(LIBDVDREAD_VERSION).tar.bz2
 
 ifdef BUILD_DISCS
 ifdef GPL
+ifndef HAVE_WINSTORE
 PKGS += dvdread
 endif
 endif
-ifeq ($(call need_pkg,"dvdread >= 5.0.3"),)
+endif
+ifeq ($(call need_pkg,"dvdread >= 6.0.0"),)
 PKGS_FOUND += dvdread
 endif
 
@@ -18,12 +20,14 @@ $(TARBALLS)/libdvdread-$(LIBDVDREAD_VERSION).tar.bz2:
 
 dvdread: libdvdread-$(LIBDVDREAD_VERSION).tar.bz2 .sum-dvdread
 	$(UNPACK)
-	cd $(UNPACK_DIR) && sed -i -e 's,Requires.private,Requires,g' misc/*.pc.in
+	$(APPLY) $(SRC)/dvdread/only-use-getmntentr-when-available.patch
+	$(call pkg_static,"misc/dvdread.pc.in")
 	$(MOVE)
 
-DEPS_dvdread = dvdcss
+DEPS_dvdread = dvdcss $(DEPS_dvdcss)
 
-.dvdread: dvdread .dvdcss
+.dvdread: dvdread
+	$(REQUIRE_GPL)
 	$(RECONF) -I m4
 	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) --with-libdvdcss
 	cd $< && $(MAKE) install

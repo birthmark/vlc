@@ -18,8 +18,12 @@
  @ Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  @****************************************************************************/
 
+#include "asm.S"
+
 	.syntax unified
-	.fpu neon
+#if HAVE_AS_FPU_DIRECTIVE
+	.fpu	neon
+#endif
 	.text
 
 #define O1	r0
@@ -37,9 +41,7 @@
 #define OPITCH	lr
 
 	.align 2
-	.global i420_yuyv_neon
-	.type	i420_yuyv_neon, %function
-i420_yuyv_neon:
+function i420_yuyv_neon
 	push		{r4-r8,r10-r11,lr}
 	ldmia		r0,	{O1, OPITCH}
 	ldmia		r1,	{Y1, U, V, YPITCH}
@@ -47,9 +49,11 @@ i420_yuyv_neon:
 	sub		OPAD,	OPITCH,	WIDTH,	lsl #1
 	sub		YPAD,	YPITCH,	WIDTH
 1:
+	it		gt
 	movsgt		COUNT,	WIDTH
 	add		O2,	O1,	OPITCH
 	add		Y2,	Y1,	YPITCH
+	it		le
 	pople		{r4-r8,r10-r11,pc}
 2:
 	pld		[U, #64]
@@ -76,9 +80,7 @@ i420_yuyv_neon:
 	add		V,	V,	YPAD,	lsr #1
 	b		1b
 
-	.global i420_uyvy_neon
-	.type	i420_uyvy_neon, %function
-i420_uyvy_neon:
+function i420_uyvy_neon
 	push		{r4-r8,r10-r11,lr}
 	ldmia		r0,	{O1, OPITCH}
 	ldmia		r1,	{Y1, U, V, YPITCH}
@@ -86,9 +88,11 @@ i420_uyvy_neon:
 	sub		OPAD,	OPITCH,	WIDTH,	lsl #1
 	sub		YPAD,	YPITCH,	WIDTH
 1:
+	it		gt
 	movsgt		COUNT,	WIDTH
 	add		O2,	O1,	OPITCH
 	add		Y2,	Y1,	YPITCH
+	it		le
 	pople		{r4-r8,r10-r11,pc}
 2:
 	pld		[U, #64]

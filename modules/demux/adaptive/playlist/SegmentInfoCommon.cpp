@@ -3,7 +3,6 @@
  *                        and SegmentInfo
  *****************************************************************************
  * Copyright (C) 1998-2007 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Hugo Beauzée-Luyssen <hugo@beauzee.fr>
  *
@@ -31,7 +30,7 @@
 using namespace adaptive::playlist;
 
 SegmentInfoCommon::SegmentInfoCommon( ICanonicalUrl *parent ) :
-    ICanonicalUrl( parent ), Initializable(), Indexable(),
+    ICanonicalUrl( parent ),
     startIndex( 0 )
 {
     duration.Set(0);

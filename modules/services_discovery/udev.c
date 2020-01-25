@@ -123,13 +123,13 @@ struct subsys
     int item_type;
 };
 
-struct services_discovery_sys_t
+typedef struct
 {
     const struct subsys *subsys;
     struct udev_monitor *monitor;
     vlc_thread_t         thread;
     void                *root;
-};
+} services_discovery_sys_t;
 
 /**
  * Compares two devices (to support binary search).
@@ -151,7 +151,7 @@ static void DestroyDevice (void *data)
 
     if (d->sd)
         services_discovery_RemoveItem (d->sd, d->item);
-    vlc_gc_decref (d->item);
+    input_item_Release (d->item);
     free (d);
 }
 
@@ -168,7 +168,8 @@ static int AddDevice (services_discovery_t *sd, struct udev_device *dev)
     if (mrl == NULL)
         return 0; /* don't know if it was an error... */
     char *name = p_sys->subsys->get_name (dev);
-    input_item_t *item = input_item_NewExt (mrl, name ? name : mrl, -1,
+    input_item_t *item = input_item_NewExt (mrl, name ? name : mrl,
+                                            INPUT_DURATION_INDEFINITE,
                                             p_sys->subsys->item_type, ITEM_LOCAL);
     msg_Dbg (sd, "adding %s (%s)", mrl, name);
     free (name);
@@ -179,14 +180,14 @@ static int AddDevice (services_discovery_t *sd, struct udev_device *dev)
     struct device *d = malloc (sizeof (*d));
     if (d == NULL)
     {
-        vlc_gc_decref (item);
+        input_item_Release (item);
         return -1;
     }
     d->devnum = udev_device_get_devnum (dev);
     d->item = item;
     d->sd = NULL;
 
-    struct device **dp = tsearch (d, &p_sys->root, cmpdev);
+    void **dp = tsearch (d, &p_sys->root, cmpdev);
     if (dp == NULL) /* Out-of-memory */
     {
         DestroyDevice (d);
@@ -198,7 +199,7 @@ static int AddDevice (services_discovery_t *sd, struct udev_device *dev)
         *dp = d;
     }
 
-    services_discovery_AddItem (sd, item, NULL);
+    services_discovery_AddItem(sd, item);
     d->sd = sd;
     return 0;
 }
@@ -211,7 +212,7 @@ static void RemoveDevice (services_discovery_t *sd, struct udev_device *dev)
     services_discovery_sys_t *p_sys = sd->p_sys;
 
     dev_t num = udev_device_get_devnum (dev);
-    struct device **dp = tfind (&(dev_t){ num }, &p_sys->root, cmpdev);
+    void **dp = tfind (&(dev_t){ num }, &p_sys->root, cmpdev);
     if (dp == NULL)
         return;
 
@@ -585,21 +586,21 @@ static char *disc_get_name (struct udev_device *dev)
     const char *cat = NULL;
     udev_list_entry_foreach (entry, list)
     {
-        const char *name = udev_list_entry_get_name (entry);
+        const char *propname = udev_list_entry_get_name(entry);
 
-        if (strncmp (name, "ID_CDROM_MEDIA_", 15))
+        if (strncmp(propname, "ID_CDROM_MEDIA_", 15))
             continue;
         if (!atoi (udev_list_entry_get_value (entry)))
             continue;
-        name += 15;
+        propname += 15;
 
-        if (!strncmp (name, "CD", 2))
+        if (!strncmp(propname, "CD", 2))
             cat = N_("CD");
-        else if (!strncmp (name, "DVD", 3))
+        else if (!strncmp(propname, "DVD", 3))
             cat = N_("DVD");
-        else if (!strncmp (name, "BD", 2))
+        else if (!strncmp(propname, "BD", 2))
             cat = N_("Blu-ray");
-        else if (!strncmp (name, "HDDVD", 5))
+        else if (!strncmp(propname, "HDDVD", 5))
             cat = N_("HD DVD");
 
         if (cat != NULL)

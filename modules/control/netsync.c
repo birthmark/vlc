@@ -2,7 +2,6 @@
  * netsync.c: synchronization between several network clients.
  *****************************************************************************
  * Copyright (C) 2004-2009 the VideoLAN team
- * $Id$
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *          Jean-Paul Saman <jpsaman@videolan.org>
@@ -34,8 +33,7 @@
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_interface.h>
-#include <vlc_input.h>
-#include <vlc_playlist.h>
+#include <vlc_playlist_legacy.h>
 
 #include <sys/types.h>
 #include <unistd.h>
@@ -163,11 +161,11 @@ void Close(vlc_object_t *object)
     free(sys);
 }
 
-static mtime_t GetPcrSystem(input_thread_t *input)
+static vlc_tick_t GetPcrSystem(input_thread_t *input)
 {
     int canc = vlc_savecancel();
     /* TODO use the delay */
-    mtime_t system;
+    vlc_tick_t system;
     if (input_GetPcrSystem(input, &system, NULL))
         system = -1;
     vlc_restorecancel(canc);
@@ -194,11 +192,11 @@ static void *Master(void *handle)
                      (struct sockaddr *)&from, &fromlen) < 8)
             continue;
 
-        mtime_t master_system = GetPcrSystem(sys->input);
+        vlc_tick_t master_system = GetPcrSystem(sys->input);
         if (master_system < 0)
             continue;
 
-        data[0] = hton64(mdate());
+        data[0] = hton64(vlc_tick_now());
         data[1] = hton64(master_system);
 
         /* Reply to the sender */
@@ -207,7 +205,7 @@ static void *Master(void *handle)
 #if 0
         /* not sure we need the client information to sync,
            since we are the master anyway */
-        mtime_t client_system = ntoh64(data[0]);
+        vlc_tick_t client_system = ntoh64(data[0]);
         msg_Dbg(intf, "Master clockref: %"PRId64" -> %"PRId64", from %s "
                  "(date: %"PRId64")", client_system, master_system,
                  (from.ss_family == AF_INET) ? inet_ntoa(((struct sockaddr_in *)&from)->sin_addr)
@@ -226,12 +224,12 @@ static void *Slave(void *handle)
         struct pollfd ufd = { .fd = sys->fd, .events = POLLIN, };
         uint64_t data[2];
 
-        mtime_t system = GetPcrSystem(sys->input);
+        vlc_tick_t system = GetPcrSystem(sys->input);
         if (system < 0)
             goto wait;
 
         /* Send clock request to the master */
-        const mtime_t send_date = mdate();
+        const vlc_tick_t send_date = vlc_tick_now();
 
         data[0] = hton64(system);
         send(sys->fd, data, 8, 0);
@@ -240,21 +238,21 @@ static void *Slave(void *handle)
         if (poll(&ufd, 1, sys->timeout) <= 0)
             continue;
 
-        const mtime_t receive_date = mdate();
+        const vlc_tick_t receive_date = vlc_tick_now();
         if (recv(sys->fd, data, 16, 0) < 16)
             goto wait;
 
-        const mtime_t master_date   = ntoh64(data[0]);
-        const mtime_t master_system = ntoh64(data[1]);
-        const mtime_t diff_date = receive_date -
+        const vlc_tick_t master_date   = ntoh64(data[0]);
+        const vlc_tick_t master_system = ntoh64(data[1]);
+        const vlc_tick_t diff_date = receive_date -
                                   ((receive_date - send_date) / 2 + master_date);
 
         if (master_system > 0) {
             int canc = vlc_savecancel();
 
-            mtime_t client_system;
+            vlc_tick_t client_system;
             if (!input_GetPcrSystem(sys->input, &client_system, NULL)) {
-                const mtime_t diff_system = client_system - master_system - diff_date;
+                const vlc_tick_t diff_system = client_system - master_system - diff_date;
                 if (diff_system != 0) {
                     input_ModifyPcrSystem(sys->input, true, master_system - diff_date);
 #if 0
@@ -268,7 +266,7 @@ static void *Slave(void *handle)
             vlc_restorecancel(canc);
         }
     wait:
-        msleep(INTF_IDLE_SLEEP);
+        vlc_tick_sleep(INTF_IDLE_SLEEP);
     }
     return NULL;
 }

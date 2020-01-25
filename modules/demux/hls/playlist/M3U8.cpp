@@ -23,23 +23,19 @@
 
 #include "M3U8.hpp"
 #include "Representation.hpp"
-#include "../adaptive/playlist/BasePeriod.h"
-#include "../adaptive/playlist/BaseAdaptationSet.h"
-
-#include <vlc_common.h>
-#include <vlc_stream.h>
+#include "../../adaptive/playlist/BasePeriod.h"
+#include "../../adaptive/playlist/BaseAdaptationSet.h"
 
 using namespace hls::playlist;
 
 M3U8::M3U8 (vlc_object_t *p_object) :
     AbstractPlaylist(p_object)
 {
-    minUpdatePeriod.Set( 5 * CLOCK_FREQ );
+    minUpdatePeriod.Set( VLC_TICK_FROM_SEC(5) );
 }
 
 M3U8::~M3U8()
 {
-
 }
 
 bool M3U8::isLive() const

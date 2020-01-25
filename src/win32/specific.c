@@ -34,9 +34,7 @@
 #include "config/vlc_getopt.h"
 
 #include <mmsystem.h>
-#include <winsock.h>
-
-DWORD LoadLibraryFlags = 0;
+#include <winsock2.h>
 
 static int system_InitWSA(int hi, int lo)
 {
@@ -57,22 +55,8 @@ static int system_InitWSA(int hi, int lo)
  */
 void system_Init(void)
 {
-#if !VLC_WINSTORE_APP
-    timeBeginPeriod(5);
-#endif
-
     if (system_InitWSA(2, 2) && system_InitWSA(1, 1))
         fputs("Error: cannot initialize Winsocks\n", stderr);
-
-#if !VLC_WINSTORE_APP
-# if (_WIN32_WINNT < _WIN32_WINNT_WIN8)
-    if (GetProcAddress(GetModuleHandle(TEXT("kernel32.dll")),
-                                       "SetDefaultDllDirectories") != NULL)
-# endif /* FIXME: not reentrant */
-        LoadLibraryFlags = LOAD_LIBRARY_SEARCH_APPLICATION_DIR |
-                           LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
-                           LOAD_LIBRARY_SEARCH_SYSTEM32;
-#endif
 }
 
 /*****************************************************************************
@@ -90,23 +74,6 @@ typedef struct
 void system_Configure( libvlc_int_t *p_this, int i_argc, const char *const ppsz_argv[] )
 {
 #if !VLC_WINSTORE_APP
-    /* Raise default priority of the current process */
-#ifndef ABOVE_NORMAL_PRIORITY_CLASS
-#   define ABOVE_NORMAL_PRIORITY_CLASS 0x00008000
-#endif
-    if( var_InheritBool( p_this, "high-priority" ) )
-    {
-        if( SetPriorityClass( GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS )
-             || SetPriorityClass( GetCurrentProcess(), HIGH_PRIORITY_CLASS ) )
-        {
-            msg_Dbg( p_this, "raised process priority" );
-        }
-        else
-        {
-            msg_Dbg( p_this, "could not raise process priority" );
-        }
-    }
-
     if( var_InheritBool( p_this, "one-instance" )
      || ( var_InheritBool( p_this, "one-instance-when-started-from-file" )
        && var_InheritBool( p_this, "started-from-file" ) ) )
@@ -206,10 +173,6 @@ void system_Configure( libvlc_int_t *p_this, int i_argc, const char *const ppsz_
  */
 void system_End(void)
 {
-#if !VLC_WINSTORE_APP
-    timeEndPeriod(5);
-#endif
-
     /* XXX: In theory, we should not call this if WSAStartup() failed. */
     WSACleanup();
 }

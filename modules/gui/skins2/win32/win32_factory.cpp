@@ -2,7 +2,6 @@
  * win32_factory.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
- * $Id$
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -31,7 +30,6 @@
 #include <windows.h>
 #include <winuser.h>
 #include <wingdi.h>
-#include <tchar.h>
 #include <shellapi.h>
 
 #include "win32_factory.hpp"
@@ -74,7 +72,7 @@ LRESULT CALLBACK Win32Factory::Win32Proc( HWND hwnd, UINT uMsg,
             // If closing parent window
             if( (wParam & 0xFFF0) == SC_CLOSE )
             {
-                libvlc_Quit( p_intf->obj.libvlc );
+                libvlc_Quit( vlc_object_instance(p_intf) );
                 return 0;
             }
             else if( (wParam & 0xFFF0) == SC_MINIMIZE )
@@ -215,7 +213,7 @@ bool Win32Factory::init()
     m_trayIcon.uFlags = NIF_ICON|NIF_TIP|NIF_MESSAGE;
     m_trayIcon.uCallbackMessage = MY_WM_TRAYACTION;
     m_trayIcon.hIcon = LoadIcon( m_hInst, vlc_icon );
-    _tcscpy( m_trayIcon.szTip, vlc_name );
+    wcscpy( m_trayIcon.szTip, vlc_name );
 
     // Show the systray icon if needed
     if( var_InheritBool( getIntf(), "skins2-systray" ) )
@@ -233,10 +231,10 @@ bool Win32Factory::init()
     OleInitialize( NULL );
 
     // Initialize the resource path
-    char *datadir = config_GetUserDir( VLC_DATA_DIR );
+    char *datadir = config_GetUserDir( VLC_USERDATA_DIR );
     m_resourcePath.push_back( (std::string)datadir + "\\skins" );
     free( datadir );
-    datadir = config_GetDataDir();
+    datadir = config_GetSysPath(VLC_PKG_DATA_DIR, NULL);
     m_resourcePath.push_back( (std::string)datadir + "\\skins" );
     m_resourcePath.push_back( (std::string)datadir + "\\skins2" );
     m_resourcePath.push_back( (std::string)datadir + "\\share\\skins" );
@@ -384,11 +382,12 @@ int Win32Factory::getScreenHeight() const
 }
 
 
-void Win32Factory::getMonitorInfo( const GenericWindow &rWindow,
+void Win32Factory::getMonitorInfo( OSWindow *pWindow,
                                    int* p_x, int* p_y,
                                    int* p_width, int* p_height ) const
 {
-    HWND wnd = (HWND)rWindow.getOSHandle();
+    Win32Window *pWin = (Win32Window*)pWindow;
+    HWND wnd = pWin->getHandle();
     HMONITOR hmon = MonitorFromWindow( wnd, MONITOR_DEFAULTTONEAREST );
     MONITORINFO mi;
     mi.cbSize = sizeof( MONITORINFO );
@@ -464,15 +463,16 @@ void Win32Factory::changeCursor( CursorType_t type ) const
     LPCTSTR id;
     switch( type )
     {
-    default:
     case kDefaultArrow: id = IDC_ARROW;    break;
     case kResizeNWSE:   id = IDC_SIZENWSE; break;
     case kResizeNS:     id = IDC_SIZENS;   break;
     case kResizeWE:     id = IDC_SIZEWE;   break;
     case kResizeNESW:   id = IDC_SIZENESW; break;
+    case kNoCursor:
+    default: id = 0;
     }
 
-    HCURSOR hCurs = LoadCursor( NULL, id );
+    HCURSOR hCurs = (type == kNoCursor) ? NULL : LoadCursor( NULL, id );
     SetCursor( hCurs );
 }
 
@@ -482,7 +482,7 @@ void Win32Factory::rmDir( const std::string &rPath )
     LPWSTR dir_temp = ToWide( rPath.c_str() );
     size_t len = wcslen( dir_temp );
 
-    LPWSTR dir = (wchar_t *)malloc( (len + 2) * sizeof (wchar_t) );
+    LPWSTR dir = (wchar_t *)vlc_alloc( len + 2, sizeof (wchar_t) );
     wcsncpy( dir, dir_temp, len + 2);
 
     SHFILEOPSTRUCTW file_op = {

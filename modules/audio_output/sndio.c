@@ -43,15 +43,15 @@ vlc_module_begin ()
     set_callbacks (Open, Close)
 vlc_module_end ()
 
-static int TimeGet (audio_output_t *, mtime_t *);
-static void Play (audio_output_t *, block_t *);
-static void Flush (audio_output_t *, bool);
+static int TimeGet (audio_output_t *, vlc_tick_t *);
+static void Play(audio_output_t *, block_t *, vlc_tick_t);
+static void Flush (audio_output_t *);
 static int VolumeSet (audio_output_t *, float);
 static int MuteSet (audio_output_t *, bool);
 static void VolumeChanged (void *, unsigned);
 static void PositionChanged (void *, int);
 
-struct aout_sys_t
+typedef struct
 {
     struct sio_hdl *hdl;
     int started;
@@ -59,7 +59,7 @@ struct aout_sys_t
     unsigned rate;
     unsigned volume;
     bool mute;
-};
+} aout_sys_t;
 
 /** Initializes an sndio playback stream */
 static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
@@ -174,12 +174,13 @@ static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
             goto error;
     }
 
-    fmt->i_original_channels = fmt->i_physical_channels = chans;
+    fmt->channel_type = AUDIO_CHANNEL_TYPE_BITMAP;
+    fmt->i_physical_channels = chans;
     aout_FormatPrepare (fmt);
 
     aout->time_get = TimeGet;
     aout->play = Play;
-    aout->pause = NULL;
+    aout->pause = aout_PauseDefault;
     aout->flush = Flush;
     if (sio_onvol(sys->hdl, VolumeChanged, aout))
     {
@@ -219,26 +220,27 @@ static void PositionChanged (void *arg, int delta)
     sys->started = 1;
 }
 
-static int TimeGet (audio_output_t *aout, mtime_t *restrict delay)
+static int TimeGet (audio_output_t *aout, vlc_tick_t *restrict delay)
 {
     aout_sys_t *sys = aout->sys;
 
     if (!sys->started)
         return -1;
-    *delay = (mtime_t)sys->delay * CLOCK_FREQ / sys->rate;
+    *delay = vlc_tick_from_samples(sys->delay, sys->rate);
     return 0;
 }
 
-static void Play (audio_output_t *aout, block_t *block)
+static void Play(audio_output_t *aout, block_t *block, vlc_tick_t date)
 {
     aout_sys_t *sys = aout->sys;
 
     sio_write (sys->hdl, block->p_buffer, block->i_buffer);
     sys->delay += block->i_nb_samples;
     block_Release (block);
+    (void) date;
 }
 
-static void Flush (audio_output_t *aout, bool wait)
+static void Flush (audio_output_t *aout)
 {
     aout_sys_t *sys = aout->sys;
 
@@ -246,18 +248,18 @@ static void Flush (audio_output_t *aout, bool wait)
     sys->started = 0;
     sys->delay = 0;
     sio_start (sys->hdl);
-    (void)wait;
 }
 
 static void VolumeChanged (void *arg, unsigned volume)
 {
     audio_output_t *aout = arg;
+    aout_sys_t *p_sys = aout->sys;
     float fvol = (float)volume / (float)SIO_MAXVOL;
 
     aout_VolumeReport (aout, fvol);
     aout_MuteReport (aout, volume == 0);
     if (volume) /* remember last non-zero volume to unmute later */
-        aout->sys->volume = volume;
+        p_sys->volume = volume;
 }
 
 static int VolumeSet (audio_output_t *aout, float fvol)

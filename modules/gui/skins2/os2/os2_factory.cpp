@@ -90,7 +90,7 @@ MRESULT EXPENTRY OS2Factory::OS2FrameProc( HWND hwnd, ULONG msg,
         // If closing parent window
         if( SHORT1FROMMP(mp1) == SC_CLOSE )
         {
-            libvlc_Quit( p_intf->obj.libvlc );
+            libvlc_Quit( vlc_object_instance(p_intf) );
 
             return 0;
         }
@@ -217,10 +217,10 @@ bool OS2Factory::init()
     changeCursor( kDefaultArrow );
 
     // Initialize the resource path
-    char *datadir = config_GetUserDir( VLC_DATA_DIR );
+    char *datadir = config_GetUserDir( VLC_USERDATA_DIR );
     m_resourcePath.push_back( (std::string)datadir + "\\skins" );
     free( datadir );
-    datadir = config_GetDataDir();
+    datadir = config_GetSysPath(VLC_PKG_DATA_DIR, NULL);
     m_resourcePath.push_back( (std::string)datadir + "\\skins" );
     m_resourcePath.push_back( (std::string)datadir + "\\skins2" );
     m_resourcePath.push_back( (std::string)datadir + "\\share\\skins" );
@@ -363,7 +363,7 @@ int OS2Factory::getScreenHeight() const
 }
 
 
-void OS2Factory::getMonitorInfo( const GenericWindow &rWindow,
+void OS2Factory::getMonitorInfo( OSWindow* pWindow,
                                  int* p_x, int* p_y,
                                  int* p_width, int* p_height ) const
 {
@@ -446,7 +446,7 @@ void OS2Factory::rmDir( const std::string &rPath )
 
         filename = rPath + "\\" + filename;
 
-        if( !stat( filename.c_str(), &statbuf ) && statbuf.st_mode & S_IFDIR )
+        if( !stat( filename.c_str(), &statbuf ) && S_ISDIR(statbuf.st_mode) )
         {
             rmDir( filename );
         }

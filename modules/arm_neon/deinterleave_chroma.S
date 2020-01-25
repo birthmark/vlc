@@ -19,8 +19,12 @@
  @ Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  @****************************************************************************/
 
+#include "asm.S"
+
 	.syntax unified
-	.fpu neon
+#if HAVE_AS_FPU_DIRECTIVE
+	.fpu	neon
+#endif
 	.text
 
 #define UV	r0
@@ -35,9 +39,7 @@
 #define OPAD	lr
 
 	.align 2
-	.global deinterleave_chroma_neon
-	.type	deinterleave_chroma_neon, %function
-deinterleave_chroma_neon:
+function deinterleave_chroma_neon
 	push		{r4-r6,lr}
 	ldmia		r0,	{U, V, OPITCH}
 	ldmia		r1,	{UV, IPITCH}
@@ -50,6 +52,7 @@ deinterleave_chroma_neon:
 	sub		IPAD,	IPITCH,	WIDTH, lsl #1
 	sub		OPAD,	OPITCH,	WIDTH
 1:
+	ite		gt
 	movsgt		COUNT,	WIDTH
 	pople		{r4-r6,pc}
 2:

@@ -34,11 +34,11 @@
 #include <vlc_common.h>
 
 typedef struct AWindowHandler AWindowHandler;
-typedef struct SurfaceTexture SurfaceTexture;
 
 enum AWindow_ID {
     AWindow_Video,
     AWindow_Subtitles,
+    AWindow_SurfaceTexture,
     AWindow_Max,
 };
 
@@ -51,29 +51,6 @@ typedef struct
     void (*unlockAndPost)(ANativeWindow*);
     int32_t (*setBuffersGeometry)(ANativeWindow*, int32_t, int32_t, int32_t); /* can be NULL */
 } native_window_api_t;
-
-/**
- * native_window_priv_api_t. See system/core/include/system/window.h in AOSP.
- */
-typedef struct native_window_priv native_window_priv;
-typedef struct
-{
-    native_window_priv *(*connect)(ANativeWindow *);
-    int (*disconnect) (native_window_priv *);
-    int (*setUsage) (native_window_priv *, bool, int );
-    int (*setBuffersGeometry) (native_window_priv *, int, int, int );
-    int (*getMinUndequeued) (native_window_priv *, unsigned int *);
-    int (*getMaxBufferCount) (native_window_priv *, unsigned int *);
-    int (*setBufferCount) (native_window_priv *, unsigned int );
-    int (*setCrop) (native_window_priv *, int, int, int, int);
-    int (*dequeue) (native_window_priv *, void **);
-    int (*lock) (native_window_priv *, void *);
-    int (*queue) (native_window_priv *, void *);
-    int (*cancel) (native_window_priv *, void *);
-    int (*lockData) (native_window_priv *, void **, ANativeWindow_Buffer *);
-    int (*unlockData) (native_window_priv *, void *, bool b_render);
-    int (*setOrientation) (native_window_priv *, int);
-} native_window_priv_api_t;
 
 struct awh_mouse_coords
 {
@@ -91,14 +68,15 @@ typedef struct
                                 const struct awh_mouse_coords *coords);
 } awh_events_t;
 
-/**
- * Load a private native window API
- *
- * This can be used to access the private ANativeWindow API.
- * \param api doesn't need to be released
- * \return 0 on success, -1 on error.
- */
-int android_loadNativeWindowPrivApi(native_window_priv_api_t *api);
+typedef struct android_video_context_t android_video_context_t;
+
+struct android_video_context_t
+{
+    enum AWindow_ID id;
+    void *dec_opaque;
+    bool (*render)(struct picture_context_t *ctx);
+    bool (*render_ts)(struct picture_context_t *ctx, vlc_tick_t ts);
+};
 
 /**
  * Attach or get a JNIEnv*
@@ -150,16 +128,6 @@ ANativeWindow *AWindowHandler_getANativeWindow(AWindowHandler *p_awh,
  */
 void AWindowHandler_releaseANativeWindow(AWindowHandler *p_awh,
                                          enum AWindow_ID id);
-/**
- * Pre-ICS hack of ANativeWindow_setBuffersGeometry
- *
- * This function is a fix up of ANativeWindow_setBuffersGeometry that doesn't
- * work before Android ICS. It configures the Surface from the Android
- * MainThread via a SurfaceHolder. It returns VLC_SUCCESS if the Surface was
- * configured (it returns VLC_EGENERIC after Android ICS).
- */
-int AWindowHandler_setBuffersGeometry(AWindowHandler *p_awh, enum AWindow_ID id,
-                                      int i_width, int i_height, int i_format);
 
 /**
  * Returns true if the video layout can be changed
@@ -177,35 +145,43 @@ int AWindowHandler_setVideoLayout(AWindowHandler *p_awh,
                                   int i_sar_num, int i_sar_den);
 
 /**
- * Construct a new Java SurfaceTexture to stream images to a given OpenGL
- * texture
+ * Attach a SurfaceTexture to the OpenGL ES context that is current on the
+ * calling thread.
  *
  * See SurfaceTexture Android documentation.
+ * \return 0 on success, -1 on error.
  */
-SurfaceTexture *
-SurfaceTexture_create(vlc_object_t *p_obj, int tex_name);
+int
+SurfaceTexture_attachToGLContext(AWindowHandler *p_awh, int tex_name);
 
 /**
- * Release a SurfaceTexture
+ * Detach a SurfaceTexture from the OpenGL ES context that owns the OpenGL ES
+ * texture object.
  */
 void
-SurfaceTexture_release(SurfaceTexture *p_stex);
+SurfaceTexture_detachFromGLContext(AWindowHandler *p_awh);
 
 /**
- * Get a Java Surface from the SurfaceTexture
+ * Get a Java Surface from the attached SurfaceTexture
  *
  * This object can be used with mediacodec_jni.
  */
-jobject
-SurfaceTexture_getSurface(SurfaceTexture *p_stex);
+static inline jobject
+SurfaceTexture_getSurface(AWindowHandler *p_awh)
+{
+    return AWindowHandler_getSurface(p_awh, AWindow_SurfaceTexture);
+}
 
 /**
- * Get a ANativeWindow from the SurfaceTexture
+ * Get a ANativeWindow from the attached SurfaceTexture
  *
  * This pointer can be used with mediacodec_ndk.
  */
-ANativeWindow *
-SurfaceTexture_getANativeWindow(SurfaceTexture *p_stex);
+static inline ANativeWindow *
+SurfaceTexture_getANativeWindow(AWindowHandler *p_awh)
+{
+    return AWindowHandler_getANativeWindow(p_awh, AWindow_SurfaceTexture);
+}
 
 /**
  * Wait for a new frame and update it
@@ -221,5 +197,5 @@ SurfaceTexture_getANativeWindow(SurfaceTexture *p_stex);
  * \return VLC_SUCCESS or a VLC error
  */
 int
-SurfaceTexture_waitAndUpdateTexImage(SurfaceTexture *p_stex,
+SurfaceTexture_waitAndUpdateTexImage(AWindowHandler *p_awh,
                                      const float **pp_transform_mtx);

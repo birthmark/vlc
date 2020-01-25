@@ -2,7 +2,6 @@
  * rawvid.c : raw video input module for vlc
  *****************************************************************************
  * Copyright (C) 2007 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *          Antoine Cellerier <dionoea at videolan d.t org>
@@ -33,7 +32,6 @@
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_demux.h>
-#include <assert.h>
 
 /*****************************************************************************
  * Module descriptor
@@ -80,7 +78,7 @@ vlc_module_end ()
 /*****************************************************************************
  * Definitions of structures used by this plugin
  *****************************************************************************/
-struct demux_sys_t
+typedef struct
 {
     int    frame_size;
 
@@ -90,7 +88,7 @@ struct demux_sys_t
     date_t pcr;
 
     bool b_y4m;
-};
+} demux_sys_t;
 
 /*****************************************************************************
  * Local prototypes
@@ -150,10 +148,10 @@ static int Open( vlc_object_t * p_this )
     if( !p_demux->obj.force )
     {
         /* guess preset based on file extension */
-        if( !p_demux->psz_file )
+        if( !p_demux->psz_filepath )
             return VLC_EGENERIC;
 
-        const char *psz_ext = strrchr( p_demux->psz_file, '.' );
+        const char *psz_ext = strrchr( p_demux->psz_filepath, '.' );
         if( !psz_ext )
             return VLC_EGENERIC;
         psz_ext++;
@@ -342,7 +340,7 @@ valid:
                  u_fps_num, u_fps_den, 0);
     date_Init( &p_sys->pcr, p_sys->fmt_video.video.i_frame_rate,
                p_sys->fmt_video.video.i_frame_rate_base );
-    date_Set( &p_sys->pcr, 0 );
+    date_Set( &p_sys->pcr, VLC_TICK_0 );
 
     if( !p_sys->fmt_video.video.i_bits_per_pixel )
     {
@@ -350,8 +348,19 @@ valid:
                  (char*)&i_chroma );
         goto error;
     }
-    p_sys->frame_size = i_width * i_height
-                        * p_sys->fmt_video.video.i_bits_per_pixel / 8;
+    const vlc_chroma_description_t *dsc =
+            vlc_fourcc_GetChromaDescription(p_sys->fmt_video.video.i_chroma);
+    if (unlikely(dsc == NULL))
+        goto error;
+    p_sys->frame_size = 0;
+    for (unsigned i=0; i<dsc->plane_count; i++)
+    {
+        unsigned pitch = (i_width + (dsc->p[i].w.den - 1))
+                         * dsc->p[i].w.num / dsc->p[i].w.den * dsc->pixel_size;
+        unsigned lines = (i_height + (dsc->p[i].h.den - 1))
+                         * dsc->p[i].h.num / dsc->p[i].h.den;
+        p_sys->frame_size += pitch * lines;
+    }
     p_sys->p_es_video = es_out_Add( p_demux->out, &p_sys->fmt_video );
 
     p_demux->pf_demux   = Demux;
@@ -359,8 +368,6 @@ valid:
     return VLC_SUCCESS;
 
 error:
-    /* workaround, but y4m uses vlc_stream_ReadLine */
-    vlc_stream_Seek( p_demux->s, 0 );
     free( p_sys );
     return VLC_EGENERIC;
 }
@@ -384,23 +391,23 @@ static int Demux( demux_t *p_demux )
 {
     demux_sys_t *p_sys  = p_demux->p_sys;
     block_t     *p_block;
-    mtime_t i_pcr = date_Get( &p_sys->pcr );
+    vlc_tick_t i_pcr = date_Get( &p_sys->pcr );
 
     /* Call the pace control */
-    es_out_Control( p_demux->out, ES_OUT_SET_PCR, VLC_TS_0 + i_pcr );
+    es_out_SetPCR( p_demux->out, i_pcr );
 
     if( p_sys->b_y4m )
     {
         /* Skip the frame header */
         /* Skip "FRAME" */
         if( vlc_stream_Read( p_demux->s, NULL, 5 ) < 5 )
-            return 0;
+            return VLC_DEMUXER_EOF;
         /* Find \n */
         for( ;; )
         {
             uint8_t b;
             if( vlc_stream_Read( p_demux->s, &b, 1 ) < 1 )
-                return 0;
+                return VLC_DEMUXER_EOF;
             if( b == 0x0a )
                 break;
         }
@@ -408,17 +415,14 @@ static int Demux( demux_t *p_demux )
 
     p_block = vlc_stream_Block( p_demux->s, p_sys->frame_size );
     if( p_block == NULL )
-    {
-        /* EOF */
-        return 0;
-    }
+        return VLC_DEMUXER_EOF;
 
-    p_block->i_dts = p_block->i_pts = VLC_TS_0 + i_pcr;
+    p_block->i_dts = p_block->i_pts = i_pcr;
     es_out_Send( p_demux->out, p_sys->p_es_video, p_block );
 
     date_Increment( &p_sys->pcr, 1 );
 
-    return 1;
+    return VLC_DEMUXER_SUCCESS;
 }
 
 /*****************************************************************************

@@ -2,7 +2,6 @@
  * rawdv.c : raw DV input module for vlc
  *****************************************************************************
  * Copyright (C) 2001-2007 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Gildas Bazin <gbazin@netcourrier.com>
  *          Paul Corke <paul dot corke at datatote dot co dot uk>
@@ -93,7 +92,7 @@ typedef struct {
     int8_t ap3;
 } dv_header_t;
 
-struct demux_sys_t
+typedef struct
 {
     int    frame_size;
 
@@ -108,9 +107,9 @@ struct demux_sys_t
     int    i_bitrate;
 
     /* program clock reference (in units of 90kHz) */
-    mtime_t i_pcr;
+    vlc_tick_t i_pcr;
     bool b_hurry_up;
-};
+} demux_sys_t;
 
 /*****************************************************************************
  * Local prototypes
@@ -259,17 +258,14 @@ static int Demux( demux_t *p_demux )
     if( p_sys->b_hurry_up )
     {
          /* 3 frames */
-        p_sys->i_pcr = mdate() + (p_sys->i_dsf ? 120000 : 90000);
+        p_sys->i_pcr = vlc_tick_now() + (p_sys->i_dsf ? VLC_TICK_FROM_MS(120) : VLC_TICK_FROM_MS(90));
     }
 
     /* Call the pace control */
-    es_out_Control( p_demux->out, ES_OUT_SET_PCR, VLC_TS_0 + p_sys->i_pcr );
+    es_out_SetPCR( p_demux->out, VLC_TICK_0 + p_sys->i_pcr );
     p_block = vlc_stream_Block( p_demux->s, p_sys->frame_size );
     if( p_block == NULL )
-    {
-        /* EOF */
-        return 0;
-    }
+        return VLC_DEMUXER_EOF;
 
     if( p_sys->p_es_audio )
     {
@@ -278,7 +274,7 @@ static int Demux( demux_t *p_demux )
     }
 
     p_block->i_dts =
-    p_block->i_pts = VLC_TS_0 + p_sys->i_pcr;
+    p_block->i_pts = VLC_TICK_0 + p_sys->i_pcr;
 
     if( b_audio )
     {
@@ -291,10 +287,10 @@ static int Demux( demux_t *p_demux )
 
     if( !p_sys->b_hurry_up )
     {
-        p_sys->i_pcr += ( INT64_C(1000000) / p_sys->f_rate );
+        p_sys->i_pcr += vlc_tick_rate_duration( p_sys->f_rate );
     }
 
-    return 1;
+    return VLC_DEMUXER_SUCCESS;
 }
 
 /*****************************************************************************

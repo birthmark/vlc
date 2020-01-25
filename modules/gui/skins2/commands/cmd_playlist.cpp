@@ -2,7 +2,6 @@
  * cmd_playlist.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
- * $Id$
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -24,6 +23,7 @@
 
 #include "cmd_playlist.hpp"
 #include <vlc_playlist.h>
+#include <vlc_url.h>
 #include "../src/vlcproc.hpp"
 #include "../utils/var_bool.hpp"
 
@@ -34,37 +34,67 @@ void CmdPlaylistDel::execute()
 
 void CmdPlaylistNext::execute()
 {
-    playlist_Next( getPL() );
+    vlc_playlist_Lock( getPL() );
+    vlc_playlist_Next( getPL() );
+    vlc_playlist_Unlock( getPL() );
 }
 
 
 void CmdPlaylistPrevious::execute()
 {
-    playlist_Prev( getPL() );
+    vlc_playlist_Lock( getPL() );
+    vlc_playlist_Prev( getPL() );
+    vlc_playlist_Unlock( getPL() );
 }
 
 
 void CmdPlaylistRandom::execute()
 {
-    var_SetBool( getPL(), "random", m_value );
+    vlc_playlist_Lock( getPL() );
+    vlc_playlist_SetPlaybackOrder( getPL(), m_value ?
+                    VLC_PLAYLIST_PLAYBACK_ORDER_RANDOM :
+                    VLC_PLAYLIST_PLAYBACK_ORDER_NORMAL );
+    vlc_playlist_Unlock( getPL() );
 }
 
 
 void CmdPlaylistLoop::execute()
 {
-    var_SetBool( getPL(), "loop", m_value );
+    vlc_playlist_Lock( getPL() );
+    vlc_playlist_SetPlaybackRepeat( getPL(), m_value ?
+                    VLC_PLAYLIST_PLAYBACK_REPEAT_ALL :
+                    VLC_PLAYLIST_PLAYBACK_REPEAT_NONE );
+    vlc_playlist_Unlock( getPL() );
 }
 
 
 void CmdPlaylistRepeat::execute()
 {
-    var_SetBool( getPL(), "repeat", m_value );
+    vlc_playlist_Lock( getPL() );
+    vlc_playlist_SetPlaybackRepeat( getPL(), m_value ?
+                    VLC_PLAYLIST_PLAYBACK_REPEAT_CURRENT :
+                    VLC_PLAYLIST_PLAYBACK_REPEAT_NONE);
+    vlc_playlist_Unlock( getPL() );
 }
 
 
 void CmdPlaylistLoad::execute()
 {
-    playlist_Import( getPL(), m_file.c_str() );
+    char* psz_path = vlc_uri2path( m_file.c_str() );
+    if ( !psz_path )
+    {
+        msg_Err(getIntf(),"unable to load playlist %s", m_file.c_str() );
+        return;
+    }
+    free( psz_path );
+
+    input_item_t *media = input_item_New( m_file.c_str(), NULL );
+    vlc_playlist_Lock( getPL() );
+    vlc_playlist_AppendOne( getPL(), media );
+    ssize_t index = vlc_playlist_IndexOfMedia( getPL(), media );
+    if( index != -1 )
+        vlc_playlist_PlayAt( getPL(), index) ;
+    vlc_playlist_Unlock( getPL() );
 }
 
 
@@ -83,10 +113,14 @@ void CmdPlaylistSave::execute()
         return;
     }
 
-    playlist_Export( getPL(), m_file.c_str(), true, psz_module );
+    vlc_playlist_Lock( getPL() );
+    vlc_playlist_Export( getPL(), m_file.c_str(), psz_module );
+    vlc_playlist_Unlock( getPL() );
 }
 
 void CmdPlaylistFirst::execute()
 {
-    playlist_Control(getPL(), PLAYLIST_PLAY, pl_Unlocked);
+    vlc_playlist_Lock( getPL() );
+    vlc_playlist_PlayAt( getPL(), 0 );
+    vlc_playlist_Unlock( getPL() );
 }

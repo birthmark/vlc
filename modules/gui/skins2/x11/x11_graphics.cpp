@@ -2,7 +2,6 @@
  * x11_graphics.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
- * $Id$
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -320,6 +319,9 @@ void X11Graphics::applyMaskToWindow( OSWindow &rWindow )
 {
     // Get the target window
     Window win = ((X11Window&)rWindow).getDrawable();
+
+    // ensure the window size is right
+    XResizeWindow( XDISPLAY, win, m_width, m_height );
 
     // Change the shape of the window
     XShapeCombineRegion( XDISPLAY, win, ShapeBounding, 0, 0, m_mask,

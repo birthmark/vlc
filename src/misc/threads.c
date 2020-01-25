@@ -26,6 +26,7 @@
 #include <errno.h>
 
 #include <vlc_common.h>
+#include "libvlc.h"
 
 /*** Global locks ***/
 
@@ -36,7 +37,9 @@ void vlc_global_mutex (unsigned n, bool acquire)
         VLC_STATIC_MUTEX,
         VLC_STATIC_MUTEX,
         VLC_STATIC_MUTEX,
-        VLC_STATIC_MUTEX,
+#ifdef _WIN32
+        VLC_STATIC_MUTEX, // For MTA holder
+#endif
     };
     static_assert (VLC_MAX_MUTEX == (sizeof (locks) / sizeof (locks[0])),
                    "Wrong number of global mutexes");
@@ -49,6 +52,94 @@ void vlc_global_mutex (unsigned n, bool acquire)
         vlc_mutex_unlock (lock);
 }
 
+#ifndef NDEBUG
+# ifdef HAVE_SEARCH_H
+#  include <search.h>
+# endif
+
+struct vlc_lock_mark
+{
+    const void *object;
+    uintptr_t refs;
+};
+
+static int vlc_lock_mark_cmp(const void *a, const void *b)
+{
+    const struct vlc_lock_mark *ma = a, *mb = b;
+
+    if (ma->object == mb->object)
+        return 0;
+
+    return ((uintptr_t)(ma->object) > (uintptr_t)(mb->object)) ? +1 : -1;
+}
+
+static void vlc_lock_mark(const void *lock, void **rootp)
+{
+    struct vlc_lock_mark *mark = malloc(sizeof (*mark));
+    if (unlikely(mark == NULL))
+        abort();
+
+    mark->object = lock;
+    mark->refs = 0;
+
+    void **entry = tsearch(mark, rootp, vlc_lock_mark_cmp);
+    if (unlikely(entry == NULL))
+        abort();
+
+    if (unlikely(*entry != mark)) {
+        /* Recursive locking: lock is already in the tree */
+        free(mark);
+        mark = *entry;
+    }
+
+    mark->refs++;
+}
+
+static void vlc_lock_unmark(const void *lock, void **rootp)
+{
+    struct vlc_lock_mark *mark = &(struct vlc_lock_mark){ lock, 0 };
+    void **entry = tfind(mark, rootp, vlc_lock_mark_cmp);
+
+    assert(entry != NULL);
+    mark = *entry;
+    assert(mark->refs > 0);
+
+    if (likely(--mark->refs == 0)) {
+        tdelete(mark, rootp, vlc_lock_mark_cmp);
+        free(mark);
+    }
+}
+
+static bool vlc_lock_marked(const void *lock, void **rootp)
+{
+    struct vlc_lock_mark *mark = &(struct vlc_lock_mark){ lock, 0 };
+
+    return tfind(mark, rootp, vlc_lock_mark_cmp) != NULL;
+}
+
+static _Thread_local void *vlc_mutex_marks = NULL;
+
+void vlc_mutex_mark(const vlc_mutex_t *mutex)
+{
+    vlc_lock_mark(mutex, &vlc_mutex_marks);
+}
+
+void vlc_mutex_unmark(const vlc_mutex_t *mutex)
+{
+    vlc_lock_unmark(mutex, &vlc_mutex_marks);
+}
+
+bool vlc_mutex_marked(const vlc_mutex_t *mutex)
+{
+    return vlc_lock_marked(mutex, &vlc_mutex_marks);
+}
+#else
+bool vlc_mutex_marked(const vlc_mutex_t *mutex)
+{
+    return true;
+}
+#endif
+
 #if defined (_WIN32) && (_WIN32_WINNT < _WIN32_WINNT_WIN8)
 /* Cannot define OS version-dependent stuff in public headers */
 # undef LIBVLC_NEED_SLEEP
@@ -56,7 +147,7 @@ void vlc_global_mutex (unsigned n, bool acquire)
 #endif
 
 #if defined(LIBVLC_NEED_SLEEP) || defined(LIBVLC_NEED_CONDVAR)
-#include <vlc_atomic.h>
+#include <stdatomic.h>
 
 static void vlc_cancel_addr_prepare(void *addr)
 {
@@ -77,14 +168,14 @@ static void vlc_cancel_addr_finish(void *addr)
 #endif
 
 #ifdef LIBVLC_NEED_SLEEP
-void (mwait)(mtime_t deadline)
+void (vlc_tick_wait)(vlc_tick_t deadline)
 {
-    mtime_t delay;
+    vlc_tick_t delay;
     atomic_int value = ATOMIC_VAR_INIT(0);
 
     vlc_cancel_addr_prepare(&value);
 
-    while ((delay = (deadline - mdate())) > 0)
+    while ((delay = (deadline - vlc_tick_now())) > 0)
     {
         vlc_addr_timedwait(&value, 0, delay);
         vlc_testcancel();
@@ -93,9 +184,9 @@ void (mwait)(mtime_t deadline)
     vlc_cancel_addr_finish(&value);
 }
 
-void (msleep)(mtime_t delay)
+void (vlc_tick_sleep)(vlc_tick_t delay)
 {
-    mwait(mdate() + delay);
+    vlc_tick_wait(vlc_tick_now() + delay);
 }
 #endif
 
@@ -104,7 +195,7 @@ void (msleep)(mtime_t delay)
 
 static inline atomic_uint *vlc_cond_value(vlc_cond_t *cond)
 {
-    /* XXX: ugly but avoids including vlc_atomic.h in vlc_threads.h */
+    /* XXX: ugly but avoids including stdatomic.h in vlc_threads.h */
     static_assert (sizeof (cond->value) <= sizeof (atomic_uint),
                    "Size mismatch!");
     static_assert ((alignof (cond->value) % alignof (atomic_uint)) == 0,
@@ -177,7 +268,7 @@ void vlc_cond_wait(vlc_cond_t *cond, vlc_mutex_t *mutex)
 }
 
 static int vlc_cond_wait_delay(vlc_cond_t *cond, vlc_mutex_t *mutex,
-                               mtime_t delay)
+                               vlc_tick_t delay)
 {
     unsigned value = atomic_load_explicit(vlc_cond_value(cond),
                                           memory_order_relaxed);
@@ -204,19 +295,19 @@ static int vlc_cond_wait_delay(vlc_cond_t *cond, vlc_mutex_t *mutex,
     return value ? 0 : ETIMEDOUT;
 }
 
-int vlc_cond_timedwait(vlc_cond_t *cond, vlc_mutex_t *mutex, mtime_t deadline)
+int vlc_cond_timedwait(vlc_cond_t *cond, vlc_mutex_t *mutex, vlc_tick_t deadline)
 {
-    return vlc_cond_wait_delay(cond, mutex, deadline - mdate());
+    return vlc_cond_wait_delay(cond, mutex, deadline - vlc_tick_now());
 }
 
 int vlc_cond_timedwait_daytime(vlc_cond_t *cond, vlc_mutex_t *mutex,
-                               time_t deadline)
+                               time_t deadline_daytime)
 {
     struct timespec ts;
+    vlc_tick_t deadline = vlc_tick_from_sec( deadline_daytime );
 
     timespec_get(&ts, TIME_UTC);
-    deadline -= ts.tv_sec * CLOCK_FREQ;
-    deadline -= ts.tv_nsec / (1000000000 / CLOCK_FREQ);
+    deadline -= vlc_tick_from_timespec( &ts );
 
     return vlc_cond_wait_delay(cond, mutex, deadline);
 }

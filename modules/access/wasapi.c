@@ -31,6 +31,7 @@
 #include <assert.h>
 #include <stdlib.h>
 
+#define _DECL_DLLMAIN
 #include <vlc_common.h>
 #include <vlc_aout.h>
 #include <vlc_demux.h>
@@ -40,9 +41,7 @@
 
 static LARGE_INTEGER freq; /* performance counters frequency */
 
-BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID); /* avoid warning */
-
-BOOL WINAPI DllMain(HINSTANCE dll, DWORD reason, LPVOID reserved)
+BOOL WINAPI DllMain(HANDLE dll, DWORD reason, LPVOID reserved)
 {
     (void) dll;
     (void) reserved;
@@ -57,7 +56,7 @@ BOOL WINAPI DllMain(HINSTANCE dll, DWORD reason, LPVOID reserved)
     return TRUE;
 }
 
-static UINT64 GetQPC(void)
+static msftime_t GetQPC(void)
 {
     LARGE_INTEGER counter;
 
@@ -98,7 +97,7 @@ static IAudioClient *GetClient(demux_t *demux, bool *restrict loopbackp)
                           &IID_IMMDeviceEnumerator, &pv);
     if (FAILED(hr))
     {
-        msg_Err(demux, "cannot create device enumerator (error 0x%lx)", hr);
+        msg_Err(demux, "cannot create device enumerator (error 0x%lX)", hr);
         return NULL;
     }
     e = pv;
@@ -111,7 +110,7 @@ static IAudioClient *GetClient(demux_t *demux, bool *restrict loopbackp)
     IMMDeviceEnumerator_Release(e);
     if (FAILED(hr))
     {
-        msg_Err(demux, "cannot get default device (error 0x%lx)", hr);
+        msg_Err(demux, "cannot get default device (error 0x%lX)", hr);
         return NULL;
     }
 
@@ -119,7 +118,7 @@ static IAudioClient *GetClient(demux_t *demux, bool *restrict loopbackp)
     *loopbackp = GetDeviceFlow(dev) == eRender;
     IMMDevice_Release(dev);
     if (FAILED(hr))
-        msg_Err(demux, "cannot activate device (error 0x%lx)", hr);
+        msg_Err(demux, "cannot activate device (error 0x%lX)", hr);
     return pv;
 }
 
@@ -143,8 +142,7 @@ static int vlc_FromWave(const WAVEFORMATEX *restrict wf,
     if (wfe->dwChannelMask & SPEAKER_LOW_FREQUENCY)
         fmt->i_physical_channels |= AOUT_CHAN_LFE;
 
-    fmt->i_original_channels = fmt->i_physical_channels;
-    assert(popcount(wfe->dwChannelMask) == wf->nChannels);
+    assert(vlc_popcount(wfe->dwChannelMask) == wf->nChannels);
 
     if (IsEqualIID(&wfe->SubFormat, &KSDATAFORMAT_SUBTYPE_PCM))
     {
@@ -224,7 +222,7 @@ static int vlc_FromWave(const WAVEFORMATEX *restrict wf,
 }
 
 static es_out_id_t *CreateES(demux_t *demux, IAudioClient *client, bool loop,
-                             mtime_t caching, size_t *restrict frame_size)
+                             vlc_tick_t caching, size_t *restrict frame_size)
 {
     es_format_t fmt;
     WAVEFORMATEX *pwf;
@@ -233,7 +231,7 @@ static es_out_id_t *CreateES(demux_t *demux, IAudioClient *client, bool loop,
     hr = IAudioClient_GetMixFormat(client, &pwf);
     if (FAILED(hr))
     {
-        msg_Err(demux, "cannot get mix format (error 0x%lx)", hr);
+        msg_Err(demux, "cannot get mix format (error 0x%lX)", hr);
         return NULL;
     }
 
@@ -255,34 +253,34 @@ static es_out_id_t *CreateES(demux_t *demux, IAudioClient *client, bool loop,
         flags |= AUDCLNT_STREAMFLAGS_LOOPBACK;
 
     /* Request at least thrice the PTS delay */
-    REFERENCE_TIME bufsize = caching * INT64_C(10) * 3;
+    REFERENCE_TIME bufsize = MSFTIME_FROM_VLC_TICK( caching ) * 3;
 
     hr = IAudioClient_Initialize(client, AUDCLNT_SHAREMODE_SHARED, flags,
                                  bufsize, 0, pwf, NULL);
     CoTaskMemFree(pwf);
     if (FAILED(hr))
     {
-        msg_Err(demux, "cannot initialize audio client (error 0x%lx)", hr);
+        msg_Err(demux, "cannot initialize audio client (error 0x%lX)", hr);
         return NULL;
     }
     return es_out_Add(demux->out, &fmt);
 }
 
-struct demux_sys_t
+typedef struct
 {
     IAudioClient *client;
     es_out_id_t *es;
 
     size_t frame_size;
-    mtime_t caching;
-    mtime_t start_time;
+    vlc_tick_t caching;
+    vlc_tick_t start_time;
 
     HANDLE events[2];
     union {
         HANDLE thread;
         HANDLE ready;
     };
-};
+} demux_sys_t;
 
 static unsigned __stdcall Thread(void *data)
 {
@@ -299,7 +297,7 @@ static unsigned __stdcall Thread(void *data)
     hr = IAudioClient_GetService(sys->client, &IID_IAudioCaptureClient, &pv);
     if (FAILED(hr))
     {
-        msg_Err(demux, "cannot get capture client (error 0x%lx)", hr);
+        msg_Err(demux, "cannot get capture client (error 0x%lX)", hr);
         goto out;
     }
     capture = pv;
@@ -307,7 +305,7 @@ static unsigned __stdcall Thread(void *data)
     hr = IAudioClient_Start(sys->client);
     if (FAILED(hr))
     {
-        msg_Err(demux, "cannot start client (error 0x%lx)", hr);
+        msg_Err(demux, "cannot start client (error 0x%lX)", hr);
         IAudioCaptureClient_Release(capture);
         goto out;
     }
@@ -315,26 +313,26 @@ static unsigned __stdcall Thread(void *data)
     while (WaitForMultipleObjects(2, sys->events, FALSE, INFINITE)
             != WAIT_OBJECT_0)
     {
-        BYTE *data;
+        BYTE *buf;
         UINT32 frames;
         DWORD flags;
         UINT64 qpc;
-        mtime_t pts;
+        vlc_tick_t pts;
 
-        hr = IAudioCaptureClient_GetBuffer(capture, &data, &frames, &flags,
+        hr = IAudioCaptureClient_GetBuffer(capture, &buf, &frames, &flags,
                                            NULL, &qpc);
         if (hr != S_OK)
             continue;
 
-        pts = mdate() - ((GetQPC() - qpc) / 10);
+        pts = vlc_tick_now() - VLC_TICK_FROM_MSFTIME(GetQPC() - qpc);
 
-        es_out_Control(demux->out, ES_OUT_SET_PCR, pts);
+        es_out_SetPCR(demux->out, pts);
 
         size_t bytes = frames * sys->frame_size;
         block_t *block = block_Alloc(bytes);
 
         if (likely(block != NULL)) {
-            memcpy(block->p_buffer, data, bytes);
+            memcpy(block->p_buffer, buf, bytes);
             block->i_nb_samples = frames;
             block->i_pts = block->i_dts = pts;
             es_out_Send(demux->out, sys->es, block);
@@ -357,11 +355,11 @@ static int Control(demux_t *demux, int query, va_list ap)
     switch (query)
     {
         case DEMUX_GET_TIME:
-            *(va_arg(ap, int64_t *)) = mdate() - sys->start_time;
+            *(va_arg(ap, vlc_tick_t *)) = vlc_tick_now() - sys->start_time;
             break;
 
         case DEMUX_GET_PTS_DELAY:
-            *(va_arg(ap, int64_t *)) = sys->caching;
+            *(va_arg(ap, vlc_tick_t *)) = sys->caching;
             break;
 
         case DEMUX_HAS_UNSUPPORTED_META:
@@ -385,17 +383,20 @@ static int Open(vlc_object_t *obj)
     demux_t *demux = (demux_t *)obj;
     HRESULT hr;
 
-    if (demux->psz_location != NULL && demux->psz_location != '\0')
+    if (demux->out == NULL)
+        return VLC_EGENERIC;
+
+    if (demux->psz_location != NULL && *demux->psz_location != '\0')
         return VLC_EGENERIC; /* TODO non-default device */
 
-    demux_sys_t *sys = malloc(sizeof (*sys));
+    demux_sys_t *sys = vlc_obj_malloc(obj, sizeof (*sys));
     if (unlikely(sys == NULL))
         return VLC_ENOMEM;
 
     sys->client = NULL;
     sys->es = NULL;
-    sys->caching = INT64_C(1000) * var_InheritInteger(obj, "live-caching");
-    sys->start_time = mdate();
+    sys->caching = VLC_TICK_FROM_MS( var_InheritInteger(obj, "live-caching") );
+    sys->start_time = vlc_tick_now();
     for (unsigned i = 0; i < 2; i++)
         sys->events[i] = NULL;
 
@@ -407,7 +408,7 @@ static int Open(vlc_object_t *obj)
 
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (unlikely(FAILED(hr))) {
-        msg_Err(demux, "cannot initialize COM (error 0x%lx)", hr);
+        msg_Err(demux, "cannot initialize COM (error 0x%lX)", hr);
         goto error;
     }
 
@@ -425,7 +426,7 @@ static int Open(vlc_object_t *obj)
 
     hr = IAudioClient_SetEventHandle(sys->client, sys->events[1]);
     if (FAILED(hr)) {
-        msg_Err(demux, "cannot set event handle (error 0x%lx)", hr);
+        msg_Err(demux, "cannot set event handle (error 0x%lX)", hr);
         goto error;
     }
 
@@ -460,7 +461,6 @@ error:
     for (unsigned i = 0; i < 2; i++)
         if (sys->events[i] != NULL)
             CloseHandle(sys->events[i]);
-    free(sys);
     return VLC_ENOMEM;
 }
 
@@ -482,7 +482,6 @@ static void Close (vlc_object_t *obj)
     CoUninitialize();
     for (unsigned i = 0; i < 2; i++)
         CloseHandle(sys->events[i]);
-    free(sys);
 }
 
 #define LOOPBACK_TEXT N_("Loopback mode")
@@ -491,7 +490,7 @@ static void Close (vlc_object_t *obj)
 vlc_module_begin()
     set_shortname(N_("WASAPI"))
     set_description(N_("Windows Audio Session API input"))
-    set_capability("access_demux", 0)
+    set_capability("access", 0)
     set_category(CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_ACCESS)
 

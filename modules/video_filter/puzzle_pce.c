@@ -2,7 +2,6 @@
  * puzzle_pce.c : Puzzle game filter - pieces functions
  *****************************************************************************
  * Copyright (C) 2013 Vianney Boyer
- * $Id$
  *
  * Author:  Vianney Boyer <vlcvboyer -at- gmail -dot- com>
  *
@@ -78,7 +77,7 @@ int puzzle_bake_pieces_shapes( filter_t *p_filter)
         p_sys->ps_pieces_shapes[i_piece] = malloc( sizeof( piece_shape_t) * p_sys->s_allocated.i_planes );
         if( !p_sys->ps_pieces_shapes[i_piece] )
             return VLC_ENOMEM;
-        for (uint8_t i_plane = 0; i_plane < p_filter->p_sys->s_allocated.i_planes; i_plane++) {
+        for (uint8_t i_plane = 0; i_plane < p_sys->s_allocated.i_planes; i_plane++) {
             p_sys->ps_pieces_shapes[i_piece][i_plane].i_row_nbr = 0;
             p_sys->ps_pieces_shapes[i_piece][i_plane].ps_piece_shape_row = NULL;
         }
@@ -86,7 +85,7 @@ int puzzle_bake_pieces_shapes( filter_t *p_filter)
 
     int32_t i_currect_shape = 0;
 
-    for (uint8_t i_plane = 0; i_plane < p_filter->p_sys->s_allocated.i_planes; i_plane++) {
+    for (uint8_t i_plane = 0; i_plane < p_sys->s_allocated.i_planes; i_plane++) {
         int i_ret;
         i_ret = puzzle_generate_sect_border( p_filter, &p_sys->ps_pieces_shapes[i_currect_shape+0][i_plane], i_plane, puzzle_SHAPE_LEFT);
         if (i_ret != VLC_SUCCESS) return i_ret;
@@ -127,7 +126,7 @@ int puzzle_bake_pieces_shapes( filter_t *p_filter)
         }
 
         int i_ret;
-        for (uint8_t i_plane = 0; i_plane < p_filter->p_sys->s_allocated.i_planes; i_plane++) {
+        for (uint8_t i_plane = 0; i_plane < p_sys->s_allocated.i_planes; i_plane++) {
             i_ret = puzzle_generate_sect_bezier( p_filter, &p_sys->ps_pieces_shapes[i_currect_shape][i_plane],   7, ps_scale_pts_V, i_plane, puzzle_SHAPE_LEFT);
             if (i_ret != VLC_SUCCESS) break;
             i_ret = puzzle_generate_sect_bezier( p_filter, &p_sys->ps_pieces_shapes[i_currect_shape+1][i_plane], 7, ps_neg_pts_V,   i_plane, puzzle_SHAPE_LEFT);
@@ -553,8 +552,8 @@ void puzzle_draw_pieces( filter_t *p_filter, picture_t *p_pic_in, picture_t *p_p
             {
                 puzzle_drw_basic_pce_in_plane(p_filter, p_pic_in, p_pic_out, i_plane, ps_piece);
             }
-            else if ( ( p_sys->s_current_param.i_shape_size == 0)  || !p_sys->b_shape_init
-                    || (p_sys->ps_pieces_shapes == NULL) || (!p_sys->b_shape_init) )
+            else if ( ( p_sys->s_current_param.i_shape_size == 0) ||
+                      (p_sys->ps_pieces_shapes == NULL) || (!p_sys->b_shape_init) )
             {
                 puzzle_drw_adv_pce_in_plane(p_filter, p_pic_in, p_pic_out, i_plane, ps_piece);
             }

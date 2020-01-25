@@ -2,7 +2,6 @@
  * control.c : vout internal control
  *****************************************************************************
  * Copyright (C) 2009 Laurent Aimar
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
  *
@@ -27,7 +26,7 @@
 
 #include <vlc_common.h>
 #include <vlc_vout.h>
-#include "control.h"
+#include "vout_internal.h"
 
 /* */
 void vout_control_cmd_Init(vout_control_cmd_t *cmd, int type)
@@ -39,15 +38,8 @@ void vout_control_cmd_Init(vout_control_cmd_t *cmd, int type)
 void vout_control_cmd_Clean(vout_control_cmd_t *cmd)
 {
     switch (cmd->type) {
-    case VOUT_CONTROL_SUBPICTURE:
-        if (cmd->u.subpicture)
-            subpicture_Delete(cmd->u.subpicture);
-        break;
-    case VOUT_CONTROL_OSD_TITLE:
     case VOUT_CONTROL_CHANGE_FILTERS:
-    case VOUT_CONTROL_CHANGE_SUB_SOURCES:
-    case VOUT_CONTROL_CHANGE_SUB_FILTERS:
-        free(cmd->u.string);
+        free(cmd->string);
         break;
     default:
         break;
@@ -59,11 +51,12 @@ void vout_control_Init(vout_control_t *ctrl)
 {
     vlc_mutex_init(&ctrl->lock);
     vlc_cond_init(&ctrl->wait_request);
-    vlc_cond_init(&ctrl->wait_acknowledge);
+    vlc_cond_init(&ctrl->wait_available);
 
+    ctrl->is_held = false;
+    ctrl->is_waiting = false;
     ctrl->is_dead = false;
     ctrl->can_sleep = true;
-    ctrl->is_processing = false;
     ARRAY_INIT(ctrl->cmd);
 }
 
@@ -78,23 +71,13 @@ void vout_control_Clean(vout_control_t *ctrl)
 
     vlc_mutex_destroy(&ctrl->lock);
     vlc_cond_destroy(&ctrl->wait_request);
-    vlc_cond_destroy(&ctrl->wait_acknowledge);
+    vlc_cond_destroy(&ctrl->wait_available);
 }
 
 void vout_control_Dead(vout_control_t *ctrl)
 {
     vlc_mutex_lock(&ctrl->lock);
     ctrl->is_dead = true;
-    vlc_cond_broadcast(&ctrl->wait_acknowledge);
-    vlc_mutex_unlock(&ctrl->lock);
-
-}
-
-void vout_control_WaitEmpty(vout_control_t *ctrl)
-{
-    vlc_mutex_lock(&ctrl->lock);
-    while ((ctrl->cmd.i_size > 0 || ctrl->is_processing) && !ctrl->is_dead)
-        vlc_cond_wait(&ctrl->wait_acknowledge, &ctrl->lock);
     vlc_mutex_unlock(&ctrl->lock);
 }
 
@@ -130,72 +113,62 @@ void vout_control_PushBool(vout_control_t *ctrl, int type, bool boolean)
     vout_control_cmd_t cmd;
 
     vout_control_cmd_Init(&cmd, type);
-    cmd.u.boolean = boolean;
+    cmd.boolean = boolean;
     vout_control_Push(ctrl, &cmd);
 }
-void vout_control_PushInteger(vout_control_t *ctrl, int type, int integer)
-{
-    vout_control_cmd_t cmd;
 
-    vout_control_cmd_Init(&cmd, type);
-    cmd.u.integer = integer;
-    vout_control_Push(ctrl, &cmd);
-}
-void vout_control_PushTime(vout_control_t *ctrl, int type, mtime_t time)
-{
-    vout_control_cmd_t cmd;
-
-    vout_control_cmd_Init(&cmd, type);
-    cmd.u.time = time;
-    vout_control_Push(ctrl, &cmd);
-}
-void vout_control_PushMessage(vout_control_t *ctrl, int type, int channel, const char *string)
-{
-    vout_control_cmd_t cmd;
-
-    vout_control_cmd_Init(&cmd, type);
-    cmd.u.message.channel = channel;
-    cmd.u.message.string = strdup(string);
-    vout_control_Push(ctrl, &cmd);
-}
-void vout_control_PushPair(vout_control_t *ctrl, int type, int a, int b)
-{
-    vout_control_cmd_t cmd;
-
-    vout_control_cmd_Init(&cmd, type);
-    cmd.u.pair.a = a;
-    cmd.u.pair.b = b;
-    vout_control_Push(ctrl, &cmd);
-}
 void vout_control_PushString(vout_control_t *ctrl, int type, const char *string)
 {
     vout_control_cmd_t cmd;
 
     vout_control_cmd_Init(&cmd, type);
-    cmd.u.string = strdup(string);
+    cmd.string = string ? strdup(string) : NULL;
     vout_control_Push(ctrl, &cmd);
 }
 
-int vout_control_Pop(vout_control_t *ctrl, vout_control_cmd_t *cmd,
-                     mtime_t deadline)
+void vout_control_Hold(vout_control_t *ctrl)
 {
     vlc_mutex_lock(&ctrl->lock);
-    if (ctrl->cmd.i_size <= 0) {
-        ctrl->is_processing = false;
-        vlc_cond_broadcast(&ctrl->wait_acknowledge);
+    while (ctrl->is_held || !ctrl->is_waiting)
+        vlc_cond_wait(&ctrl->wait_available, &ctrl->lock);
+    ctrl->is_held = true;
+    vlc_mutex_unlock(&ctrl->lock);
+}
 
+void vout_control_Release(vout_control_t *ctrl)
+{
+    vlc_mutex_lock(&ctrl->lock);
+    assert(ctrl->is_held);
+    ctrl->is_held = false;
+    vlc_cond_signal(&ctrl->wait_available);
+    vlc_mutex_unlock(&ctrl->lock);
+}
+
+int vout_control_Pop(vout_control_t *ctrl, vout_control_cmd_t *cmd,
+                     vlc_tick_t deadline)
+{
+    vlc_mutex_lock(&ctrl->lock);
+    mutex_cleanup_push(&ctrl->lock);
+
+    if (ctrl->cmd.i_size <= 0) {
         /* Spurious wakeups are perfectly fine */
-        if (deadline > VLC_TS_INVALID && ctrl->can_sleep)
+        if (deadline != VLC_TICK_INVALID && ctrl->can_sleep) {
+            ctrl->is_waiting = true;
+            vlc_cond_signal(&ctrl->wait_available);
             vlc_cond_timedwait(&ctrl->wait_request, &ctrl->lock, deadline);
+            ctrl->is_waiting = false;
+        }
     }
+
+    while (ctrl->is_held)
+        vlc_cond_wait(&ctrl->wait_available, &ctrl->lock);
+    vlc_cleanup_pop();
 
     bool has_cmd;
     if (ctrl->cmd.i_size > 0) {
         has_cmd = true;
         *cmd = ARRAY_VAL(ctrl->cmd, 0);
         ARRAY_REMOVE(ctrl->cmd, 0);
-
-        ctrl->is_processing = true;
     } else {
         has_cmd = false;
         ctrl->can_sleep = true;

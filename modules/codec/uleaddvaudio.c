@@ -2,7 +2,6 @@
  * uleaddvaudio.c
  *****************************************************************************
  * Copyright (C) 2012 Laurent Aimar
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
  *
@@ -39,33 +38,33 @@ static void Close(vlc_object_t *);
 
 vlc_module_begin()
     set_description(N_("Ulead DV audio decoder"))
-    set_capability("decoder", 50)
+    set_capability("audio decoder", 50)
     set_category(CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_ACODEC)
     set_callbacks(Open, Close)
 vlc_module_end()
 
-struct decoder_sys_t
+typedef struct
 {
     date_t end_date;
 
     bool     is_pal;
     bool     is_12bit;
     uint16_t shuffle[2000];
-};
+} decoder_sys_t;
 
 static void Flush(decoder_t *dec)
 {
     decoder_sys_t *sys = dec->p_sys;
 
-    date_Set(&sys->end_date, 0);
+    date_Set(&sys->end_date, VLC_TICK_INVALID);
 }
 
-static block_t *Decode(decoder_t *dec, block_t **block_ptr)
+static block_t *DecodeBlock(decoder_t *dec, block_t **block_ptr)
 {
     decoder_sys_t *sys  = dec->p_sys;
 
-    if (!block_ptr || !*block_ptr)
+    if (!*block_ptr)
         return NULL;
 
     block_t *block = *block_ptr;
@@ -78,11 +77,11 @@ static block_t *Decode(decoder_t *dec, block_t **block_ptr)
         }
     }
 
-    if (block->i_pts > VLC_TS_INVALID &&
+    if (block->i_pts != VLC_TICK_INVALID &&
         block->i_pts != date_Get(&sys->end_date))
         date_Set(&sys->end_date, block->i_pts);
-    block->i_pts = VLC_TS_INVALID;
-    if (!date_Get(&sys->end_date)) {
+    block->i_pts = VLC_TICK_INVALID;
+    if (date_Get(&sys->end_date) == VLC_TICK_INVALID) {
         /* We've just started the stream, wait for the first PTS. */
         block_Release(block);
         return NULL;
@@ -122,6 +121,17 @@ static block_t *Decode(decoder_t *dec, block_t **block_ptr)
     return NULL;
 }
 
+static int DecodeAudio(decoder_t *dec, block_t *block)
+{
+    if (block == NULL) /* No Drain */
+        return VLCDEC_SUCCESS;
+
+    block_t **block_ptr = &block, *out;
+    while ((out = DecodeBlock(dec, block_ptr)) != NULL)
+        decoder_QueueAudio(dec,out);
+    return VLCDEC_SUCCESS;
+}
+
 static int Open(vlc_object_t *object)
 {
     decoder_t *dec = (decoder_t*)object;
@@ -144,7 +154,6 @@ static int Open(vlc_object_t *object)
     sys->is_12bit = dec->fmt_in.audio.i_bitspersample == 12;
 
     date_Init(&sys->end_date, dec->fmt_in.audio.i_rate, 1);
-    date_Set(&sys->end_date, 0);
 
     for (unsigned i = 0; i < sizeof(sys->shuffle) / sizeof(*sys->shuffle); i++) {
         const unsigned a = sys->is_pal ? 18 : 15;
@@ -153,14 +162,13 @@ static int Open(vlc_object_t *object)
                           (2 + sys->is_12bit) * (i / b) + 8;
     }
 
-    es_format_Init(&dec->fmt_out, AUDIO_ES, VLC_CODEC_S16N);
+    dec->fmt_out.i_codec = VLC_CODEC_S16N;
     dec->fmt_out.audio.i_rate = dec->fmt_in.audio.i_rate;
     dec->fmt_out.audio.i_channels = 2;
-    dec->fmt_out.audio.i_physical_channels =
-    dec->fmt_out.audio.i_original_channels = AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT;
+    dec->fmt_out.audio.i_physical_channels = AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT;
 
-    dec->pf_decode_audio = Decode;
-    dec->pf_flush        = Flush;
+    dec->pf_decode = DecodeAudio;
+    dec->pf_flush  = Flush;
 
     return VLC_SUCCESS;
 }

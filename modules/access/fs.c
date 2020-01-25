@@ -5,7 +5,7 @@
  * Copyright © 2006-2007 Rémi Denis-Courmont
  *
  * Authors: Christophe Massiot <massiot@via.ecp.fr>
- *          Rémi Denis-Courmont <rem # videolan # org>
+ *          Rémi Denis-Courmont
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -52,4 +52,5 @@ vlc_module_begin ()
 
     add_bool("list-special-files", false, N_("List special files"),
              N_("Include devices and pipes when listing directories"), true)
+    add_obsolete_string("directory-sort") /* since 3.0.0 */
 vlc_module_end ()

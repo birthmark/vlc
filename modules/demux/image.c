@@ -2,7 +2,6 @@
  * image.c: Image demuxer
  *****************************************************************************
  * Copyright (C) 2010 Laurent Aimar
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
  *
@@ -28,6 +27,8 @@
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
+
+#include <assert.h>
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
@@ -98,16 +99,16 @@ vlc_module_end()
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-struct demux_sys_t
+typedef struct
 {
     block_t     *data;
     es_out_id_t *es;
-    mtime_t     duration;
+    vlc_tick_t  duration;
     bool        is_realtime;
-    mtime_t     pts_origin;
-    mtime_t     pts_next;
+    vlc_tick_t  pts_offset;
+    vlc_tick_t  pts_next;
     date_t        pts;
-};
+} demux_sys_t;
 
 static block_t *Load(demux_t *demux)
 {
@@ -138,7 +139,7 @@ static block_t *Load(demux_t *demux)
 }
 
 static block_t *Decode(demux_t *demux,
-                       video_format_t *fmt, vlc_fourcc_t chroma, block_t *data)
+                       es_format_t *fmt, vlc_fourcc_t chroma, block_t *data)
 {
     image_handler_t *handler = image_HandlerCreate(demux);
     if (!handler) {
@@ -155,8 +156,9 @@ static block_t *Decode(demux_t *demux,
     if (!image)
         return NULL;
 
-    video_format_Clean(fmt);
-    *fmt = decoded;
+    es_format_Clean(fmt);
+    es_format_InitFromVideo(fmt, &decoded);
+    video_format_Clean(&decoded);
 
     size_t size = 0;
     for (int i = 0; i < image->i_planes; i++)
@@ -188,41 +190,44 @@ static int Demux(demux_t *demux)
     demux_sys_t *sys = demux->p_sys;
 
     if (!sys->data)
-        return 0;
+        return VLC_DEMUXER_EOF;
 
-    mtime_t deadline;
-    const mtime_t pts_first = sys->pts_origin + date_Get(&sys->pts);
-    if (sys->pts_next > VLC_TS_INVALID) {
+    vlc_tick_t deadline;
+    const vlc_tick_t pts_first = sys->pts_offset + date_Get(&sys->pts);
+    if (sys->pts_next != VLC_TICK_INVALID) {
         deadline = sys->pts_next;
     } else if (sys->is_realtime) {
-        deadline = mdate();
-        const mtime_t max_wait = CLOCK_FREQ / 50;
+        deadline = vlc_tick_now();
+        const vlc_tick_t max_wait = VLC_TICK_FROM_MS(20);
         if (deadline + max_wait < pts_first) {
-            es_out_Control(demux->out, ES_OUT_SET_PCR, deadline);
+            es_out_SetPCR(demux->out, deadline);
             /* That's ugly, but not yet easily fixable */
-            mwait(deadline + max_wait);
-            return 1;
+            vlc_tick_wait(deadline + max_wait);
+            return VLC_DEMUXER_SUCCESS;
         }
     } else {
         deadline = 1 + pts_first;
     }
 
     for (;;) {
-        const mtime_t pts = sys->pts_origin + date_Get(&sys->pts);
-        if (sys->duration >= 0 && pts >= sys->pts_origin + sys->duration)
-            return 0;
+        const vlc_tick_t pts = sys->pts_offset + date_Get(&sys->pts);
+        if (sys->duration >= 0 && pts >= VLC_TICK_0 + sys->pts_offset + sys->duration)
+            return VLC_DEMUXER_EOF;
 
         if (pts >= deadline)
-            return 1;
+            return VLC_DEMUXER_SUCCESS;
 
         block_t *data = block_Duplicate(sys->data);
         if (!data)
-            return -1;
+            return VLC_DEMUXER_EGENERIC;
 
         data->i_dts =
-        data->i_pts = VLC_TS_0 + pts;
-        es_out_Control(demux->out, ES_OUT_SET_PCR, data->i_pts);
-        es_out_Send(demux->out, sys->es, data);
+        data->i_pts = VLC_TICK_0 + pts;
+        es_out_SetPCR(demux->out, data->i_pts);
+        if(sys->es)
+            es_out_Send(demux->out, sys->es, data);
+        else
+            block_Release(data);
 
         date_Increment(&sys->pts, 1);
     }
@@ -252,27 +257,25 @@ static int Control(demux_t *demux, int query, va_list args)
         return VLC_SUCCESS;
     }
     case DEMUX_GET_TIME: {
-        int64_t *time = va_arg(args, int64_t *);
-        *time = sys->pts_origin + date_Get(&sys->pts);
+        *va_arg(args, vlc_tick_t *) = sys->pts_offset + date_Get(&sys->pts);
         return VLC_SUCCESS;
     }
     case DEMUX_SET_TIME: {
         if (sys->duration < 0 || sys->is_realtime)
             return VLC_EGENERIC;
-        int64_t time = va_arg(args, int64_t);
-        date_Set(&sys->pts, VLC_CLIP(time - sys->pts_origin, 0, sys->duration));
+        vlc_tick_t time = va_arg(args, vlc_tick_t);
+        date_Set(&sys->pts, VLC_CLIP(time - sys->pts_offset, VLC_TICK_0, sys->duration));
         return VLC_SUCCESS;
     }
     case DEMUX_SET_NEXT_DEMUX_TIME: {
-        int64_t pts_next = VLC_TS_0 + va_arg(args, int64_t);
-        if (sys->pts_next <= VLC_TS_INVALID)
-            sys->pts_origin = pts_next;
+        vlc_tick_t pts_next = VLC_TICK_0 + va_arg(args, vlc_tick_t);
+        if (sys->pts_next == VLC_TICK_INVALID)
+            sys->pts_offset = pts_next - VLC_TICK_0;
         sys->pts_next = pts_next;
         return VLC_SUCCESS;
     }
     case DEMUX_GET_LENGTH: {
-        int64_t *length = va_arg(args, int64_t *);
-        *length = __MAX(sys->duration, 0);
+        *va_arg(args, vlc_tick_t *) = __MAX(sys->duration, 0);
         return VLC_SUCCESS;
     }
     case DEMUX_GET_FPS: {
@@ -283,8 +286,17 @@ static int Control(demux_t *demux, int query, va_list args)
     case DEMUX_GET_META:
     case DEMUX_HAS_UNSUPPORTED_META:
     case DEMUX_GET_ATTACHMENTS:
+        return VLC_EGENERIC;
+
+    case DEMUX_CAN_PAUSE:
+    case DEMUX_SET_PAUSE_STATE:
+    case DEMUX_CAN_CONTROL_PACE:
+    case DEMUX_GET_PTS_DELAY:
+        return demux_vaControlHelper( demux->s, 0, -1, 0, 1, query, args );
+
     default:
         return VLC_EGENERIC;
+
     }
 }
 
@@ -407,6 +419,20 @@ static bool IsJfif(stream_t *s)
     return true;
 }
 
+static bool IsWebP(stream_t *s)
+{
+    const uint8_t *header;
+    if (vlc_stream_Peek(s, &header, 20) < 20) /* WebP header size */
+        return false;
+    if (memcmp(&header[0], "RIFF", 4))
+        return false;
+    /* TODO: support other chunk types */
+    if (memcmp(&header[8], "WEBPVP8 ", 8))
+        return false;
+    /* skip headers */
+    return vlc_stream_Seek(s, 20) == 0;
+}
+
 static bool IsSpiff(stream_t *s)
 {
     const uint8_t *header;
@@ -423,7 +449,9 @@ static bool IsSpiff(stream_t *s)
 static bool IsExif(stream_t *s)
 {
     const uint8_t *header;
-    int size = vlc_stream_Peek(s, &header, 256);
+    ssize_t size = vlc_stream_Peek(s, &header, 256);
+    if (size == -1)
+        return false;
     int position = 0;
 
     if (FindJpegMarker(&position, header, size) != 0xd8)
@@ -460,7 +488,9 @@ static bool IsSVG(stream_t *s)
     if (!ext) return false;
 
     const uint8_t *header;
-    int size = vlc_stream_Peek(s, &header, 4096);
+    ssize_t size = vlc_stream_Peek(s, &header, 4096);
+    if (size == -1)
+        return false;
     int position = 0;
 
     const char xml[] = "<?xml version=\"";
@@ -527,15 +557,16 @@ static bool IsTarga(stream_t *s)
         return false;
 
     const uint8_t *footer;
-    bool is_targa = vlc_stream_Peek(s, &footer, 26) >= 26 &&
-                    !memcmp(&footer[8], "TRUEVISION-XFILE.\x00", 18);
-    vlc_stream_Seek(s, position);
-    return is_targa;
+    if (vlc_stream_Peek(s, &footer, 26) < 26
+     || memcmp(&footer[8], "TRUEVISION-XFILE.\x00", 18))
+        return false;
+
+    return vlc_stream_Seek(s, position) == 0;
 }
 
 typedef struct {
     vlc_fourcc_t  codec;
-    int           marker_size;
+    size_t        marker_size;
     const uint8_t marker[14];
     bool          (*detect)(stream_t *s);
 } image_format_t;
@@ -603,6 +634,9 @@ static const image_format_t formats[] = {
     { .codec = VLC_CODEC_JPEG,
       .detect = IsExif,
     },
+    { .codec = VLC_CODEC_WEBP,
+      .detect = IsWebP,
+    },
     { .codec = VLC_CODEC_BPG,
       .marker_size = 4,
       .marker = { 'B', 'P', 'G', 0xFB },
@@ -613,45 +647,62 @@ static const image_format_t formats[] = {
     { .codec = VLC_CODEC_TARGA,
       .detect = IsTarga,
     },
-    { .codec = 0 }
 };
+
+static vlc_fourcc_t Detect(stream_t *s)
+{
+    const uint8_t *peek;
+    size_t peek_size = 0;
+
+    for (size_t i = 0; i < ARRAY_SIZE(formats); i++) {
+        const image_format_t *img = &formats[i];
+
+        if (img->detect != NULL) {
+            if (img->detect(s))
+                return img->codec;
+
+            if (vlc_stream_Seek(s, 0))
+               return 0;
+
+            /* Seeking invalidates the current peek buffer */
+            peek_size = 0;
+            continue;
+        }
+
+        if (peek_size < img->marker_size) {
+            ssize_t val = vlc_stream_Peek(s, &peek, img->marker_size);
+            if (val < 0)
+                continue;
+            peek_size = val;
+        }
+
+        assert(img->marker_size > 0); /* ensure peek is a valid pointer */
+
+        if (peek_size >= img->marker_size
+         && memcmp(peek, img->marker, img->marker_size) == 0)
+            return img->codec;
+    }
+    return 0;
+}
 
 static int Open(vlc_object_t *object)
 {
     demux_t *demux = (demux_t*)object;
 
     /* Detect the image type */
-    const image_format_t *img;
+    vlc_fourcc_t codec = Detect(demux->s);
+    if (codec == 0)
+        return VLC_EGENERIC;
 
-    const uint8_t *peek;
-    int peek_size = 0;
-    for (int i = 0; ; i++) {
-        img = &formats[i];
-        if (!img->codec)
-            return VLC_EGENERIC;
-
-        if (img->detect) {
-            if (img->detect(demux->s))
-                break;
-        } else {
-            if (peek_size < img->marker_size)
-                peek_size = vlc_stream_Peek(demux->s, &peek, img->marker_size);
-            if (peek_size >= img->marker_size &&
-                !memcmp(peek, img->marker, img->marker_size))
-                break;
-        }
-    }
     msg_Dbg(demux, "Detected image: %s",
-            vlc_fourcc_GetDescription(VIDEO_ES, img->codec));
+            vlc_fourcc_GetDescription(VIDEO_ES, codec));
 
-    if( img->codec == VLC_CODEC_MXPEG )
-    {
+    if (codec == VLC_CODEC_MXPEG)
         return VLC_EGENERIC; //let avformat demux this file
-    }
 
     /* Load and if selected decode */
     es_format_t fmt;
-    es_format_Init(&fmt, VIDEO_ES, img->codec);
+    es_format_Init(&fmt, VIDEO_ES, codec);
     fmt.video.i_chroma = fmt.i_codec;
 
     block_t *data = Load(demux);
@@ -660,8 +711,7 @@ static int Open(vlc_object_t *object)
         vlc_fourcc_t chroma = vlc_fourcc_GetCodecFromString(VIDEO_ES, string);
         free(string);
 
-        data = Decode(demux, &fmt.video, chroma, data);
-        fmt.i_codec = fmt.video.i_chroma;
+        data = Decode(demux, &fmt, chroma, data);
     }
     fmt.i_id    = var_InheritInteger(demux, "image-id");
     fmt.i_group = var_InheritInteger(demux, "image-group");
@@ -691,12 +741,12 @@ static int Open(vlc_object_t *object)
 
     sys->data        = data;
     sys->es          = es_out_Add(demux->out, &fmt);
-    sys->duration    = CLOCK_FREQ * var_InheritFloat(demux, "image-duration");
+    sys->duration    = vlc_tick_from_sec( var_InheritFloat(demux, "image-duration") );
     sys->is_realtime = var_InheritBool(demux, "image-realtime");
-    sys->pts_origin  = sys->is_realtime ? mdate() : 0;
-    sys->pts_next    = VLC_TS_INVALID;
+    sys->pts_offset  = sys->is_realtime ? vlc_tick_now() : 0;
+    sys->pts_next    = VLC_TICK_INVALID;
     date_Init(&sys->pts, fmt.video.i_frame_rate, fmt.video.i_frame_rate_base);
-    date_Set(&sys->pts, 0);
+    date_Set(&sys->pts, VLC_TICK_0);
 
     es_format_Clean(&fmt);
 

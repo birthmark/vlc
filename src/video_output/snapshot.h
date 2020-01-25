@@ -2,7 +2,6 @@
  * snapshot.h : vout internal snapshot
  *****************************************************************************
  * Copyright (C) 2009 Laurent Aimar
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
  *
@@ -26,24 +25,16 @@
 
 #include <vlc_picture.h>
 
-typedef struct {
-    vlc_mutex_t lock;
-    vlc_cond_t  wait;
-
-	bool        is_available;
-	int         request_count;
-	picture_t   *picture;
-
-} vout_snapshot_t;
+typedef struct vout_snapshot vout_snapshot_t;
 
 /* */
-void vout_snapshot_Init(vout_snapshot_t *);
-void vout_snapshot_Clean(vout_snapshot_t *);
+vout_snapshot_t *vout_snapshot_New(void);
+void vout_snapshot_Destroy(vout_snapshot_t *);
 
 void vout_snapshot_End(vout_snapshot_t *);
 
 /* */
-picture_t *vout_snapshot_Get(vout_snapshot_t *, mtime_t timeout);
+picture_t *vout_snapshot_Get(vout_snapshot_t *, vlc_tick_t timeout);
 
 /**
  * It tells if they are pending snapshot request
@@ -53,11 +44,11 @@ bool vout_snapshot_IsRequested(vout_snapshot_t *);
 /**
  * It set the picture used to create the snapshots.
  *
- * The given picture is only copied and not released.
+ * The given picture is cloned.
  * If p_fmt is non NULL it will override the format of the p_picture (mainly
  * used because of aspect/crop problems).
  */
-void vout_snapshot_Set(vout_snapshot_t *, const video_format_t *, const picture_t *);
+void vout_snapshot_Set(vout_snapshot_t *, const video_format_t *, picture_t *);
 
 /**
  * This function will return the directory used for snapshots

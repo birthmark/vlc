@@ -2,7 +2,6 @@
  * utils.c: helper functions
  *****************************************************************************
  * Copyright (C) 2010 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *
@@ -81,7 +80,7 @@ OMX_ERRORTYPE WaitForOmxEvent(OmxEventQueue *queue, OMX_EVENTTYPE *event,
     OMX_U32 *data_1, OMX_U32 *data_2, OMX_PTR *event_data)
 {
     OmxEvent *p_event;
-    mtime_t deadline = mdate() + CLOCK_FREQ;
+    vlc_tick_t deadline = vlc_tick_now() + VLC_TICK_FROM_SEC(1);
 
     vlc_mutex_lock(&queue->mutex);
 
@@ -116,7 +115,7 @@ OMX_ERRORTYPE WaitForSpecificOmxEvent(OmxEventQueue *queue,
 {
     OMX_ERRORTYPE status;
     OMX_EVENTTYPE event;
-    mtime_t before =  mdate();
+    vlc_tick_t before =  vlc_tick_now();
 
     while(1)
     {
@@ -124,7 +123,7 @@ OMX_ERRORTYPE WaitForSpecificOmxEvent(OmxEventQueue *queue,
         if(status != OMX_ErrorNone) return status;
 
         if(event == specific_event) break;
-        if(mdate() - before > CLOCK_FREQ) return OMX_ErrorTimeout;
+        if(vlc_tick_now() - before > VLC_TICK_FROM_SEC(1)) return OMX_ErrorTimeout;
     }
 
     return OMX_ErrorNone;
@@ -221,9 +220,11 @@ void CopyOmxPicture( int i_color_format, picture_t *p_pic,
         && vlc_CPU_SSE2() && p_architecture_specific && p_architecture_specific->data )
     {
         copy_cache_t *p_surface_cache = (copy_cache_t*)p_architecture_specific->data;
-        uint8_t *ppi_src_pointers[2] = { p_src, p_src + i_src_stride * i_slice_height };
-        size_t pi_src_strides[2] = { i_src_stride, i_src_stride };
-        CopyFromNv12( p_pic, ppi_src_pointers, pi_src_strides, i_slice_height, p_surface_cache );
+        const uint8_t *ppi_src_pointers[2] = { p_src, p_src + i_src_stride * i_slice_height };
+        const size_t pi_src_strides[2] = { i_src_stride, i_src_stride };
+        Copy420_SP_to_P( p_pic, ppi_src_pointers, pi_src_strides,
+                         i_slice_height, p_surface_cache );
+        picture_SwapUV( p_pic );
         return;
     }
 #endif
@@ -346,7 +347,7 @@ struct str2quirks {
     int i_quirks;
 };
 
-int OMXCodec_GetQuirks( int i_cat, vlc_fourcc_t i_codec,
+int OMXCodec_GetQuirks( enum es_format_category_e i_cat, vlc_fourcc_t i_codec,
                         const char *p_name, unsigned int i_name_len )
 {
     static const struct str2quirks quirks_prefix[] = {
@@ -719,7 +720,8 @@ static const char *GetOmxAudioEncRole( vlc_fourcc_t i_fourcc )
     return audio_enc_format_table[i].psz_role;
 }
 
-const char *GetOmxRole( vlc_fourcc_t i_fourcc, int i_cat, bool b_enc )
+const char *GetOmxRole( vlc_fourcc_t i_fourcc, enum es_format_category_e i_cat,
+                        bool b_enc )
 {
     if(b_enc)
         return i_cat == VIDEO_ES ?

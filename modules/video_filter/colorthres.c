@@ -2,7 +2,6 @@
  * colorthres.c: Threshold color based on similarity to reference color
  *****************************************************************************
  * Copyright (C) 2000-2009 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Sigmund Augdal <dnumgis@videolan.org>
  *          Antoine Cellerier <dionoea at videolan dot org>
@@ -31,11 +30,11 @@
 #endif
 
 #include <math.h>
+#include <stdatomic.h>
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_sout.h>
-#include <vlc_atomic.h>
 #include <vlc_filter.h>
 #include <vlc_picture.h>
 #include "filter_picture.h"
@@ -73,8 +72,7 @@ vlc_module_begin ()
     set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
     set_capability( "video filter", 0 )
-    add_rgb( CFG_PREFIX "color", 0x00FF0000, COLOR_TEXT,
-                 COLOR_LONGTEXT, false )
+    add_rgb(CFG_PREFIX "color", 0x00FF0000, COLOR_TEXT, COLOR_LONGTEXT)
         change_integer_list( pi_color_values, ppsz_color_descriptions )
     add_integer( CFG_PREFIX "saturationthres", 20,
                  N_("Saturation threshold"), "", false )
@@ -97,12 +95,12 @@ static int FilterCallback( vlc_object_t *, char const *,
 /*****************************************************************************
  * filter_sys_t: adjust filter method descriptor
  *****************************************************************************/
-struct filter_sys_t
+typedef struct
 {
     atomic_int i_simthres;
     atomic_int i_satthres;
     atomic_int i_color;
-};
+} filter_sys_t;
 
 /*****************************************************************************
  * Create: allocates adjust video thread output method

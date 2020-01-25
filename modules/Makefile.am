@@ -1,7 +1,9 @@
 noinst_LTLIBRARIES =
+check_LTLIBRARIES =
 pkglib_LTLIBRARIES =
 noinst_HEADERS =
 check_PROGRAMS =
+pkglibexec_PROGRAMS =
 EXTRA_DIST =
 
 EXTRA_SUBDIRS = \
@@ -15,8 +17,7 @@ endif
 
 TESTS =
 
-dist_noinst_SCRIPTS = list.sh module.rc.in
-dist_noinst_DATA = MODULES_LIST
+dist_noinst_SCRIPTS = module.rc.in
 EXTRA_LTLIBRARIES =
 
 include common.am
@@ -31,6 +32,10 @@ include codec/Makefile.am
 include control/Makefile.am
 include demux/Makefile.am
 include gui/Makefile.am
+include hw/nvdec/Makefile.am
+include hw/d3d9/Makefile.am
+include hw/d3d11/Makefile.am
+include hw/vaapi/Makefile.am
 include hw/vdpau/Makefile.am
 include keystore/Makefile.am
 include logger/Makefile.am
@@ -83,5 +88,5 @@ SUFFIXES += -client-protocol.h -protocol.c .xml
 	$(AM_V_at)mv -f -- "$@.tmp" "$@"
 
 .xml-protocol.c:
-	$(AM_V_GEN)$(WAYLAND_SCANNER) code < "$^" > "$@.tmp"
+	$(AM_V_GEN)$(WAYLAND_SCANNER) private-code < "$^" > "$@.tmp"
 	$(AM_V_at)mv -f -- "$@.tmp" "$@"

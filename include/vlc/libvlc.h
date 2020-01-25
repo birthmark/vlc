@@ -2,7 +2,6 @@
  * libvlc.h:  libvlc external API
  *****************************************************************************
  * Copyright (C) 1998-2009 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Clément Stenac <zorglub@videolan.org>
  *          Jean-Paul Saman <jpsaman@videolan.org>
@@ -135,20 +134,28 @@ LIBVLC_API const char *libvlc_printerr (const char *fmt, ...);
  * - on Microsoft Windows, SetErrorMode().
  * - sigprocmask() shall never be invoked; pthread_sigmask() can be used.
  *
- * On POSIX systems, the SIGCHLD signal must <b>not</b> be ignored, i.e. the
+ * On POSIX systems, the SIGCHLD signal <b>must not</b> be ignored, i.e. the
  * signal handler must set to SIG_DFL or a function pointer, not SIG_IGN.
  * Also while LibVLC is active, the wait() function shall not be called, and
  * any call to waitpid() shall use a strictly positive value for the first
  * parameter (i.e. the PID). Failure to follow those rules may lead to a
  * deadlock or a busy loop.
- *
  * Also on POSIX systems, it is recommended that the SIGPIPE signal be blocked,
- * even if it is not, in principles, necessary.
+ * even if it is not, in principles, necessary, e.g.:
+ * @code
+   sigset_t set;
+
+   signal(SIGCHLD, SIG_DFL);
+   sigemptyset(&set);
+   sigaddset(&set, SIGPIPE);
+   pthread_sigmask(SIG_BLOCK, &set, NULL);
+ * @endcode
  *
- * On Microsoft Windows Vista/2008, the process error mode
- * SEM_FAILCRITICALERRORS flag <b>must</b> be set with the SetErrorMode()
- * function before using LibVLC. On later versions, it is optional and
- * unnecessary.
+ * On Microsoft Windows, setting the default DLL directories to SYSTEM32
+ * exclusively is strongly recommended for security reasons:
+ * @code
+   SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
+ * @endcode
  *
  * \version
  * Arguments are meant to be passed from the command line to LibVLC, just like
@@ -211,7 +218,6 @@ int libvlc_add_intf( libvlc_instance_t *p_instance, const char *name );
  * \param cb callback to invoke when LibVLC wants to exit,
  *           or NULL to disable the exit handler (as by default)
  * \param opaque data pointer for the callback
- * \warning This function and libvlc_wait() cannot be used at the same time.
  */
 LIBVLC_API
 void libvlc_set_exit_handler( libvlc_instance_t *p_instance,
@@ -308,7 +314,7 @@ typedef int libvlc_event_type_t;
  * Callback function notification
  * \param p_event the event triggering the callback
  */
-typedef void ( *libvlc_callback_t )( const struct libvlc_event_t *, void * );
+typedef void ( *libvlc_callback_t )( const struct libvlc_event_t *p_event, void *p_data );
 
 /**
  * Register for an event notification.
@@ -338,13 +344,6 @@ LIBVLC_API void libvlc_event_detach( libvlc_event_manager_t *p_event_manager,
                                          libvlc_event_type_t i_event_type,
                                          libvlc_callback_t f_callback,
                                          void *p_user_data );
-
-/**
- * Get an event's type name.
- *
- * \param event_type the desired event
- */
-LIBVLC_API const char * libvlc_event_type_name( libvlc_event_type_t event_type );
 
 /** @} */
 
@@ -447,7 +446,7 @@ typedef void (*libvlc_log_cb)(void *data, int level, const libvlc_log_t *ctx,
  * \param p_instance libvlc instance
  * \version LibVLC 2.1.0 or later
  */
-LIBVLC_API void libvlc_log_unset( libvlc_instance_t * );
+LIBVLC_API void libvlc_log_unset( libvlc_instance_t *p_instance );
 
 /**
  * Sets the logging callback for a LibVLC instance.
@@ -466,7 +465,7 @@ LIBVLC_API void libvlc_log_unset( libvlc_instance_t * );
  * \param p_instance libvlc instance
  * \version LibVLC 2.1.0 or later
  */
-LIBVLC_API void libvlc_log_set( libvlc_instance_t *,
+LIBVLC_API void libvlc_log_set( libvlc_instance_t *p_instance,
                                 libvlc_log_cb cb, void *data );
 
 
@@ -477,7 +476,7 @@ LIBVLC_API void libvlc_log_set( libvlc_instance_t *,
  *         (the FILE pointer must remain valid until libvlc_log_unset())
  * \version LibVLC 2.1.0 or later
  */
-LIBVLC_API void libvlc_log_set_file( libvlc_instance_t *, FILE *stream );
+LIBVLC_API void libvlc_log_set_file( libvlc_instance_t *p_instance, FILE *stream );
 
 /** @} */
 
@@ -529,7 +528,7 @@ libvlc_module_description_t *libvlc_audio_filter_list_get( libvlc_instance_t *p_
 LIBVLC_API
 libvlc_module_description_t *libvlc_video_filter_list_get( libvlc_instance_t *p_instance );
 
-/** @} */
+/** @} */
 
 /** \defgroup libvlc_clock LibVLC time
  * These functions provide access to the LibVLC time/clock.
@@ -558,7 +557,7 @@ static inline int64_t libvlc_delay(int64_t pts)
     return pts - libvlc_clock();
 }
 
-/** @} */
+/** @} */
 
 # ifdef __cplusplus
 }

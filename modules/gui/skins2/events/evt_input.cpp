@@ -2,7 +2,6 @@
  * evt_input.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
- * $Id$
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -23,7 +22,7 @@
  *****************************************************************************/
 
 #include "evt_input.hpp"
-#include "vlc_keys.h"
+#include "vlc_actions.h"
 
 const int
     EvtInput::kModNone=0,

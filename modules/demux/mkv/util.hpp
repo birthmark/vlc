@@ -3,7 +3,6 @@
  * mkv.cpp : matroska demuxer
  *****************************************************************************
  * Copyright (C) 2003-2004 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Steve Lhomme <steve.lhomme@free.fr>
@@ -25,14 +24,16 @@
 
 #include "mkv.hpp"
 
+namespace mkv {
+
 #ifdef HAVE_ZLIB_H
-int32_t zlib_decompress_extra( demux_t * p_demux, mkv_track_t * tk );
+int32_t zlib_decompress_extra( demux_t * p_demux, mkv_track_t & tk );
 block_t *block_zlib_decompress( vlc_object_t *p_this, block_t *p_in_block );
 #endif
 
 block_t *MemToBlock( uint8_t *p_mem, size_t i_mem, size_t offset);
-void handle_real_audio(demux_t * p_demux, mkv_track_t * p_tk, block_t * p_blk, mtime_t i_pts);
-void send_Block( demux_t * p_demux, mkv_track_t * p_tk, block_t * p_block, unsigned int i_number_frames, mtime_t i_duration );
+void handle_real_audio(demux_t * p_demux, mkv_track_t * p_tk, block_t * p_blk, vlc_tick_t i_pts);
+void send_Block( demux_t * p_demux, mkv_track_t * p_tk, block_t * p_block, unsigned int i_number_frames, int64_t i_duration );
 
 
 struct real_audio_private
@@ -89,8 +90,10 @@ public:
     size_t   i_subpacket;
 };
 
-block_t * packetize_wavpack( mkv_track_t *, uint8_t *, size_t);
+block_t * packetize_wavpack( const mkv_track_t &, uint8_t *, size_t);
 
 /* helper functions to print the mkv parse tree */
 void MkvTree_va( demux_t& demuxer, int i_level, const char* fmt, va_list args);
 void MkvTree( demux_t & demuxer, int i_level, const char *psz_format, ... );
+
+} // namespace

@@ -26,12 +26,6 @@
 
 #include <vlc_vout_display.h>
 
-/* keys.c */
-typedef struct key_handler_t key_handler_t;
-key_handler_t *XCB_keyHandler_Create (vlc_object_t *, xcb_connection_t *);
-void XCB_keyHandler_Destroy (key_handler_t *);
-int XCB_keyHandler_Process (key_handler_t *, xcb_generic_event_t *);
-
 /* events.c */
 
 /**
@@ -46,10 +40,10 @@ int vlc_xcb_error_Check(vout_display_t *, xcb_connection_t *conn,
  * Creates a VLC video X window object, connects to the corresponding X server,
  * finds the corresponding X server screen.
  */
-struct vout_window_t *vlc_xcb_parent_Create(vout_display_t *obj,
-                                            xcb_connection_t **connp,
-                                            const xcb_screen_t **screenp);
+int vlc_xcb_parent_Create(vout_display_t *obj, const vout_window_t *wnd,
+                          xcb_connection_t **connp,
+                          const xcb_screen_t **screenp);
 /**
  * Processes XCB events.
  */
-int vlc_xcb_Manage(vout_display_t *vd, xcb_connection_t *conn, bool *visible);
+int vlc_xcb_Manage(vout_display_t *vd, xcb_connection_t *conn);

@@ -2,7 +2,6 @@
  * configuration.c: Generic lua<->vlc config interface
  *****************************************************************************
  * Copyright (C) 2007-2008 the VideoLAN team
- * $Id$
  *
  * Authors: Antoine Cellerier <dionoea at videolan tod org>
  *
@@ -42,28 +41,27 @@
  *****************************************************************************/
 static int vlclua_config_get( lua_State *L )
 {
-    vlc_object_t * p_this = vlclua_get_this( L );
     const char *psz_name = luaL_checkstring( L, 1 );
-    switch( config_GetType( p_this, psz_name ) )
+    switch( config_GetType( psz_name ) )
     {
         case VLC_VAR_STRING:
         {
-            char *psz = config_GetPsz( p_this, psz_name );
+            char *psz = config_GetPsz( psz_name );
             lua_pushstring( L, psz );
             free( psz );
             break;
         }
 
         case VLC_VAR_INTEGER:
-            lua_pushinteger( L, config_GetInt( p_this, psz_name ) );
+            lua_pushinteger( L, config_GetInt( psz_name ) );
             break;
 
         case VLC_VAR_BOOL:
-            lua_pushboolean( L, config_GetInt( p_this, psz_name ) );
+            lua_pushboolean( L, config_GetInt( psz_name ) );
             break;
 
         case VLC_VAR_FLOAT:
-            lua_pushnumber( L, config_GetFloat( p_this, psz_name ) );
+            lua_pushnumber( L, config_GetFloat( psz_name ) );
             break;
 
         default:
@@ -75,25 +73,23 @@ static int vlclua_config_get( lua_State *L )
 
 static int vlclua_config_set( lua_State *L )
 {
-    vlc_object_t *p_this = vlclua_get_this( L );
     const char *psz_name = luaL_checkstring( L, 1 );
-    switch( config_GetType( p_this, psz_name ) )
+    switch( config_GetType( psz_name ) )
     {
         case VLC_VAR_STRING:
-            config_PutPsz( p_this, psz_name, luaL_checkstring( L, 2 ) );
+            config_PutPsz( psz_name, luaL_checkstring( L, 2 ) );
             break;
 
         case VLC_VAR_INTEGER:
-            config_PutInt( p_this, psz_name, luaL_checkinteger( L, 2 ) );
+            config_PutInt( psz_name, luaL_checkinteger( L, 2 ) );
             break;
 
         case VLC_VAR_BOOL:
-            config_PutInt( p_this, psz_name, luaL_checkboolean( L, 2 ) );
+            config_PutInt( psz_name, luaL_checkboolean( L, 2 ) );
             break;
 
         case VLC_VAR_FLOAT:
-            config_PutFloat( p_this, psz_name,
-                             luaL_checknumber( L, 2 ) );
+            config_PutFloat( psz_name, luaL_checknumber( L, 2 ) );
             break;
 
         default:
@@ -107,7 +103,7 @@ static int vlclua_config_set( lua_State *L )
  *****************************************************************************/
 static int vlclua_datadir( lua_State *L )
 {
-    char *psz_data = config_GetDataDir();
+    char *psz_data = config_GetSysPath(VLC_PKG_DATA_DIR, NULL);
     lua_pushstring( L, psz_data );
     free( psz_data );
     return 1;
@@ -115,7 +111,7 @@ static int vlclua_datadir( lua_State *L )
 
 static int vlclua_userdatadir( lua_State *L )
 {
-    char *dir = config_GetUserDir( VLC_DATA_DIR );
+    char *dir = config_GetUserDir( VLC_USERDATA_DIR );
     lua_pushstring( L, dir );
     free( dir );
     return 1;

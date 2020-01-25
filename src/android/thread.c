@@ -29,11 +29,11 @@
 #endif
 
 #include <vlc_common.h>
-#include <vlc_atomic.h>
 
 #include "libvlc.h"
 #include <signal.h>
 #include <errno.h>
+#include <stdatomic.h>
 #include <time.h>
 #include <assert.h>
 
@@ -42,54 +42,26 @@
 #include <pthread.h>
 #include <sched.h>
 
-#include <android/log.h>
-
-#if !defined(HAVE_PTHREAD_CONDATTR_SETCLOCK) && !defined(HAVE_PTHREAD_COND_TIMEDWAIT_MONOTONIC_NP)
-#error no pthread monotonic clock support
-#endif
-
 /* debug */
-#define vlc_assert(x) do { \
-    if (unlikely(!(x))) { \
-    __android_log_print(ANDROID_LOG_ERROR, "vlc", "assert failed %s:%d: %s", \
-        __FILE__, __LINE__, #x \
-        ); \
-        abort(); \
-    } \
-} while(0)
 
 #ifndef NDEBUG
 static void
-vlc_thread_fatal (const char *action, int error,
-                  const char *function, const char *file, unsigned line)
+vlc_thread_fatal_print (const char *action, int error,
+                        const char *function, const char *file, unsigned line)
 {
-    char buf[1000];
-    const char *msg;
-
-    switch (strerror_r (error, buf, sizeof (buf)))
-    {
-        case 0:
-            msg = buf;
-            break;
-        case ERANGE: /* should never happen */
-            msg = "unknown (too big to display)";
-            break;
-        default:
-            msg = "unknown (invalid error number)";
-            break;
-    }
-
-    __android_log_print(ANDROID_LOG_ERROR, "vlc",
-        "LibVLC fatal error %s (%d) in thread %lu "
-        "at %s:%u in %s\n Error message: %s\n",
-        action, error, vlc_thread_id (), file, line, function, msg);
-
-    abort ();
+    const char *msg = vlc_strerror_c(error);
+    fprintf(stderr, "LibVLC fatal error %s (%d) in thread %lu "
+            "at %s:%u in %s\n Error message: %s\n",
+            action, error, vlc_thread_id (), file, line, function, msg);
+    fflush (stderr);
 }
 
-# define VLC_THREAD_ASSERT( action ) \
-    if (unlikely(val)) \
-        vlc_thread_fatal (action, val, __func__, __FILE__, __LINE__)
+# define VLC_THREAD_ASSERT( action ) do { \
+    if (unlikely(val)) { \
+        vlc_thread_fatal_print (action, val, __func__, __FILE__, __LINE__); \
+        assert (!action); \
+    } \
+} while(0)
 #else
 # define VLC_THREAD_ASSERT( action ) ((void)val)
 #endif
@@ -126,25 +98,21 @@ void vlc_mutex_destroy (vlc_mutex_t *p_mutex)
     VLC_THREAD_ASSERT ("destroying mutex");
 }
 
-#ifndef NDEBUG
-void vlc_assert_locked (vlc_mutex_t *p_mutex)
-{
-    vlc_assert (pthread_mutex_lock (p_mutex) == EDEADLK);
-}
-#endif
-
 void vlc_mutex_lock (vlc_mutex_t *p_mutex)
 {
     int val = pthread_mutex_lock( p_mutex );
     VLC_THREAD_ASSERT ("locking mutex");
+    vlc_mutex_mark(p_mutex);
 }
 
 int vlc_mutex_trylock (vlc_mutex_t *p_mutex)
 {
     int val = pthread_mutex_trylock( p_mutex );
 
-    if (val != EBUSY)
+    if (val != EBUSY) {
         VLC_THREAD_ASSERT ("locking mutex");
+        vlc_mutex_mark(p_mutex);
+    }
     return val;
 }
 
@@ -152,6 +120,13 @@ void vlc_mutex_unlock (vlc_mutex_t *p_mutex)
 {
     int val = pthread_mutex_unlock( p_mutex );
     VLC_THREAD_ASSERT ("unlocking mutex");
+    vlc_mutex_unmark(p_mutex);
+}
+
+void vlc_once(vlc_once_t *once, void (*cb)(void))
+{
+    int val = pthread_once(once, cb);
+    VLC_THREAD_ASSERT("initializing once");
 }
 
 struct vlc_thread
@@ -172,7 +147,7 @@ struct vlc_thread
     bool killable;
 };
 
-static __thread struct vlc_thread *thread = NULL;
+static thread_local struct vlc_thread *thread = NULL;
 
 vlc_thread_t vlc_thread_self (void)
 {
@@ -416,19 +391,19 @@ void *vlc_threadvar_get (vlc_threadvar_t key)
 }
 
 /* time */
-mtime_t mdate (void)
+vlc_tick_t vlc_tick_now (void)
 {
     struct timespec ts;
 
     if (unlikely(clock_gettime (CLOCK_MONOTONIC, &ts) != 0))
         abort ();
 
-    return (INT64_C(1000000) * ts.tv_sec) + (ts.tv_nsec / 1000);
+    return vlc_tick_from_timespec( &ts );
 }
 
 /* cpu */
 
 unsigned vlc_GetCPUCount(void)
 {
-    return sysconf(_SC_NPROCESSORS_CONF);
+    return sysconf(_SC_NPROCESSORS_ONLN);
 }

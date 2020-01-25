@@ -42,7 +42,7 @@
 
 #include "v4l2.h"
 
-struct demux_sys_t
+typedef struct
 {
     int fd;
     vlc_thread_t thread;
@@ -57,12 +57,12 @@ struct demux_sys_t
 
     es_out_id_t *es;
     vlc_v4l2_ctrl_t *controls;
-    mtime_t start;
+    vlc_tick_t start;
 
 #ifdef ZVBI_COMPILED
     vlc_v4l2_vbi_t *vbi;
 #endif
-};
+} demux_sys_t;
 
 static void *UserPtrThread (void *);
 static void *MmapThread (void *);
@@ -73,6 +73,8 @@ static int InitVideo (demux_t *, int fd, uint32_t caps);
 int DemuxOpen( vlc_object_t *obj )
 {
     demux_t *demux = (demux_t *)obj;
+    if (demux->out == NULL)
+        return VLC_EGENERIC;
 
     demux_sys_t *sys = malloc (sizeof (*sys));
     if (unlikely(sys == NULL))
@@ -101,13 +103,10 @@ int DemuxOpen( vlc_object_t *obj )
         goto error;
     }
 
-    sys->controls = ControlsInit (VLC_OBJECT(demux), fd);
-    sys->start = mdate ();
+    sys->controls = ControlsInit(vlc_object_parent(obj), fd);
+    sys->start = vlc_tick_now ();
     demux->pf_demux = NULL;
     demux->pf_control = DemuxControl;
-    demux->info.i_update = 0;
-    demux->info.i_title = 0;
-    demux->info.i_seekpoint = 0;
     return VLC_SUCCESS;
 error:
     free (sys);
@@ -215,9 +214,9 @@ static const vlc_v4l2_fmt_t v4l2_fmts[] =
     //V4L2_PIX_FMT_DV -> use access
 
     /* Grey scale */
-//  { V4L2_PIX_FMT_Y16,       },
-//  { V4L2_PIX_FMT_Y12,       },
-//  { V4L2_PIX_FMT_Y10,       },
+    { V4L2_PIX_FMT_Y16,     VLC_CODEC_GREY_16L, 2, 0, 0, 0 },
+    { V4L2_PIX_FMT_Y12,     VLC_CODEC_GREY_12L, 2, 0, 0, 0 },
+    { V4L2_PIX_FMT_Y10,     VLC_CODEC_GREY_10L, 2, 0, 0, 0 },
 //  { V4L2_PIX_FMT_Y10BPACK,  },
     { V4L2_PIX_FMT_GREY,    VLC_CODEC_GREY, 1, 0, 0, 0 },
 };
@@ -351,9 +350,11 @@ static int InitVideo (demux_t *demux, int fd, uint32_t caps)
             break;
         case V4L2_FIELD_TOP:
             msg_Dbg (demux, "Interlacing setting: top field only");
+            sys->block_flags = BLOCK_FLAG_TOP_FIELD_FIRST|BLOCK_FLAG_SINGLE_FIELD;
             break;
         case V4L2_FIELD_BOTTOM:
             msg_Dbg (demux, "Interlacing setting: bottom field only");
+            sys->block_flags = BLOCK_FLAG_BOTTOM_FIELD_FIRST|BLOCK_FLAG_SINGLE_FIELD;
             break;
         case V4L2_FIELD_INTERLACED:
             msg_Dbg (demux, "Interlacing setting: interleaved");
@@ -390,6 +391,7 @@ static int InitVideo (demux_t *demux, int fd, uint32_t caps)
     es_format_t es_fmt;
 
     es_format_Init (&es_fmt, VIDEO_ES, selected->vlc);
+    es_fmt.video.i_chroma = selected->vlc;
     es_fmt.video.i_rmask = selected->red;
     es_fmt.video.i_gmask = selected->green;
     es_fmt.video.i_bmask = selected->blue;
@@ -434,7 +436,7 @@ static int InitVideo (demux_t *demux, int fd, uint32_t caps)
             es_fmt.video.primaries = COLOR_PRIMARIES_SRGB;
             es_fmt.video.transfer = TRANSFER_FUNC_SRGB;
             es_fmt.video.space = COLOR_SPACE_BT601;
-            es_fmt.video.b_color_range_full = true;
+            es_fmt.video.color_range = COLOR_RANGE_FULL;
             break;
         case V4L2_COLORSPACE_SRGB:
             es_fmt.video.primaries = COLOR_PRIMARIES_SRGB;
@@ -527,10 +529,10 @@ static int InitVideo (demux_t *demux, int fd, uint32_t caps)
         case V4L2_QUANTIZATION_DEFAULT:
             break;
         case V4L2_QUANTIZATION_FULL_RANGE:
-            es_fmt.video.b_color_range_full = true;
+            es_fmt.video.color_range = COLOR_RANGE_FULL;
             break;
         case V4L2_QUANTIZATION_LIM_RANGE:
-            es_fmt.video.b_color_range_full = false;
+            es_fmt.video.color_range = COLOR_RANGE_LIMITED;
             break;
         default:
             msg_Err (demux, "unknown quantization: %u",
@@ -621,7 +623,7 @@ void DemuxClose( vlc_object_t *obj )
     vlc_join (sys->thread, NULL);
     if (sys->bufv != NULL)
         StopMmap (sys->fd, sys->bufv, sys->bufc);
-    ControlsDeinit( obj, sys->controls );
+    ControlsDeinit(vlc_object_parent(obj), sys->controls);
     v4l2_close (sys->fd);
 
 #ifdef ZVBI_COMPILED
@@ -712,7 +714,7 @@ static void *UserPtrThread (void *data)
         block->i_buffer = buf.length;
         block->i_pts = block->i_dts = GetBufferPTS (&buf);
         block->i_flags |= sys->block_flags;
-        es_out_Control (demux->out, ES_OUT_SET_PCR, block->i_pts);
+        es_out_SetPCR(demux->out, block->i_pts);
         es_out_Send (demux->out, sys->es, block);
     }
     vlc_restorecancel (canc); /* <- hmm, this is purely cosmetic */
@@ -756,7 +758,7 @@ static void *MmapThread (void *data)
             if (block != NULL)
             {
                 block->i_flags |= sys->block_flags;
-                es_out_Control (demux->out, ES_OUT_SET_PCR, block->i_pts);
+                es_out_SetPCR(demux->out, block->i_pts);
                 es_out_Send (demux->out, sys->es, block);
             }
             vlc_restorecancel (canc);
@@ -809,7 +811,7 @@ static void *ReadThread (void *data)
                 v4l2_read (fd, NULL, 0); /* discard frame */
                 continue;
             }
-            block->i_pts = block->i_dts = mdate ();
+            block->i_pts = block->i_dts = vlc_tick_now ();
             block->i_flags |= sys->block_flags;
 
             int canc = vlc_savecancel ();
@@ -817,7 +819,7 @@ static void *ReadThread (void *data)
             if (val != -1)
             {
                 block->i_buffer = val;
-                es_out_Control (demux->out, ES_OUT_SET_PCR, block->i_pts);
+                es_out_SetPCR(demux->out, block->i_pts);
                 es_out_Send (demux->out, sys->es, block);
             }
             else
@@ -846,12 +848,12 @@ static int DemuxControl( demux_t *demux, int query, va_list args )
             return VLC_SUCCESS;
 
         case DEMUX_GET_PTS_DELAY:
-            *va_arg(args,int64_t *) = INT64_C(1000)
-                * var_InheritInteger( demux, "live-caching" );
+            *va_arg(args,vlc_tick_t *) = VLC_TICK_FROM_MS(
+                var_InheritInteger( demux, "live-caching" ) );
             return VLC_SUCCESS;
 
         case DEMUX_GET_TIME:
-            *va_arg (args, int64_t *) = mdate() - sys->start;
+            *va_arg (args, vlc_tick_t *) = vlc_tick_now() - sys->start;
             return VLC_SUCCESS;
 
         /* TODO implement others */

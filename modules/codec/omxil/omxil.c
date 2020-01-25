@@ -2,7 +2,6 @@
  * omxil.c: Video decoder module making use of OpenMAX IL components.
  *****************************************************************************
  * Copyright (C) 2010 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *
@@ -42,12 +41,6 @@
 #include "omxil_core.h"
 #include "OMX_Broadcom.h"
 
-#if defined(USE_IOMX)
-#include <dlfcn.h>
-#include <jni.h>
-#include "../../video_output/android/display.h"
-#endif
-
 #ifndef NDEBUG
 # define OMX_DBG(...) msg_Dbg( p_dec, __VA_ARGS__ )
 #else
@@ -64,11 +57,6 @@
 /* Defined in the broadcom version of OMX_Core.h */
 #define OMX_EventParamOrConfigChanged 0x7F000001
 
-#if defined(USE_IOMX)
-/* JNI functions to get/set an Android Surface object. */
-#define THREAD_NAME "omxil"
-#endif
-
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
@@ -77,8 +65,8 @@ static int  OpenEncoder( vlc_object_t * );
 static int  OpenGeneric( vlc_object_t *, bool b_encode );
 static void CloseGeneric( vlc_object_t * );
 
-static picture_t *DecodeVideo( decoder_t *, block_t ** );
-static block_t *DecodeAudio ( decoder_t *, block_t ** );
+static int DecodeVideo( decoder_t *, block_t * );
+static int DecodeAudio ( decoder_t *, block_t * );
 static block_t *EncodeVideo( encoder_t *, picture_t * );
 static void Flush( decoder_t * );
 
@@ -88,50 +76,6 @@ static OMX_ERRORTYPE OmxEmptyBufferDone( OMX_HANDLETYPE, OMX_PTR,
                                          OMX_BUFFERHEADERTYPE * );
 static OMX_ERRORTYPE OmxFillBufferDone( OMX_HANDLETYPE, OMX_PTR,
                                         OMX_BUFFERHEADERTYPE * );
-
-#if defined(USE_IOMX)
-static void *DequeueThread( void *data );
-static void ReleasePicture( decoder_t *p_dec, unsigned int i_index, bool b_render );
-static void HwBuffer_Init( decoder_t *p_dec, OmxPort *p_port );
-static void HwBuffer_Destroy( decoder_t *p_dec, OmxPort *p_port );
-static int  HwBuffer_AllocateBuffers( decoder_t *p_dec, OmxPort *p_port );
-static int  HwBuffer_FreeBuffers( decoder_t *p_dec, OmxPort *p_port );
-static int  HwBuffer_Start( decoder_t *p_dec, OmxPort *p_port );
-static int  HwBuffer_Stop( decoder_t *p_dec, OmxPort *p_port );
-static int  HwBuffer_Join( decoder_t *p_dec, OmxPort *p_port );
-static int  HwBuffer_GetPic( decoder_t *p_dec, OmxPort *p_port,
-                             picture_t **pp_pic );
-static void HwBuffer_SetCrop( decoder_t *p_dec, OmxPort *p_port,
-                              OMX_CONFIG_RECTTYPE *p_rect );
-static void HwBuffer_ChangeState( decoder_t *p_dec, OmxPort *p_port,
-                                  int i_index, int i_state );
-
-#define HWBUFFER_LOCK(p_port) vlc_mutex_lock( &(p_port)->p_hwbuf->lock )
-#define HWBUFFER_UNLOCK(p_port) vlc_mutex_unlock( &(p_port)->p_hwbuf->lock )
-#define HWBUFFER_WAIT(p_port) vlc_cond_wait( &(p_port)->p_hwbuf->wait, \
-                                             &(p_port)->p_hwbuf->lock )
-#define HWBUFFER_BROADCAST(p_port) vlc_cond_broadcast( &(p_port)->p_hwbuf->wait )
-
-#else
-static inline int HwBuffer_dummy( )
-{
-    return 0;
-}
-#define HwBuffer_Init(p_dec, p_port) do { } while (0)
-#define HwBuffer_Destroy(p_dec, p_port) do { } while (0)
-#define HwBuffer_AllocateBuffers(p_dec, p_port) HwBuffer_dummy()
-#define HwBuffer_FreeBuffers(p_dec, p_port) HwBuffer_dummy()
-#define HwBuffer_Start(p_dec, p_port) HwBuffer_dummy()
-#define HwBuffer_Stop(p_dec, p_port) HwBuffer_dummy()
-#define HwBuffer_Join(p_dec, p_port) HwBuffer_dummy()
-#define HwBuffer_GetPic(p_dec, p_port, pp_pic) HwBuffer_dummy()
-#define HwBuffer_SetCrop(p_dec, p_port, p_rect) do { } while (0)
-
-#define HWBUFFER_LOCK(p_port) do { } while (0)
-#define HWBUFFER_UNLOCK(p_port) do { } while (0)
-#define HWBUFFER_WAIT(p_port) do { } while (0)
-#define HWBUFFER_BROADCAST(p_port) do { } while (0)
-#endif
 
 /*****************************************************************************
  * Module descriptor
@@ -146,17 +90,13 @@ vlc_module_begin ()
     set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_VCODEC )
     set_section( N_("Decoding") , NULL )
-#if defined(USE_IOMX)
-    /* For IOMX, don't enable it automatically via priorities,
-     * enable it only via the --codec iomx command line parameter when
-     * wanted. */
-    set_capability( "decoder", 0 )
-    add_bool(CFG_PREFIX "dr", true,
-             DIRECTRENDERING_TEXT, DIRECTRENDERING_LONGTEXT, true)
-#else
-    set_capability( "decoder", 80 )
-#endif
+    set_capability( "video decoder", 80 )
     set_callbacks( OpenDecoder, CloseGeneric )
+#ifndef __ANDROID__
+    add_submodule()
+    set_capability("audio decoder", 80)
+    set_callbacks(OpenDecoder, CloseGeneric)
+#endif
 
     add_submodule ()
     set_section( N_("Encoding") , NULL )
@@ -187,7 +127,7 @@ static OMX_ERRORTYPE ImplementationSpecificWorkarounds(decoder_t *p_dec,
            p_fmt->i_codec == VLC_CODEC_H264 &&
            (i_profile != PROFILE_H264_BASELINE || i_level > 30))
         {
-            msg_Dbg(p_dec, "h264 profile/level not supported (0x" PRIx8 ", 0x" PRIx8 ")",
+            msg_Dbg(p_dec, "h264 profile/level not supported (0x%" PRIx8 ", 0x%" PRIx8 ")",
                     i_profile, i_level);
             return OMX_ErrorNotImplemented;
         }
@@ -247,6 +187,7 @@ static OMX_ERRORTYPE ImplementationSpecificWorkarounds(decoder_t *p_dec,
 static OMX_ERRORTYPE SetPortDefinition(decoder_t *p_dec, OmxPort *p_port,
                                        es_format_t *p_fmt)
 {
+    decoder_sys_t *p_sys = p_dec->p_sys;
     OMX_PARAM_PORTDEFINITIONTYPE *def = &p_port->definition;
     OMX_ERRORTYPE omx_error;
 
@@ -267,9 +208,9 @@ static OMX_ERRORTYPE SetPortDefinition(decoder_t *p_dec, OmxPort *p_port,
             def->format.video.xFramerate = (p_fmt->video.i_frame_rate << 16) /
                 p_fmt->video.i_frame_rate_base;
 
-        if(def->eDir == OMX_DirInput || p_dec->p_sys->b_enc)
+        if(def->eDir == OMX_DirInput || p_sys->b_enc)
         {
-            if (def->eDir == OMX_DirInput && p_dec->p_sys->b_enc)
+            if (def->eDir == OMX_DirInput && p_sys->b_enc)
                 def->nBufferSize = def->format.video.nFrameWidth *
                   def->format.video.nFrameHeight * 2;
             p_port->i_frame_size = def->nBufferSize;
@@ -295,12 +236,6 @@ static OMX_ERRORTYPE SetPortDefinition(decoder_t *p_dec, OmxPort *p_port,
         }
         else
         {
-            if( p_port->p_hwbuf )
-            {
-                p_fmt->i_codec = VLC_CODEC_ANDROID_OPAQUE;
-                break;
-            }
-
             if( !GetVlcChromaFormat( def->format.video.eColorFormat,
                                      &p_fmt->i_codec, 0 ) )
             {
@@ -385,8 +320,8 @@ static OMX_ERRORTYPE SetPortDefinition(decoder_t *p_dec, OmxPort *p_port,
             omx_error = OMX_ErrorNone;
         }
     }
-    if (!strcmp(p_dec->p_sys->psz_component, "OMX.TI.DUCATI1.VIDEO.DECODER") &&
-                def->eDir == OMX_DirOutput && !p_port->p_hwbuf)
+    if (!strcmp(p_sys->psz_component, "OMX.TI.DUCATI1.VIDEO.DECODER") &&
+                def->eDir == OMX_DirOutput)
     {
         /* When setting the output buffer size above, the decoder actually
          * sets the buffer size to a lower value than what was chosen. If
@@ -457,18 +392,7 @@ static OMX_ERRORTYPE AllocateBuffers(decoder_t *p_dec, OmxPort *p_port)
         p_port->pp_buffers[i] = (void *)ALIGN((uintptr_t)p_buf, p_port->definition.nBufferAlignment);
 #endif
 
-        if( p_port->p_hwbuf )
-        {
-            omx_error =
-                OMX_UseBuffer( p_sys->omx_handle, &p_port->pp_buffers[i],
-                               p_port->i_port_index, 0,
-                               p_port->definition.nBufferSize,
-                               p_port->p_hwbuf->pp_handles[i] );
-            OMX_DBG( "OMX_UseBuffer(%d) %p, %p", def->eDir,
-                     (void *)p_port->pp_buffers[i],
-                     p_port->p_hwbuf->pp_handles[i] );
-        }
-        else if( p_port->b_direct )
+        if( p_port->b_direct )
         {
             omx_error =
                 OMX_UseBuffer( p_sys->omx_handle, &p_port->pp_buffers[i],
@@ -494,8 +418,7 @@ static OMX_ERRORTYPE AllocateBuffers(decoder_t *p_dec, OmxPort *p_port)
             p_port->i_buffers = i;
             break;
         }
-        if( !p_port->p_hwbuf )
-            OMX_FIFO_PUT(&p_port->fifo, p_port->pp_buffers[i]);
+        OMX_FIFO_PUT(&p_port->fifo, p_port->pp_buffers[i]);
     }
 
     CHECK_ERROR(omx_error, "AllocateBuffers failed (%x, %i)",
@@ -517,17 +440,7 @@ static OMX_ERRORTYPE FreeBuffers(decoder_t *p_dec, OmxPort *p_port)
     OMX_BUFFERHEADERTYPE *p_buffer;
     unsigned int i, i_wait_buffers;
 
-    /* Normally, all buffers are in the port fifo, or given to the codec that
-     * will return them when disabling the port or changing state, therefore we
-     * normally wait for all buffers. For IOMX direct rendering (HwBuffer),
-     * only a few buffers are given to the codec at a time, thus we can only
-     * wait for that many buffers. And after that, we can still free all OMX
-     * buffers since we either got some of them returned via OMX_FIFO_GET, or
-     * never passed them to the codec at all. */
-    if( p_port->p_hwbuf )
-        i_wait_buffers = p_port->p_hwbuf->i_owned;
-    else
-        i_wait_buffers = p_port->i_buffers;
+    i_wait_buffers = p_port->i_buffers;
 
     OMX_DBG( "FreeBuffers(%d), waiting for %u buffers", def->eDir,
              i_wait_buffers);
@@ -613,9 +526,6 @@ static OMX_ERRORTYPE GetPortDefinition(decoder_t *p_dec, OmxPort *p_port,
             p_fmt->video.i_visible_height = crop_rect.nHeight;
             if (def->format.video.eColorFormat == OMX_TI_COLOR_FormatYUV420PackedSemiPlanar)
                 def->format.video.nSliceHeight -= crop_rect.nTop/2;
-
-            if( p_port->p_hwbuf )
-                HwBuffer_SetCrop( p_dec, p_port, &crop_rect );
         }
         else
         {
@@ -623,11 +533,6 @@ static OMX_ERRORTYPE GetPortDefinition(decoder_t *p_dec, OmxPort *p_port,
             omx_error = OMX_ErrorNone;
         }
 
-        if( p_port->p_hwbuf )
-        {
-            UpdatePixelAspect(p_dec);
-            break;
-        }
         /* Hack: Nexus One (stock firmware with binary OMX driver blob)
          * claims to output 420Planar even though it in in practice is
          * NV21. */
@@ -689,30 +594,10 @@ static OMX_ERRORTYPE GetPortDefinition(decoder_t *p_dec, OmxPort *p_port,
                     omx_error, ErrorToString(omx_error));
 
         if(p_fmt->audio.i_channels < 9)
-        {
-            static const int pi_channels_maps[9] =
-            {
-                0, AOUT_CHAN_CENTER, AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT,
-                AOUT_CHAN_CENTER | AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT,
-                AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT | AOUT_CHAN_REARLEFT
-                | AOUT_CHAN_REARRIGHT,
-                AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT | AOUT_CHAN_CENTER
-                | AOUT_CHAN_REARLEFT | AOUT_CHAN_REARRIGHT,
-                AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT | AOUT_CHAN_CENTER
-                | AOUT_CHAN_REARLEFT | AOUT_CHAN_REARRIGHT | AOUT_CHAN_LFE,
-                AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT | AOUT_CHAN_CENTER
-                | AOUT_CHAN_REARLEFT | AOUT_CHAN_REARRIGHT | AOUT_CHAN_MIDDLELEFT
-                | AOUT_CHAN_MIDDLERIGHT,
-                AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT | AOUT_CHAN_CENTER | AOUT_CHAN_REARLEFT
-                | AOUT_CHAN_REARRIGHT | AOUT_CHAN_MIDDLELEFT | AOUT_CHAN_MIDDLERIGHT
-                | AOUT_CHAN_LFE
-            };
             p_fmt->audio.i_physical_channels =
-                p_fmt->audio.i_original_channels =
-                    pi_channels_maps[p_fmt->audio.i_channels];
-        }
+                vlc_chan_maps[p_fmt->audio.i_channels];
 
-        date_Init( &p_dec->p_sys->end_date, p_fmt->audio.i_rate, 1 );
+        date_Init( &p_sys->end_date, p_fmt->audio.i_rate, 1 );
 
         break;
 
@@ -739,9 +624,6 @@ static OMX_ERRORTYPE DeinitialiseComponent(decoder_t *p_dec,
 
     omx_error = OMX_GetState(omx_handle, &state);
     CHECK_ERROR(omx_error, "OMX_GetState failed (%x)", omx_error );
-
-    if( p_sys->out.p_hwbuf && HwBuffer_Stop( p_dec, &p_sys->out ) != 0 )
-        msg_Warn( p_dec, "HwBuffer_Stop failed" );
 
     if(state == OMX_StateExecuting)
     {
@@ -775,11 +657,6 @@ static OMX_ERRORTYPE DeinitialiseComponent(decoder_t *p_dec,
             omx_error = FreeBuffers( p_dec, p_port );
             CHECK_ERROR(omx_error, "FreeBuffers failed (%x, %i)",
                         omx_error, (int)p_port->i_port_index );
-            if( p_port->p_hwbuf )
-            {
-                HwBuffer_FreeBuffers( p_dec, p_port );
-                HwBuffer_Join( p_dec, p_port );
-            }
         }
 
         omx_error = WaitForSpecificOmxEvent(&p_sys->event_queue, OMX_EventCmdComplete, 0, 0, 0);
@@ -805,7 +682,6 @@ static OMX_ERRORTYPE DeinitialiseComponent(decoder_t *p_dec,
             msg_Warn( p_dec, "Stray buffer left in fifo, %p",
                       (void *)p_buffer );
         }
-        HwBuffer_Destroy( p_dec, p_port );
     }
     omx_error = pf_free_handle( omx_handle );
     return omx_error;
@@ -901,7 +777,6 @@ static OMX_ERRORTYPE InitialiseComponent(decoder_t *p_dec,
         p_port->i_port_index = definition.nPortIndex;
         p_port->definition = definition;
         p_port->omx_handle = omx_handle;
-        HwBuffer_Init( p_dec, p_port );
     }
 
     if(!p_sys->in.b_valid || !p_sys->out.b_valid)
@@ -910,8 +785,7 @@ static OMX_ERRORTYPE InitialiseComponent(decoder_t *p_dec,
         CHECK_ERROR(omx_error, "couldn't find an input and output port");
     }
 
-    if( !p_sys->out.p_hwbuf && !strncmp(p_sys->psz_component, "OMX.SEC.", 8) &&
-       p_dec->fmt_in.i_cat == VIDEO_ES )
+    if( !strncmp(p_sys->psz_component, "OMX.SEC.", 8) && p_dec->fmt_in.i_cat == VIDEO_ES )
     {
         OMX_INDEXTYPE index;
         omx_error = OMX_GetExtensionIndex(omx_handle, (OMX_STRING) "OMX.SEC.index.ThumbnailMode", &index);
@@ -1008,19 +882,18 @@ static int OpenDecoder( vlc_object_t *p_this )
     decoder_t *p_dec = (decoder_t*)p_this;
     int status;
 
-#ifdef __ANDROID__
-    if( p_dec->fmt_in.i_cat == AUDIO_ES )
-        return VLC_EGENERIC;
-#endif
-
     if( 0 || !GetOmxRole(p_dec->fmt_in.i_codec, p_dec->fmt_in.i_cat, false) )
         return VLC_EGENERIC;
 
     status = OpenGeneric( p_this, false );
     if(status != VLC_SUCCESS) return status;
 
-    p_dec->pf_decode_video = DecodeVideo;
-    p_dec->pf_decode_audio = DecodeAudio;
+    switch( p_dec->fmt_in.i_cat )
+    {
+        case AUDIO_ES: p_dec->pf_decode = DecodeAudio; break;
+        case VIDEO_ES: p_dec->pf_decode = DecodeVideo; break;
+        default: vlc_assert_unreachable();
+    }
     p_dec->pf_flush        = Flush;
 
     return VLC_SUCCESS;
@@ -1070,7 +943,6 @@ static int OpenGeneric( vlc_object_t *p_this, bool b_encode )
     /* Initialise the thread properties */
     if(!b_encode)
     {
-        p_dec->fmt_out.i_cat = p_dec->fmt_in.i_cat;
         p_dec->fmt_out.video = p_dec->fmt_in.video;
         p_dec->fmt_out.audio = p_dec->fmt_in.audio;
         p_dec->fmt_out.i_codec = 0;
@@ -1088,11 +960,7 @@ static int OpenGeneric( vlc_object_t *p_this, bool b_encode )
     p_sys->in.b_flushed = true;
     p_sys->in.p_fmt = &p_dec->fmt_in;
     OMX_FIFO_INIT (&p_sys->out.fifo, pInputPortPrivate );
-#if defined(USE_IOMX)
-    p_sys->out.b_direct = var_InheritBool(p_dec, CFG_PREFIX "dr");
-#else
     p_sys->out.b_direct = false;
-#endif
     p_sys->out.b_flushed = true;
     p_sys->out.p_fmt = &p_dec->fmt_out;
     p_sys->ports = 2;
@@ -1138,14 +1006,6 @@ static int OpenGeneric( vlc_object_t *p_this, bool b_encode )
     for(i = 0; i < p_sys->ports; i++)
     {
         OmxPort *p_port = &p_sys->p_ports[i];
-        if( p_port->p_hwbuf )
-        {
-            if( HwBuffer_AllocateBuffers( p_dec, p_port ) != 0 )
-            {
-                omx_error = OMX_ErrorInsufficientResources;
-                goto error;
-            }
-        }
         omx_error = AllocateBuffers( p_dec, p_port );
         CHECK_ERROR(omx_error, "AllocateBuffers failed (%x, %i)",
                     omx_error, (int)p_port->i_port_index );
@@ -1159,12 +1019,6 @@ static int OpenGeneric( vlc_object_t *p_this, bool b_encode )
     CHECK_ERROR(omx_error, "OMX_CommandStateSet Executing failed (%x)", omx_error );
     omx_error = WaitForSpecificOmxEvent(&p_sys->event_queue, OMX_EventCmdComplete, 0, 0, 0);
     CHECK_ERROR(omx_error, "Wait for Executing failed (%x)", omx_error );
-
-    if( p_sys->out.p_hwbuf && HwBuffer_Start( p_dec, &p_sys->out ) != 0 )
-    {
-        omx_error = OMX_ErrorUndefined;
-        goto error;
-    }
 
     /* Send codec configuration data */
     if( p_dec->fmt_in.i_extra )
@@ -1249,8 +1103,8 @@ static int OpenGeneric( vlc_object_t *p_this, bool b_encode )
     omx_error = GetPortDefinition(p_dec, &p_sys->out, p_sys->out.p_fmt);
     if(omx_error != OMX_ErrorNone) goto error;
 
-    PrintOmx(p_dec, p_sys->omx_handle, p_dec->p_sys->in.i_port_index);
-    PrintOmx(p_dec, p_sys->omx_handle, p_dec->p_sys->out.i_port_index);
+    PrintOmx(p_dec, p_sys->omx_handle, p_sys->in.i_port_index);
+    PrintOmx(p_dec, p_sys->omx_handle, p_sys->out.i_port_index);
 
     if(p_sys->b_error) goto error;
 
@@ -1278,15 +1132,12 @@ static OMX_ERRORTYPE PortReconfigure(decoder_t *p_dec, OmxPort *p_port)
     /* Sanity checking */
     OMX_INIT_STRUCTURE(definition);
     definition.nPortIndex = p_port->i_port_index;
-    omx_error = OMX_GetParameter(p_dec->p_sys->omx_handle, OMX_IndexParamPortDefinition,
+    omx_error = OMX_GetParameter(p_sys->omx_handle, OMX_IndexParamPortDefinition,
                                  &definition);
     if(omx_error != OMX_ErrorNone || (p_dec->fmt_in.i_cat == VIDEO_ES &&
        (!definition.format.video.nFrameWidth ||
        !definition.format.video.nFrameHeight)) )
         return OMX_ErrorUndefined;
-
-    if( p_port->p_hwbuf && HwBuffer_Stop( p_dec, p_port ) != 0 )
-        msg_Warn( p_dec, "HwBuffer_Stop failed" );
 
     omx_error = OMX_SendCommand( p_sys->omx_handle, OMX_CommandPortDisable,
                                  p_port->i_port_index, NULL);
@@ -1297,12 +1148,6 @@ static OMX_ERRORTYPE PortReconfigure(decoder_t *p_dec, OmxPort *p_port)
     CHECK_ERROR(omx_error, "FreeBuffers failed (%x, %i)",
                 omx_error, (int)p_port->i_port_index );
 
-    if( p_port->p_hwbuf )
-    {
-        HwBuffer_FreeBuffers( p_dec, p_port );
-        HwBuffer_Join( p_dec, p_port );
-    }
-
     omx_error = WaitForSpecificOmxEvent(&p_sys->event_queue, OMX_EventCmdComplete, 0, 0, 0);
     CHECK_ERROR(omx_error, "Wait for PortDisable failed (%x)", omx_error );
 
@@ -1310,15 +1155,7 @@ static OMX_ERRORTYPE PortReconfigure(decoder_t *p_dec, OmxPort *p_port)
     omx_error = GetPortDefinition(p_dec, &p_sys->out, p_sys->out.p_fmt);
     if(omx_error != OMX_ErrorNone) goto error;
 
-    if( p_port->p_hwbuf )
-    {
-        if( HwBuffer_AllocateBuffers( p_dec, p_port ) != 0 )
-        {
-            omx_error = OMX_ErrorInsufficientResources;
-            goto error;
-        }
-    }
-    else if( p_dec->fmt_in.i_cat != AUDIO_ES )
+    if( p_dec->fmt_in.i_cat != AUDIO_ES )
     {
         /* Don't explicitly set the new parameters that we got with
          * OMX_GetParameter above when using audio codecs.
@@ -1331,7 +1168,7 @@ static OMX_ERRORTYPE PortReconfigure(decoder_t *p_dec, OmxPort *p_port)
          * Only skipping this for audio codecs, to minimize the
          * change for current working configurations for video.
          */
-        omx_error = OMX_SetParameter(p_dec->p_sys->omx_handle, OMX_IndexParamPortDefinition,
+        omx_error = OMX_SetParameter(p_sys->omx_handle, OMX_IndexParamPortDefinition,
                                      &definition);
         CHECK_ERROR(omx_error, "OMX_SetParameter failed (%x : %s)",
                     omx_error, ErrorToString(omx_error));
@@ -1349,14 +1186,8 @@ static OMX_ERRORTYPE PortReconfigure(decoder_t *p_dec, OmxPort *p_port)
     omx_error = WaitForSpecificOmxEvent(&p_sys->event_queue, OMX_EventCmdComplete, 0, 0, 0);
     CHECK_ERROR(omx_error, "Wait for PortEnable failed (%x)", omx_error );
 
-    if( p_port->p_hwbuf && HwBuffer_Start( p_dec, p_port ) != 0 )
-    {
-        omx_error = OMX_ErrorUndefined;
-        goto error;
-    }
-
-    PrintOmx(p_dec, p_sys->omx_handle, p_dec->p_sys->in.i_port_index);
-    PrintOmx(p_dec, p_sys->omx_handle, p_dec->p_sys->out.i_port_index);
+    PrintOmx(p_dec, p_sys->omx_handle, p_sys->in.i_port_index);
+    PrintOmx(p_dec, p_sys->omx_handle, p_sys->out.i_port_index);
 
     OMX_DBG( "PortReconfigure(%d)::done", p_port->definition.eDir );
  error:
@@ -1386,14 +1217,6 @@ static int DecodeVideoOutput( decoder_t *p_dec, OmxPort *p_port, picture_t **pp_
         }
         if( decoder_UpdateVideoFormat( p_dec ) )
             goto error;
-
-        if( p_port->p_hwbuf )
-        {
-            if( HwBuffer_GetPic( p_dec, p_port, &p_pic ) != 0 )
-                goto error;
-            else
-                continue;
-        }
 
         if(p_header->nFilledLen)
         {
@@ -1538,32 +1361,28 @@ static void Flush( decoder_t *p_dec )
 /*****************************************************************************
  * DecodeVideo: Called to decode one frame
  *****************************************************************************/
-static picture_t *DecodeVideo( decoder_t *p_dec, block_t **pp_block )
+static int DecodeVideo( decoder_t *p_dec, block_t *p_block )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
-    picture_t *p_pic = NULL;
     OMX_ERRORTYPE omx_error;
     unsigned int i;
-    block_t *p_block;
 
-    if( !pp_block || !*pp_block )
-        return NULL;
-
-    p_block = *pp_block;
+    if( p_block == NULL ) /* No Drain */
+        return VLCDEC_SUCCESS;
 
     /* Check for errors from codec */
     if(p_sys->b_error)
     {
         msg_Dbg(p_dec, "error during decoding");
         block_Release( p_block );
-        return 0;
+        return VLCDEC_SUCCESS;
     }
 
     if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
     {
         block_Release( p_block );
         Flush( p_dec );
-        return NULL;
+        return VLCDEC_SUCCESS;
     }
 
     /* Use the aspect ratio provided by the input (ie read from packetizer).
@@ -1579,22 +1398,19 @@ static picture_t *DecodeVideo( decoder_t *p_dec, block_t **pp_block )
         p_dec->fmt_out.video.i_sar_den = p_dec->fmt_in.video.i_sar_den;
     }
 
-    /* Take care of decoded frames first */
-    if( DecodeVideoOutput( p_dec, &p_sys->out, &p_pic ) != 0 )
-        goto error;
-
     /* Loop as long as we haven't either got an input buffer (and cleared
      * *pp_block) or got an output picture */
     int max_polling_attempts = 100;
     int attempts = 0;
-    while( *pp_block && !p_pic ) {
+    while( p_block ) {
         bool b_reconfig = false;
 
-        if( DecodeVideoInput( p_dec, &p_sys->in, pp_block, 0, &b_reconfig ) != 0 )
+        if( DecodeVideoInput( p_dec, &p_sys->in, &p_block, 0, &b_reconfig ) != 0 )
             goto error;
 
+        picture_t *p_pic = NULL;
         /* If we don't have a p_pic from the first try. Try again */
-        if( !b_reconfig && !p_pic &&
+        if( !b_reconfig &&
             DecodeVideoOutput( p_dec, &p_sys->out, &p_pic ) != 0 )
             goto error;
 
@@ -1616,67 +1432,45 @@ static picture_t *DecodeVideo( decoder_t *p_dec, block_t **pp_block )
             }
         }
 
-        attempts++;
-        /* With opaque DR the output buffers are released by the
-           vout therefore we implement a timeout for polling in
-           order to avoid being indefinitely stalled in this loop, if
-           playback is paused. */
-        if( p_sys->out.p_hwbuf && attempts == max_polling_attempts ) {
-#ifdef USE_IOMX
-            picture_t *invalid_picture = NULL;
-            if( !decoder_UpdateVideoFormat(p_dec))
-                invalid_picture = decoder_NewPicture(p_dec);
-            if (invalid_picture) {
-                invalid_picture->date = VLC_TS_INVALID;
-                picture_sys_t *p_picsys = invalid_picture->p_sys;
-                p_picsys->hw.p_dec = NULL;
-                p_picsys->hw.i_index = -1;
-            } else {
-                /* If we cannot return a picture we must free the
-                   block since the decoder will proceed with the
-                   next block. */
-                block_Release(p_block);
-                *pp_block = NULL;
-            }
-            return invalid_picture;
-#endif
+        if( p_pic != NULL )
+        {
+            decoder_QueueVideo( p_dec, p_pic );
+            continue;
         }
+        attempts++;
     }
 
-    return p_pic;
+    return VLCDEC_SUCCESS;
 error:
     p_sys->b_error = true;
-    return NULL;
+    return VLCDEC_SUCCESS;
 }
 
 /*****************************************************************************
  * DecodeAudio: Called to decode one frame
  *****************************************************************************/
-block_t *DecodeAudio ( decoder_t *p_dec, block_t **pp_block )
+int DecodeAudio ( decoder_t *p_dec, block_t *p_block )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
-    block_t *p_buffer = NULL;
     OMX_BUFFERHEADERTYPE *p_header;
     OMX_ERRORTYPE omx_error;
-    block_t *p_block;
     unsigned int i;
 
-    if( !pp_block || !*pp_block ) return NULL;
-
-    p_block = *pp_block;
+    if( p_block == NULL ) /* No Drain */
+        return VLCDEC_SUCCESS;
 
     /* Check for errors from codec */
     if(p_sys->b_error)
     {
         msg_Dbg(p_dec, "error during decoding");
         block_Release( p_block );
-        return 0;
+        return VLCDEC_SUCCESS;
     }
 
     if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
     {
         block_Release( p_block );
-        date_Set( &p_sys->end_date, 0 );
+        date_Set( &p_sys->end_date, VLC_TICK_INVALID );
         if(!p_sys->in.b_flushed)
         {
             msg_Dbg(p_dec, "flushing");
@@ -1684,22 +1478,22 @@ block_t *DecodeAudio ( decoder_t *p_dec, block_t **pp_block )
                              p_sys->in.definition.nPortIndex, 0 );
         }
         p_sys->in.b_flushed = true;
-        return NULL;
+        return VLCDEC_SUCCESS;
     }
 
-    if( !date_Get( &p_sys->end_date ) )
+    if( date_Get( &p_sys->end_date ) == VLC_TICK_INVALID )
     {
         if( !p_block->i_pts )
         {
             /* We've just started the stream, wait for the first PTS. */
             block_Release( p_block );
-            return NULL;
+            return VLCDEC_SUCCESS;
         }
         date_Set( &p_sys->end_date, p_block->i_pts );
     }
 
     /* Take care of decoded frames first */
-    while(!p_buffer)
+    while (p_block != NULL)
     {
         unsigned int i_samples = 0;
 
@@ -1712,7 +1506,7 @@ block_t *DecodeAudio ( decoder_t *p_dec, block_t **pp_block )
         {
             if( decoder_UpdateAudioFormat( p_dec ) )
                 break;
-            p_buffer = decoder_NewAudioBuffer( p_dec, i_samples );
+            block_t *p_buffer = decoder_NewAudioBuffer( p_dec, i_samples );
             if( !p_buffer ) break; /* No audio buffer available */
 
             memcpy( p_buffer->p_buffer, p_header->pBuffer, p_buffer->i_buffer );
@@ -1726,25 +1520,25 @@ block_t *DecodeAudio ( decoder_t *p_dec, block_t **pp_block )
             p_buffer->i_pts = date_Get( &p_sys->end_date );
             p_buffer->i_length = date_Increment( &p_sys->end_date, i_samples ) -
                 p_buffer->i_pts;
+            decoder_QueueAudio( p_dec, p_buffer );
         }
 
         OMX_DBG( "FillThisBuffer %p, %p", (void *)p_header,
                  (void *)p_header->pBuffer );
         OMX_FIFO_GET(&p_sys->out.fifo, p_header);
         OMX_FillThisBuffer(p_sys->omx_handle, p_header);
-    }
 
+        /* Send the input buffer to the component */
+        OMX_FIFO_GET_TIMEOUT(&p_sys->in.fifo, p_header, 200000);
 
-    /* Send the input buffer to the component */
-    OMX_FIFO_GET_TIMEOUT(&p_sys->in.fifo, p_header, 200000);
+        if (p_header && p_header->nFlags & SENTINEL_FLAG) {
+            free(p_header);
+            goto reconfig;
+        }
 
-    if (p_header && p_header->nFlags & SENTINEL_FLAG) {
-        free(p_header);
-        goto reconfig;
-    }
+        if (!p_header)
+            continue;
 
-    if(p_header)
-    {
         p_header->nFilledLen = p_block->i_buffer;
         p_header->nOffset = 0;
         p_header->nFlags = OMX_BUFFERFLAG_ENDOFFRAME;
@@ -1775,7 +1569,7 @@ block_t *DecodeAudio ( decoder_t *p_dec, block_t **pp_block )
                  (void *)p_header->pBuffer, (unsigned)p_header->nFilledLen );
         OMX_EmptyThisBuffer(p_sys->omx_handle, p_header);
         p_sys->in.b_flushed = false;
-        *pp_block = NULL; /* Avoid being fed the same packet again */
+        p_block = NULL;
     }
 
 reconfig:
@@ -1789,10 +1583,10 @@ reconfig:
         CHECK_ERROR(omx_error, "PortReconfigure failed");
     }
 
-    return p_buffer;
+    return VLCDEC_SUCCESS;
 error:
     p_sys->b_error = true;
-    return NULL;
+    return VLCDEC_SUCCESS;
 }
 
 /*****************************************************************************
@@ -2010,589 +1804,3 @@ static OMX_ERRORTYPE OmxFillBufferDone( OMX_HANDLETYPE omx_handle,
 
     return OMX_ErrorNone;
 }
-
-#if defined(USE_IOMX)
-
-/* Life cycle of buffers when using IOMX direct rendering (HwBuffer):
- *
- * <- android display
- * DequeueThread owned++
- * -> OMX_FillThisBuffer
- * ...
- * <- FillBufferDone OMX_FIFO_PUT
- * ...
- * DecodeVideoOutput OMX_FIFO_GET
- * -> vlc core
- * ...
- * DisplayBuffer
- * -> android display owned--
- */
-
-/*****************************************************************************
- * HwBuffer_ChangeState
- *****************************************************************************/
-static void HwBuffer_ChangeState( decoder_t *p_dec, OmxPort *p_port,
-                                  int i_index, int i_state )
-{
-    VLC_UNUSED( p_dec );
-    p_port->p_hwbuf->i_states[i_index] = i_state;
-    if( i_state == BUF_STATE_OWNED )
-        p_port->p_hwbuf->i_owned++;
-    else
-        p_port->p_hwbuf->i_owned--;
-
-    OMX_DBG( "buffer[%d]: state -> %d, owned buffers: %u",
-             i_index, i_state, p_port->p_hwbuf->i_owned );
-}
-
-/*****************************************************************************
- * HwBuffer_Init
- *****************************************************************************/
-static void HwBuffer_Init( decoder_t *p_dec, OmxPort *p_port )
-{
-    VLC_UNUSED( p_dec );
-    OMX_ERRORTYPE omx_error;
-    picture_t *p_dummy_hwpic = NULL;
-
-    if( !p_port->b_direct || p_port->definition.eDir != OMX_DirOutput ||
-        p_port->p_fmt->i_cat != VIDEO_ES )
-        return;
-
-    msg_Dbg( p_dec, "HwBuffer_Init");
-
-    if( !(pf_enable_graphic_buffers && pf_get_graphic_buffer_usage &&
-          pf_get_hal_format &&
-          ((OMX_COMPONENTTYPE*)p_port->omx_handle)->UseBuffer) )
-    {
-        msg_Warn( p_dec, "direct output port enabled but can't find "
-                          "extra symbols, switch back to non direct" );
-        goto error;
-    }
-
-    p_dec->fmt_out.i_codec = VLC_CODEC_ANDROID_OPAQUE;
-    if (decoder_UpdateVideoFormat(p_dec) != 0
-     || (p_dummy_hwpic = decoder_NewPicture(p_dec)) == NULL)
-    {
-        msg_Err(p_dec, "Opaque Vout request failed");
-        goto error;
-    }
-    ANativeWindow *p_anw = p_dummy_hwpic->p_sys->hw.p_surface;
-    if( !p_anw )
-        goto error;
-
-    p_port->p_hwbuf = calloc(1, sizeof(HwBuffer));
-    if( !p_port->p_hwbuf )
-    {
-        goto error;
-    }
-    vlc_mutex_init (&p_port->p_hwbuf->lock);
-    vlc_cond_init (&p_port->p_hwbuf->wait);
-
-    if( android_loadNativeWindowPrivApi( &p_port->p_hwbuf->anwpriv ) )
-    {
-        msg_Warn( p_dec, "android_loadNativeWindowPrivApi failed" );
-        goto error;
-    }
-
-    p_port->p_hwbuf->window_priv = p_port->p_hwbuf->anwpriv.connect( p_anw );
-    if( !p_port->p_hwbuf->window_priv ) {
-        msg_Warn( p_dec, "connect failed" );
-        goto error;
-    }
-
-    omx_error = pf_enable_graphic_buffers( p_port->omx_handle,
-                                           p_port->i_port_index, OMX_TRUE );
-    CHECK_ERROR( omx_error, "can't enable graphic buffers" );
-
-    /* PortDefinition may change after pf_enable_graphic_buffers call */
-    omx_error = OMX_GetParameter( p_port->omx_handle,
-                                  OMX_IndexParamPortDefinition,
-                                  &p_port->definition );
-    CHECK_ERROR( omx_error, "OMX_GetParameter failed (GraphicBuffers) (%x : %s)",
-                 omx_error, ErrorToString(omx_error) );
-
-
-    msg_Dbg( p_dec, "direct output port enabled" );
-    if (p_dummy_hwpic != NULL)
-        picture_Release(p_dummy_hwpic);
-    return;
-error:
-    if (p_dummy_hwpic != NULL)
-        picture_Release(p_dummy_hwpic);
-    /* if HwBuffer_Init fails, we can fall back to non direct buffers */
-    HwBuffer_Destroy( p_dec, p_port );
-}
-
-/*****************************************************************************
- * HwBuffer_Destroy
- *****************************************************************************/
-static void HwBuffer_Destroy( decoder_t *p_dec, OmxPort *p_port )
-{
-    if( p_port->p_hwbuf )
-    {
-        if( p_port->p_hwbuf->window_priv )
-        {
-            HwBuffer_Stop( p_dec, p_port );
-            HwBuffer_FreeBuffers( p_dec, p_port );
-            HwBuffer_Join( p_dec, p_port );
-            p_port->p_hwbuf->anwpriv.disconnect( p_port->p_hwbuf->window_priv );
-            pf_enable_graphic_buffers( p_port->omx_handle,
-                                       p_port->i_port_index, OMX_FALSE );
-        }
-
-        vlc_cond_destroy( &p_port->p_hwbuf->wait );
-        vlc_mutex_destroy( &p_port->p_hwbuf->lock );
-        free( p_port->p_hwbuf );
-        p_port->p_hwbuf = NULL;
-    }
-    p_port->b_direct = false;
-}
-
-/*****************************************************************************
- * HwBuffer_AllocateBuffers
- *****************************************************************************/
-static int HwBuffer_AllocateBuffers( decoder_t *p_dec, OmxPort *p_port )
-{
-    decoder_sys_t *p_sys = p_dec->p_sys;
-    OMX_PARAM_PORTDEFINITIONTYPE *def = &p_port->definition;
-    unsigned int min_undequeued = 0;
-    unsigned int i = 0;
-    int colorFormat = def->format.video.eColorFormat;
-    OMX_ERRORTYPE omx_error;
-    OMX_U32 i_hw_usage;
-
-    if( !p_port->p_hwbuf )
-        return 0;
-
-    omx_error = pf_get_hal_format( p_sys->psz_component, &colorFormat );
-    if( omx_error != OMX_ErrorNone )
-    {
-        msg_Warn( p_dec, "pf_get_hal_format failed (Not fatal)" );
-    }
-
-    omx_error = pf_get_graphic_buffer_usage( p_port->omx_handle,
-                                             p_port->i_port_index,
-                                             &i_hw_usage );
-    if( omx_error != OMX_ErrorNone )
-    {
-        msg_Warn( p_dec, "pf_get_graphic_buffer_usage failed (Not fatal)" );
-        i_hw_usage = 0;
-    }
-
-    if( p_port->p_fmt->video.orientation != ORIENT_NORMAL )
-    {
-        int i_angle;
-
-        switch( p_port->p_fmt->video.orientation )
-        {
-            case ORIENT_ROTATED_90:
-                i_angle = 90;
-                break;
-            case ORIENT_ROTATED_180:
-                i_angle = 180;
-                break;
-            case ORIENT_ROTATED_270:
-                i_angle = 270;
-                break;
-            default:
-                i_angle = 0;
-        }
-        p_port->p_hwbuf->anwpriv.setOrientation( p_port->p_hwbuf->window_priv,
-                                                 i_angle );
-    }
-
-    if( p_port->p_hwbuf->anwpriv.setUsage( p_port->p_hwbuf->window_priv,
-                                           true, (int) i_hw_usage ) != 0 )
-    {
-        msg_Err( p_dec, "can't set usage" );
-        goto error;
-    }
-    if( p_port->p_hwbuf->anwpriv.setBuffersGeometry( p_port->p_hwbuf->window_priv,
-                                                     def->format.video.nFrameWidth,
-                                                     def->format.video.nFrameHeight,
-                                                     colorFormat ) != 0 )
-    {
-        msg_Err( p_dec, "can't set buffers geometry" );
-        goto error;
-    }
-
-    if( p_port->p_hwbuf->anwpriv.getMinUndequeued( p_port->p_hwbuf->window_priv,
-                                                   &min_undequeued ) != 0 )
-    {
-        msg_Err( p_dec, "can't get min_undequeued" );
-        goto error;
-    }
-
-    if( def->nBufferCountActual < def->nBufferCountMin + min_undequeued )
-    {
-        unsigned int new_frames_num = def->nBufferCountMin + min_undequeued;
-
-        OMX_DBG( "AllocateBuffers: video out wants more frames: %lu vs %u",
-                 p_port->definition.nBufferCountActual, new_frames_num );
-
-        p_port->definition.nBufferCountActual = new_frames_num;
-        omx_error = OMX_SetParameter( p_dec->p_sys->omx_handle,
-                                      OMX_IndexParamPortDefinition,
-                                      &p_port->definition );
-        CHECK_ERROR( omx_error, "OMX_SetParameter failed (%x : %s)",
-                     omx_error, ErrorToString(omx_error) );
-    }
-
-    if( p_port->p_hwbuf->anwpriv.setBufferCount( p_port->p_hwbuf->window_priv,
-                                                 def->nBufferCountActual ) != 0 )
-    {
-        msg_Err( p_dec, "can't set buffer_count" );
-        goto error;
-    }
-
-    p_port->p_hwbuf->i_buffers = p_port->definition.nBufferCountActual;
-    p_port->p_hwbuf->i_max_owned = p_port->p_hwbuf->i_buffers - min_undequeued;
-
-    p_port->p_hwbuf->pp_handles = calloc( p_port->p_hwbuf->i_buffers,
-                                          sizeof(void *) );
-    if( !p_port->p_hwbuf->pp_handles )
-        goto error;
-
-    p_port->p_hwbuf->i_states = calloc( p_port->p_hwbuf->i_buffers, sizeof(int) );
-    if( !p_port->p_hwbuf->i_states )
-        goto error;
-
-    p_port->p_hwbuf->inflight_picture = calloc( p_port->p_hwbuf->i_buffers,
-                                                sizeof(picture_sys_t*) );
-    if( !p_port->p_hwbuf->inflight_picture )
-        goto error;
-
-    for(i = 0; i < p_port->p_hwbuf->i_buffers; i++)
-    {
-        void *p_handle = NULL;
-
-        if( p_port->p_hwbuf->anwpriv.dequeue( p_port->p_hwbuf->window_priv,
-                                              &p_handle ) != 0 )
-        {
-            msg_Err( p_dec, "OMXHWBuffer_dequeue Fail" );
-            goto error;
-        }
-        p_port->p_hwbuf->pp_handles[i] = p_handle;
-    }
-    for(i = 0; i < p_port->p_hwbuf->i_max_owned; i++)
-        HwBuffer_ChangeState( p_dec, p_port, i, BUF_STATE_OWNED );
-    for(; i < p_port->p_hwbuf->i_buffers; i++)
-    {
-        OMX_DBG( "canceling buffer(%d)", i );
-        p_port->p_hwbuf->anwpriv.cancel( p_port->p_hwbuf->window_priv,
-                                         p_port->p_hwbuf->pp_handles[i] );
-    }
-
-    return 0;
-
-error:
-
-    msg_Err( p_dec, "HwBuffer_AllocateBuffers(%d) failed", def->eDir );
-    return -1;
-}
-
-/*****************************************************************************
- * HwBuffer_FreeBuffers
- *****************************************************************************/
-static int HwBuffer_FreeBuffers( decoder_t *p_dec, OmxPort *p_port )
-{
-    msg_Dbg( p_dec, "HwBuffer_FreeBuffers");
-
-    HWBUFFER_LOCK( p_port );
-
-    p_port->p_hwbuf->b_run = false;
-
-    if( p_port->p_hwbuf->pp_handles )
-    {
-        for(unsigned int i = 0; i < p_port->p_hwbuf->i_buffers; i++)
-        {
-            void *p_handle = p_port->p_hwbuf->pp_handles[i];
-
-            if( p_handle && p_port->p_hwbuf->i_states[i] == BUF_STATE_OWNED )
-            {
-                p_port->p_hwbuf->anwpriv.cancel( p_port->p_hwbuf->window_priv, p_handle );
-                HwBuffer_ChangeState( p_dec, p_port, i, BUF_STATE_NOT_OWNED );
-            }
-        }
-    }
-    HWBUFFER_BROADCAST( p_port );
-
-    HWBUFFER_UNLOCK( p_port );
-
-    p_port->p_hwbuf->i_buffers = 0;
-
-    free( p_port->p_hwbuf->pp_handles );
-    p_port->p_hwbuf->pp_handles = NULL;
-
-    free( p_port->p_hwbuf->i_states );
-    p_port->p_hwbuf->i_states = NULL;
-
-    free( p_port->p_hwbuf->inflight_picture );
-    p_port->p_hwbuf->inflight_picture = NULL;
-
-    return 0;
-}
-
-/*****************************************************************************
- * HwBuffer_Start
- *****************************************************************************/
-static int HwBuffer_Start( decoder_t *p_dec, OmxPort *p_port )
-{
-    OMX_BUFFERHEADERTYPE *p_header;
-
-    msg_Dbg( p_dec, "HwBuffer_Start" );
-    HWBUFFER_LOCK( p_port );
-
-    /* fill all owned buffers dequeued by HwBuffer_AllocatesBuffers */
-    for(unsigned int i = 0; i < p_port->p_hwbuf->i_buffers; i++)
-    {
-        p_header = p_port->pp_buffers[i];
-
-        if( p_header && p_port->p_hwbuf->i_states[i] == BUF_STATE_OWNED )
-        {
-            if( p_port->p_hwbuf->anwpriv.lock( p_port->p_hwbuf->window_priv,
-                                               p_header->pBuffer ) != 0 )
-            {
-                msg_Err( p_dec, "lock failed" );
-                HWBUFFER_UNLOCK( p_port );
-                return -1;
-            }
-            OMX_DBG( "FillThisBuffer %p, %p", (void *)p_header,
-                     (void *)p_header->pBuffer );
-            OMX_FillThisBuffer( p_port->omx_handle, p_header );
-        }
-    }
-
-    p_port->p_hwbuf->b_run = true;
-    if( vlc_clone( &p_port->p_hwbuf->dequeue_thread,
-                   DequeueThread, p_dec, VLC_THREAD_PRIORITY_LOW ) )
-    {
-        p_port->p_hwbuf->b_run = false;
-        HWBUFFER_UNLOCK( p_port );
-        return -1;
-    }
-
-    HWBUFFER_UNLOCK( p_port );
-
-    return 0;
-}
-
-/*****************************************************************************
- * HwBuffer_Stop: stop DequeueThread and invalidate all pictures that are sent
- * to vlc core. The thread can be stuck in dequeue, so don't
- * join it now since it can be unblocked later by HwBuffer_FreeBuffers.
- *****************************************************************************/
-static int HwBuffer_Stop( decoder_t *p_dec, OmxPort *p_port )
-{
-    VLC_UNUSED( p_dec );
-
-    msg_Dbg( p_dec, "HwBuffer_Stop" );
-    HWBUFFER_LOCK( p_port );
-
-    p_port->p_hwbuf->b_run = false;
-
-    /* invalidate and release all inflight pictures */
-    if( p_port->p_hwbuf->inflight_picture ) {
-        for( unsigned int i = 0; i < p_port->i_buffers; ++i ) {
-            picture_sys_t *p_picsys = p_port->p_hwbuf->inflight_picture[i];
-            if( p_picsys )
-            {
-                AndroidOpaquePicture_DetachDecoder(p_picsys);
-                p_port->p_hwbuf->inflight_picture[i] = NULL;
-            }
-        }
-    }
-
-    HWBUFFER_BROADCAST( p_port );
-
-    HWBUFFER_UNLOCK( p_port );
-
-    return 0;
-}
-
-/*****************************************************************************
- * HwBuffer_Join: join DequeueThread previously stopped by HwBuffer_Stop.
- *****************************************************************************/
-static int HwBuffer_Join( decoder_t *p_dec, OmxPort *p_port )
-{
-    VLC_UNUSED( p_dec );
-
-    if( p_port->p_hwbuf->dequeue_thread )
-    {
-        vlc_join( p_port->p_hwbuf->dequeue_thread, NULL );
-        p_port->p_hwbuf->dequeue_thread = NULL;
-    }
-    return 0;
-}
-
-/*****************************************************************************
- * HwBuffer_GetPic
- *****************************************************************************/
-static int HwBuffer_GetPic( decoder_t *p_dec, OmxPort *p_port,
-                            picture_t **pp_pic)
-{
-    int i_index = -1;
-    picture_t *p_pic;
-    picture_sys_t *p_picsys;
-    OMX_BUFFERHEADERTYPE *p_header;
-
-    OMX_FIFO_PEEK(&p_port->fifo, p_header);
-
-    if( !p_header )
-        return 0;
-
-    for(unsigned int i = 0; i < p_port->i_buffers; i++)
-    {
-        if( p_port->pp_buffers[i] == p_header )
-        {
-            i_index = i;
-            break;
-        }
-    }
-    if( i_index == -1 )
-    {
-        msg_Err( p_dec, "output buffer not found" );
-        return -1;
-    }
-
-    p_pic = decoder_NewPicture( p_dec );
-    if(!p_pic)
-    {
-        msg_Err( p_dec, "decoder_NewPicture failed" );
-        return -1;
-    }
-    p_pic->date = FromOmxTicks( p_header->nTimeStamp );
-
-    p_picsys = p_pic->p_sys;
-    p_picsys->hw.i_index = i_index;
-    p_picsys->hw.p_dec = p_dec;
-    p_picsys->hw.pf_release = ReleasePicture;
-
-    p_port->p_hwbuf->inflight_picture[i_index] = p_picsys;
-
-    *pp_pic = p_pic;
-    OMX_FIFO_GET( &p_port->fifo, p_header );
-    return 0;
-}
-
-/*****************************************************************************
- * HwBuffer_SetCrop
- *****************************************************************************/
-static void HwBuffer_SetCrop( decoder_t *p_dec, OmxPort *p_port,
-                              OMX_CONFIG_RECTTYPE *p_rect )
-{
-    VLC_UNUSED( p_dec );
-
-    p_port->p_hwbuf->anwpriv.setCrop( p_port->p_hwbuf->window_priv,
-                                      p_rect->nLeft, p_rect->nTop,
-                                      p_rect->nWidth, p_rect->nHeight );
-}
-
-/*****************************************************************************
- * DequeueThread
- *****************************************************************************/
-static void *DequeueThread( void *data )
-{
-    decoder_t *p_dec = data;
-    decoder_sys_t *p_sys = p_dec->p_sys;;
-    OmxPort *p_port = &p_sys->out;
-    unsigned int i;
-    int i_index = -1;
-    int err;
-    void *p_handle = NULL;
-    OMX_BUFFERHEADERTYPE *p_header;
-
-    msg_Dbg( p_dec, "DequeueThread running");
-    HWBUFFER_LOCK( p_port );
-    while( p_port->p_hwbuf->b_run )
-    {
-        while( p_port->p_hwbuf->b_run &&
-               p_port->p_hwbuf->i_owned >= p_port->p_hwbuf->i_max_owned )
-            HWBUFFER_WAIT( p_port );
-
-        if( !p_port->p_hwbuf->b_run ) continue;
-
-        HWBUFFER_UNLOCK( p_port );
-
-
-        /* The thread can be stuck here. It shouldn't happen since we make sure
-         * we call the dequeue function if there is at least one buffer
-         * available. */
-        err = p_port->p_hwbuf->anwpriv.dequeue( p_port->p_hwbuf->window_priv, &p_handle );
-        if( err == 0 )
-            err = p_port->p_hwbuf->anwpriv.lock( p_port->p_hwbuf->window_priv, p_handle );
-
-        HWBUFFER_LOCK( p_port );
-
-        if( err != 0 ) {
-            if( err != -EBUSY )
-                p_port->p_hwbuf->b_run = false;
-            continue;
-        }
-
-        if( !p_port->p_hwbuf->b_run )
-        {
-            p_port->p_hwbuf->anwpriv.cancel( p_port->p_hwbuf->window_priv, p_handle );
-            continue;
-        }
-
-        for(i = 0; i < p_port->i_buffers; i++)
-        {
-            if( p_port->pp_buffers[i]->pBuffer == p_handle )
-            {
-                i_index = i;
-                p_header = p_port->pp_buffers[i_index];
-                break;
-            }
-        }
-        if( i_index == -1 )
-        {
-            msg_Err( p_dec, "p_port->p_hwbuf->anwpriv.dequeue returned unknown handle" );
-            continue;
-        }
-
-        HwBuffer_ChangeState( p_dec, p_port, i_index, BUF_STATE_OWNED );
-
-        OMX_DBG( "FillThisBuffer %p, %p", (void *)p_header,
-                 (void *)p_header->pBuffer );
-        OMX_FillThisBuffer( p_sys->omx_handle, p_header );
-
-        HWBUFFER_BROADCAST( p_port );
-    }
-    HWBUFFER_UNLOCK( p_port );
-
-    msg_Dbg( p_dec, "DequeueThread stopped");
-    return NULL;
-}
-
-/*****************************************************************************
- * vout callbacks
- *****************************************************************************/
-static void ReleasePicture( decoder_t *p_dec, unsigned int i_index,
-                            bool b_render )
-{
-    decoder_sys_t *p_sys = p_dec->p_sys;
-    OmxPort *p_port = &p_sys->out;
-    void *p_handle;
-
-    p_handle = p_port->pp_buffers[i_index]->pBuffer;
-
-    OMX_DBG( "DisplayBuffer: %s %p",
-             b_render ? "render" : "cancel", p_handle );
-
-    if( !p_handle )
-    {
-        msg_Err( p_dec, "DisplayBuffer: buffer handle invalid" );
-        return;
-    }
-
-    if( b_render )
-        p_port->p_hwbuf->anwpriv.queue( p_port->p_hwbuf->window_priv, p_handle );
-    else
-        p_port->p_hwbuf->anwpriv.cancel( p_port->p_hwbuf->window_priv, p_handle );
-
-    HwBuffer_ChangeState( p_dec, p_port, i_index, BUF_STATE_NOT_OWNED );
-    HWBUFFER_BROADCAST( p_port );
-}
-
-#endif // USE_IOMX

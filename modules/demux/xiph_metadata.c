@@ -2,7 +2,6 @@
  * xiph_metadata.h: Vorbis Comment parser
  *****************************************************************************
  * Copyright © 2008-2013 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
  *          Jean-Baptiste Kempf <jb@videolan.org>
@@ -31,6 +30,7 @@
 #include <vlc_common.h>
 #include <vlc_charset.h>
 #include <vlc_strings.h>
+#include <vlc_arrays.h>
 #include <vlc_input.h>
 #include "xiph_metadata.h"
 
@@ -135,7 +135,7 @@ input_attachment_t* ParseFlacPicture( const uint8_t *p_data, size_t size,
     p_attachment = vlc_input_attachment_New( name, mime, description, p_data,
                                              size /* XXX: len instead? */ );
 
-    if( type < sizeof(pi_cover_score)/sizeof(pi_cover_score[0]) &&
+    if( type < ARRAY_SIZE(pi_cover_score) &&
         *i_cover_score < pi_cover_score[type] )
     {
         *i_cover_idx = i_attachments;
@@ -295,7 +295,7 @@ static void xiph_ParseCueSheetMeta( unsigned *pi_flags, vlc_meta_t *p_meta,
         unsigned m, s, f;
         if( sscanf( &psz_line[13], "%u:%u:%u", &m, &s, &f ) == 3 )
         {
-            p_seekpoint->i_time_offset = CLOCK_FREQ * (m * 60 + s) + f * CLOCK_FREQ/75;
+            p_seekpoint->i_time_offset = vlc_tick_from_sec(m * 60 + s) + vlc_tick_from_samples(f, 75);
             *pb_valid = true;
         }
     }
@@ -450,20 +450,19 @@ void vorbis_ParseComment( es_format_t *p_fmt, vlc_meta_t **pp_meta,
             /* Yeah yeah, such a clever idea, let's put xx/xx inside TRACKNUMBER
              * Oh, and let's not use TRACKTOTAL or TOTALTRACKS... */
             short unsigned u_track, u_total;
-            if( sscanf( &psz_comment[strlen("TRACKNUMBER=")], "%hu/%hu", &u_track, &u_total ) == 2 )
+            int nb_values = sscanf( &psz_comment[strlen("TRACKNUMBER=")], "%hu/%hu", &u_track, &u_total );
+            if( nb_values >= 1 )
             {
                 char str[6];
                 snprintf(str, 6, "%u", u_track);
                 vlc_meta_Set( p_meta, vlc_meta_TrackNumber, str );
                 hasMetaFlags |= XIPHMETA_TrackNum;
-                snprintf(str, 6, "%u", u_total);
-                vlc_meta_Set( p_meta, vlc_meta_TrackTotal, str );
-                hasMetaFlags |= XIPHMETA_TrackTotal;
-            }
-            else
-            {
-                vlc_meta_Set( p_meta, vlc_meta_TrackNumber, &psz_comment[strlen("TRACKNUMBER=")] );
-                hasMetaFlags |= XIPHMETA_TrackNum;
+                if( nb_values >= 2 )
+                {
+                    snprintf(str, 6, "%u", u_total);
+                    vlc_meta_Set( p_meta, vlc_meta_TrackTotal, str );
+                    hasMetaFlags |= XIPHMETA_TrackTotal;
+                }
             }
         }
         else IF_EXTRACT_ONCE("TRACKTOTAL=", TrackTotal )
@@ -539,8 +538,7 @@ void vorbis_ParseComment( es_format_t *p_fmt, vlc_meta_t **pp_meta,
                 {
                     p_seekpoint = getChapterEntry( i_chapt, &chapters_array );
                     if ( ! p_seekpoint ) goto next_comment;
-                    p_seekpoint->i_time_offset =
-                      (((int64_t)h * 3600 + (int64_t)m * 60 + (int64_t)s) * 1000 + ms) * 1000;
+                    p_seekpoint->i_time_offset = vlc_tick_from_sec(h * 3600 + m * 60 + s) + VLC_TICK_FROM_MS(ms);
                 }
             }
         }

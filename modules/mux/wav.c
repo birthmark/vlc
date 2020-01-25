@@ -2,7 +2,6 @@
  * wav.c: wav muxer module for vlc
  *****************************************************************************
  * Copyright (C) 2004, 2006 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *
@@ -61,7 +60,7 @@ static int Mux      ( sout_mux_t * );
 
 #define MAX_CHANNELS 6
 
-struct sout_mux_sys_t
+typedef struct
 {
     bool b_used;
     bool b_header;
@@ -77,7 +76,7 @@ struct sout_mux_sys_t
     uint32_t i_channel_mask;
     uint8_t i_chans_to_reorder;            /* do we need channel reordering */
     uint8_t pi_chan_table[AOUT_CHAN_MAX];
-};
+} sout_mux_sys_t;
 
 static const uint32_t pi_channels_in[] =
     { WAVE_SPEAKER_FRONT_LEFT, WAVE_SPEAKER_FRONT_RIGHT,
@@ -135,17 +134,17 @@ static int Control( sout_mux_t *p_mux, int i_query, va_list args )
     switch( i_query )
     {
         case MUX_CAN_ADD_STREAM_WHILE_MUXING:
-            pb_bool = (bool*)va_arg( args, bool * );
+            pb_bool = va_arg( args, bool * );
             *pb_bool = false;
             return VLC_SUCCESS;
 
         case MUX_GET_ADD_STREAM_WAIT:
-            pb_bool = (bool*)va_arg( args, bool * );
+            pb_bool = va_arg( args, bool * );
             *pb_bool = true;
             return VLC_SUCCESS;
 
         case MUX_GET_MIME:
-            ppsz = (char**)va_arg( args, char ** );
+            ppsz = va_arg( args, char ** );
             *ppsz = strdup( "audio/wav" );
             return VLC_SUCCESS;
 

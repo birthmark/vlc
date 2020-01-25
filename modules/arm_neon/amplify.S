@@ -18,19 +18,21 @@
  @ Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  @****************************************************************************/
 
+#include "asm.S"
+
 	.syntax	unified
-	.arm
+#if HAVE_AS_FPU_DIRECTIVE
 	.fpu	neon
+#endif
 	.text
 
 #define	DST	r0
 #define	SRC	r1
 #define	SIZE	r2
 	.align 2
-	.global amplify_float_arm_neon
-	.type	amplify_float_arm_neon, %function
-amplify_float_arm_neon:
+function amplify_float_arm_neon
 	cmp		SIZE,	#0
+	it		eq
 	bxeq		lr
 #ifdef __ARM_PCS
 	vmov		s0,	r3	@ softfp

@@ -1,6 +1,6 @@
 # libdca
 
-DCA_VERSION := 0.0.5
+DCA_VERSION := 0.0.6
 DCA_URL := $(VIDEOLAN)/libdca/$(DCA_VERSION)/libdca-$(DCA_VERSION).tar.bz2
 
 ifdef HAVE_FPU
@@ -19,12 +19,14 @@ $(TARBALLS)/libdca-$(DCA_VERSION).tar.bz2:
 
 libdca: libdca-$(DCA_VERSION).tar.bz2 .sum-dca
 	$(UNPACK)
-	#$(APPLY) $(SRC)/dca/libdca-llvm-gcc.patch
-	$(APPLY) $(SRC)/dca/libdca-inline.patch
-	$(UPDATE_AUTOCONFIG) && cd $(UNPACK_DIR) && mv config.guess config.sub autotools
+	$(UPDATE_AUTOCONFIG) && cd $(UNPACK_DIR)
+	$(APPLY) $(SRC)/dca/dca-fix-ln-s-call.patch
+	$(APPLY) $(SRC)/dca/dca-dts-install-link.patch
+	$(call pkg_static,"./libdca/libdca.pc.in")
 	$(MOVE)
 
 .dca: libdca
+	$(REQUIRE_GPL)
 	$(RECONF)
 	cd $< && $(HOSTVARS) CFLAGS="$(CFLAGS) -std=gnu89" ./configure $(HOSTCONF)
 	cd $< && $(MAKE) -C include install

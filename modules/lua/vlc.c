@@ -2,7 +2,6 @@
  * vlc.c: Generic lua interface functions
  *****************************************************************************
  * Copyright (C) 2007-2008 the VideoLAN team
- * $Id$
  *
  * Authors: Antoine Cellerier <dionoea at videolan tod org>
  *          Pierre d'Herbemont <pdherbemont # videolan.org>
@@ -70,14 +69,6 @@
 #define TELNETPWD_TEXT N_( "Password" )
 #define TELNETPWD_LONGTEXT N_( "A single password restricts access " \
     "to this interface." )
-#define RCHOST_TEXT N_("TCP command input")
-#define RCHOST_LONGTEXT N_("Accept commands over a socket rather than stdin. " \
-            "You can set the address and port the interface will bind to." )
-#define CLIHOST_TEXT N_("CLI input")
-#define CLIHOST_LONGTEXT N_( "Accept commands from this source. " \
-    "The CLI defaults to stdin (\"*console\"), but can also bind to a " \
-    "plain TCP socket (\"localhost:4212\") or use the telnet protocol " \
-    "(\"telnet://0.0.0.0:4212\")" )
 
 static int vlc_sd_probe_Open( vlc_object_t * );
 
@@ -95,7 +86,7 @@ vlc_module_begin ()
 
     add_submodule ()
         set_section( N_("Lua HTTP"), 0 )
-            add_password ( "http-password", NULL, PASS_TEXT, PASS_LONGTEXT, false )
+            add_password("http-password", NULL, PASS_TEXT, PASS_LONGTEXT)
             add_string ( "http-src",  NULL, SRC_TEXT,  SRC_LONGTEXT,  true )
             add_bool   ( "http-index", false, INDEX_TEXT, INDEX_LONGTEXT, true )
         set_capability( "interface", 0 )
@@ -104,28 +95,14 @@ vlc_module_begin ()
         set_description( N_("Lua HTTP") )
 
     add_submodule ()
-        set_section( N_("Lua CLI"), 0 )
-            add_string( "rc-host", NULL, RCHOST_TEXT, RCHOST_LONGTEXT, true )
-            add_string( "cli-host", NULL, CLIHOST_TEXT, CLIHOST_LONGTEXT, true )
-        set_capability( "interface", 25 )
-        set_description( N_("Command-line interface") )
-        set_callbacks( Open_LuaCLI, Close_LuaIntf )
-#ifndef _WIN32
-        add_shortcut( "luacli", "luarc", "cli", "rc" )
-#else
-        add_shortcut( "luacli", "luarc" )
-#endif
-
-    add_submodule ()
         set_section( N_("Lua Telnet"), 0 )
             add_string( "telnet-host", "localhost", TELNETHOST_TEXT,
                         TELNETHOST_LONGTEXT, true )
             add_integer( "telnet-port", TELNETPORT_DEFAULT, TELNETPORT_TEXT,
                          TELNETPORT_LONGTEXT, true )
                 change_integer_range( 1, 65535 )
-            add_password( "telnet-password", NULL, TELNETPWD_TEXT,
-
-                          TELNETPWD_LONGTEXT, true )
+            add_password("telnet-password", NULL, TELNETPWD_TEXT,
+                         TELNETPWD_LONGTEXT)
         set_capability( "interface", 0 )
         set_callbacks( Open_LuaTelnet, Close_LuaIntf )
         set_description( N_("Lua Telnet") )
@@ -135,26 +112,26 @@ vlc_module_begin ()
         set_shortname( N_( "Lua Meta Fetcher" ) )
         set_description( N_("Fetch meta data using lua scripts") )
         set_capability( "meta fetcher", 10 )
-        set_callbacks( FetchMeta, NULL )
+        set_callback( FetchMeta )
 
     add_submodule ()
         set_shortname( N_( "Lua Meta Reader" ) )
         set_description( N_("Read meta data using lua scripts") )
         set_capability( "meta reader", 10 )
-        set_callbacks( ReadMeta, NULL )
+        set_callback( ReadMeta )
 
     add_submodule ()
         add_shortcut( "luaplaylist" )
         set_shortname( N_("Lua Playlist") )
         set_description( N_("Lua Playlist Parser Interface") )
-        set_capability( "demux", 2 )
+        set_capability( "stream_filter", 302 )
         set_callbacks( Import_LuaPlaylist, Close_LuaPlaylist )
 
     add_submodule ()
         set_shortname( N_( "Lua Art" ) )
         set_description( N_("Fetch artwork using lua scripts") )
         set_capability( "art finder", 10 )
-        set_callbacks( FindArt, NULL )
+        set_callback( FindArt )
 
     add_submodule ()
         set_shortname( N_("Lua Extension") )
@@ -197,54 +174,46 @@ static int file_compare( const char **a, const char **b )
     return strcmp( *a, *b );
 }
 
-int vlclua_dir_list( const char *luadirname, char ***pppsz_dir_list )
+static char **vlclua_dir_list_append( char **restrict list, char *basedir,
+                                      const char *luadirname )
 {
-#define MAX_DIR_LIST_SIZE 5
-    *pppsz_dir_list = malloc(MAX_DIR_LIST_SIZE*sizeof(char *));
-    if (!*pppsz_dir_list)
+    if (unlikely(basedir == NULL))
+        return list;
+
+    if (likely(asprintf(list, "%s"DIR_SEP"lua"DIR_SEP"%s",
+                        basedir, luadirname) != -1))
+        list++;
+
+    free(basedir);
+    return list;
+}
+
+int vlclua_dir_list(const char *luadirname, char ***restrict listp)
+{
+    char **list = malloc(4 * sizeof(char *));
+    if (unlikely(list == NULL))
         return VLC_EGENERIC;
-    char **ppsz_dir_list = *pppsz_dir_list;
 
-    int i = 0;
-    char *datadir = config_GetUserDir( VLC_DATA_DIR );
+    *listp = list;
 
-    if( likely(datadir != NULL)
-     && likely(asprintf( &ppsz_dir_list[i], "%s"DIR_SEP"lua"DIR_SEP"%s",
-                         datadir, luadirname ) != -1) )
-        i++;
-    free( datadir );
+    /* Lua scripts in user-specific data directory */
+    list = vlclua_dir_list_append(list, config_GetUserDir(VLC_USERDATA_DIR),
+                                  luadirname);
 
-#if !(defined(__APPLE__) || defined(_WIN32))
-    char *psz_libpath = config_GetLibDir();
-    if( likely(psz_libpath != NULL) )
-    {
-        if( likely(asprintf( &ppsz_dir_list[i], "%s"DIR_SEP"lua"DIR_SEP"%s",
-                             psz_libpath, luadirname ) != -1) )
-            i++;
-        free( psz_libpath );
-    }
-#endif
+    char *libdir = config_GetSysPath(VLC_PKG_LIBEXEC_DIR, NULL);
+    char *datadir = config_GetSysPath(VLC_PKG_DATA_DIR, NULL);
+    bool both = libdir != NULL && datadir != NULL && strcmp(libdir, datadir);
 
-    char *psz_datapath = config_GetDataDir();
-    if( likely(psz_datapath != NULL) )
-    {
-        if( likely(asprintf( &ppsz_dir_list[i], "%s"DIR_SEP"lua"DIR_SEP"%s",
-                              psz_datapath, luadirname ) != -1) )
-            i++;
+    /* Tokenized Lua scripts in architecture-specific data directory */
+    list = vlclua_dir_list_append(list, libdir, luadirname);
 
-#if defined(__APPLE__)
-        if( likely(asprintf( &ppsz_dir_list[i],
-                             "%s"DIR_SEP"share"DIR_SEP"lua"DIR_SEP"%s",
-                             psz_datapath, luadirname ) != -1) )
-            i++;
-#endif
-        free( psz_datapath );
-    }
+    /* Source Lua Scripts in architecture-independent data directory */
+    if (both || libdir == NULL)
+        list = vlclua_dir_list_append(list, datadir, luadirname);
+    else
+        free(datadir);
 
-    ppsz_dir_list[i] = NULL;
-
-    assert( i < MAX_DIR_LIST_SIZE);
-
+    *list = NULL;
     return VLC_SUCCESS;
 }
 
@@ -450,8 +419,7 @@ void vlclua_read_options( vlc_object_t *p_this, lua_State *L,
             {
                 char *psz_option = strdup( lua_tostring( L, -1 ) );
                 msg_Dbg( p_this, "Option: %s", psz_option );
-                INSERT_ELEM( *pppsz_options, *pi_options, *pi_options,
-                             psz_option );
+                TAB_APPEND( *pi_options, *pppsz_options, psz_option );
             }
             else
             {
@@ -463,162 +431,91 @@ void vlclua_read_options( vlc_object_t *p_this, lua_State *L,
     lua_pop( L, 1 ); /* pop "options" */
 }
 
-#undef vlclua_playlist_add_internal
-int vlclua_playlist_add_internal( vlc_object_t *p_this, lua_State *L,
-                                    playlist_t *p_playlist,
-                                    input_item_t *p_parent, bool b_play )
+input_item_t *vlclua_read_input_item(vlc_object_t *obj, lua_State *L)
 {
-    int i_count = 0;
-    input_item_node_t *p_parent_node = NULL;
-
-    assert( p_parent || p_playlist );
-
-    /* playlist */
-    if( lua_istable( L, -1 ) )
+    if (!lua_istable(L, -1))
     {
-        if( p_parent ) p_parent_node = input_item_node_Create( p_parent );
-        lua_pushnil( L );
-        /* playlist nil */
-        while( lua_next( L, -2 ) )
-        {
-            /* playlist key item */
-            /* <Parse playlist item> */
-            if( lua_istable( L, -1 ) )
-            {
-                lua_getfield( L, -1, "path" );
-                /* playlist key item path */
-                if( lua_isstring( L, -1 ) )
-                {
-                    char         *psz_oldurl   = NULL;
-                    const char   *psz_path     = NULL;
-                    const char   *psz_name     = NULL;
-                    char        **ppsz_options = NULL;
-                    int           i_options    = 0;
-                    mtime_t       i_duration   = -1;
-                    input_item_t *p_input;
-
-                    /* Read path and name */
-                    if (p_parent) {
-                        psz_oldurl = input_item_GetURI( p_parent );
-                        msg_Dbg( p_this, "old path: %s", psz_oldurl );
-                    }
-                    psz_path = lua_tostring( L, -1 );
-                    msg_Dbg( p_this, "Path: %s", psz_path );
-                    lua_getfield( L, -2, "name" );
-                    /* playlist key item path name */
-                    if( lua_isstring( L, -1 ) )
-                    {
-                        psz_name = lua_tostring( L, -1 );
-                        msg_Dbg( p_this, "Name: %s", psz_name );
-                    }
-                    else
-                    {
-                        if( !lua_isnil( L, -1 ) )
-                            msg_Warn( p_this, "Playlist item name should be a string." );
-                    }
-
-                    /* Read duration */
-                    lua_getfield( L, -3, "duration" );
-                    /* playlist key item path name duration */
-                    if( lua_isnumber( L, -1 ) )
-                    {
-                        i_duration = (mtime_t)(lua_tonumber( L, -1 )*1e6);
-                    }
-                    else if( !lua_isnil( L, -1 ) )
-                    {
-                        msg_Warn( p_this, "Playlist item duration should be a number (in seconds)." );
-                    }
-                    lua_pop( L, 1 ); /* pop "duration" */
-
-                    /* playlist key item path name */
-
-                    /* Read options: item must be on top of stack */
-                    lua_pushvalue( L, -3 );
-                    /* playlist key item path name item */
-                    vlclua_read_options( p_this, L, &i_options, &ppsz_options );
-
-                    /* Create input item */
-                    p_input = input_item_NewExt( psz_path, psz_name, i_duration,
-                                                 ITEM_TYPE_UNKNOWN, ITEM_NET_UNKNOWN );
-                    input_item_AddOptions( p_input, i_options,
-                                           (const char **)ppsz_options,
-                                           VLC_INPUT_OPTION_TRUSTED );
-                    lua_pop( L, 3 ); /* pop "path name item" */
-                    /* playlist key item */
-
-                    /* Read meta data: item must be on top of stack */
-                    vlclua_read_meta_data( p_this, L, p_input );
-
-                    /* copy the original URL to the meta data, if "URL" is still empty */
-                    char* url = input_item_GetURL( p_input );
-                    if( url == NULL && p_parent)
-                    {
-                        EnsureUTF8( psz_oldurl );
-                        msg_Dbg( p_this, "meta-URL: %s", psz_oldurl );
-                        input_item_SetURL ( p_input, psz_oldurl );
-                    }
-                    free( psz_oldurl );
-                    free( url );
-
-                    /* copy the psz_name to the meta data, if "Title" is still empty */
-                    char* title = input_item_GetTitle( p_input );
-                    if( title == NULL )
-                        input_item_SetTitle ( p_input, psz_name );
-                    free( title );
-
-                    /* Read custom meta data: item must be on top of stack*/
-                    vlclua_read_custom_meta_data( p_this, L, p_input );
-
-                    /* Append item to playlist */
-                    if( p_parent ) /* Add to node */
-                    {
-                        input_item_CopyOptions( p_input, p_parent );
-                        input_item_node_AppendItem( p_parent_node, p_input );
-                    }
-                    else /* Play or Enqueue (preparse) */
-                        /* FIXME: playlist_AddInput() can fail */
-                        playlist_AddInput( p_playlist, p_input,
-                                           ( b_play ? PLAYLIST_GO : 0 ),
-                                           true );
-                    i_count ++; /* increment counter */
-                    vlc_gc_decref( p_input );
-                    while( i_options > 0 )
-                        free( ppsz_options[--i_options] );
-                    free( ppsz_options );
-                }
-                else
-                {
-                    lua_pop( L, 1 ); /* pop "path" */
-                    msg_Warn( p_this,
-                             "Playlist item's path should be a string" );
-                }
-                /* playlist key item */
-            }
-            else
-            {
-                msg_Warn( p_this, "Playlist item should be a table" );
-            }
-            /* <Parse playlist item> */
-            lua_pop( L, 1 ); /* pop the value, keep the key for
-                              * the next lua_next() call */
-            /* playlist key */
-        }
-        /* playlist */
-        if( p_parent )
-        {
-            if( i_count ) input_item_node_PostAndDelete( p_parent_node );
-            else input_item_node_Delete( p_parent_node );
-        }
+        msg_Warn(obj, "Playlist item should be a table" );
+        return NULL;
     }
-    else
+
+    lua_getfield(L, -1, "path");
+
+    /* playlist key item path */
+    if (!lua_isstring(L, -1))
     {
-        msg_Warn( p_this, "Playlist should be a table." );
+        lua_pop(L, 1); /* pop "path" */
+        msg_Warn(obj, "Playlist item's path should be a string");
+        return NULL;
     }
-    return i_count;
+
+    /* Read path and name */
+    const char *path = lua_tostring(L, -1);
+    msg_Dbg(obj, "Path: %s", path);
+
+    const char *name = NULL;
+    lua_getfield(L, -2, "name");
+    if (lua_isstring(L, -1))
+    {
+        name = lua_tostring(L, -1);
+        msg_Dbg(obj, "Name: %s", name);
+    }
+    else if (!lua_isnil(L, -1))
+        msg_Warn(obj, "Playlist item name should be a string" );
+
+    /* Read duration */
+    vlc_tick_t duration = INPUT_DURATION_INDEFINITE;
+
+    lua_getfield( L, -3, "duration" );
+    if (lua_isnumber(L, -1))
+        duration = vlc_tick_from_sec( lua_tonumber(L, -1) );
+    else if (!lua_isnil(L, -1))
+        msg_Warn(obj, "Playlist item duration should be a number (seconds)");
+    lua_pop( L, 1 ); /* pop "duration" */
+
+    /* Read options: item must be on top of stack */
+    char **optv = NULL;
+    int optc = 0;
+
+    lua_pushvalue(L, -3);
+    vlclua_read_options(obj, L, &optc, &optv);
+
+    /* Create input item */
+    input_item_t *item = input_item_NewExt(path, name, duration,
+                                           ITEM_TYPE_UNKNOWN,
+                                           ITEM_NET_UNKNOWN);
+    if (unlikely(item == NULL))
+        goto out;
+
+    input_item_AddOptions(item, optc, (const char **)optv,
+                          VLC_INPUT_OPTION_TRUSTED);
+    lua_pop(L, 3); /* pop "path name item" */
+    /* playlist key item */
+
+    /* Read meta data: item must be on top of stack */
+    vlclua_read_meta_data(obj, L, item);
+
+    /* copy the psz_name to the meta data, if "Title" is still empty */
+    char* title = input_item_GetTitle(item);
+    if (title == NULL)
+        input_item_SetTitle(item, name);
+    free(title);
+
+    /* Read custom meta data: item must be on top of stack*/
+    vlclua_read_custom_meta_data(obj, L, item);
+
+out:
+    while (optc > 0)
+           free(optv[--optc]);
+    free(optv);
+    return item;
 }
 
 static int vlc_sd_probe_Open( vlc_object_t *obj )
 {
+    if( lua_Disabled( obj ) )
+        return VLC_EGENERIC;
+
     vlc_dictionary_t name_d;
 
     char **ppsz_dir_list;
@@ -640,8 +537,7 @@ static int vlc_sd_probe_Open( vlc_object_t *obj )
             if( temp )
                 *temp = '\0';
 
-            if( vlc_dictionary_value_for_key( &name_d, *ppsz_file ) ==
-                    kVLCDictionaryNotFound )
+            if( !vlc_dictionary_has_key( &name_d, *ppsz_file ) )
                 vlc_dictionary_insert( &name_d, *ppsz_file, &name_d );
             free( *ppsz_file );
         }

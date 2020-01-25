@@ -2,7 +2,6 @@
  * freetype.c : Put text on the video, using freetype2
  *****************************************************************************
  * Copyright (C) 2002 - 2015 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Sigmund Augdal Helberg <dnumgis@videolan.org>
  *          Gildas Bazin <gbazin@videolan.org>
@@ -45,6 +44,9 @@
 # include "config.h"
 #endif
 
+/* Debug Stuff */
+//#define DEBUG_PLATFORM_FONTS
+
 #include "freetype.h"
 
 #ifdef __cplusplus
@@ -68,8 +70,8 @@ extern "C" {
 # define SYSTEM_DEFAULT_MONOSPACE_FONT_FILE "/psfonts/mtsansdk.ttf"
 # define SYSTEM_DEFAULT_MONOSPACE_FAMILY "Monotype Sans Duospace WT K"
 #elif defined( __ANDROID__ )
-# define SYSTEM_DEFAULT_FONT_FILE "/system/fonts/DroidSans-Bold.ttf"
-# define SYSTEM_DEFAULT_FAMILY "Droid Sans"
+# define SYSTEM_DEFAULT_FONT_FILE "/system/fonts/Roboto-Regular.ttf"
+# define SYSTEM_DEFAULT_FAMILY "sans-serif"
 # define SYSTEM_DEFAULT_MONOSPACE_FONT_FILE "/system/fonts/DroidSansMono.ttf"
 # define SYSTEM_DEFAULT_MONOSPACE_FAMILY "Monospace"
 #else
@@ -121,7 +123,7 @@ struct vlc_family_t
     vlc_family_t *p_next; /**< next family in the chain */
     /**
      * Human-readable name, usually requested.
-     * Can be fallback-xx for font attachments with no family name, and for fallback
+     * Can be fallback-xxxx for font attachments with no family name, and for fallback
      * fonts in Android.
      * This field is used only for loading the family fonts, and for debugging.
      * Apart from that, families are accessed either through the
@@ -145,6 +147,7 @@ vlc_family_t *FontConfig_GetFallbacks( filter_t *p_filter, const char *psz_famil
                                        uni_char_t codepoint );
 const vlc_family_t *FontConfig_GetFamily( filter_t *p_filter, const char *psz_family );
 int FontConfig_Prepare( filter_t *p_filter );
+void FontConfig_Unprepare( void );
 #endif /* FONTCONFIG */
 
 #if defined( _WIN32 )
@@ -193,7 +196,7 @@ char* Generic_Select( filter_t *p_filter, const char* family,
  * Creates a new family.
  *
  * \param psz_family the usual font family name, human-readable;
- *                   if NULL, will use "fallback-xx"[IN]
+ *                   if NULL, will use "fallback-xxxx"[IN]
  * \param pp_list the family list where to append the new family;
  *        can be NULL if not in a list, or if the family is to be appended to a fallback list
  *        within \ref filter_sys_t::fallback_map [IN]
@@ -203,7 +206,7 @@ char* Generic_Select( filter_t *p_filter, const char* family,
  *        appended there [IN]
  * \param psz_key specific key for the dictionary.
  *        If NULL will use whatever is used for the family name, whether it is the specified \p psz_family
- *        or "fallback-xx" [IN]
+ *        or "fallback-xxxx" [IN]
  *
  * \return the new family representation
  */
@@ -269,11 +272,13 @@ vlc_family_t *InitDefaultList( filter_t *p_filter, const char *const *ppsz_defau
                                int i_size );
 
 /* Debug Helpers */
+#ifdef DEBUG_PLATFORM_FONTS
 void DumpFamily( filter_t *p_filter, const vlc_family_t *p_family,
                  bool b_dump_fonts, int i_max_families );
 
 void DumpDictionary( filter_t *p_filter, const vlc_dictionary_t *p_dict,
                      bool b_dump_fonts, int i_max_families );
+#endif
 
 /* String helpers */
 char* ToLower( const char *psz_src );

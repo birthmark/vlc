@@ -6,7 +6,7 @@
  * Copyright (C) 2011 KO Myung-Hun
  *
  * Authors: KO Myung-Hun <komh@chollian.net>
- *          Rémi Denis-Courmont <rem # videolan.org>
+ *          Rémi Denis-Courmont
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published by
@@ -30,7 +30,9 @@
 #include <vlc_common.h>
 #include <vlc_network.h>
 
+#ifdef HAVE_ARPA_INET_H
 #include <arpa/inet.h>
+#endif
 
 #define _NI_MASK (NI_NUMERICHOST|NI_NUMERICSERV|NI_NOFQDN|NI_NAMEREQD|\
                   NI_DGRAM)

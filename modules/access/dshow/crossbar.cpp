@@ -2,7 +2,6 @@
  * crossbar.cpp : DirectShow access module for vlc
  *****************************************************************************
  * Copyright (C) 2002, 2004, 2009 VLC authors and VideoLAN
- * $Id$
  *
  * Author: Damien Fouilleul <damien dot fouilleul at laposte dot net>
  *
@@ -38,6 +37,8 @@
 
 #include "access.h"
 #include "vlc_dshow.h"
+
+namespace dshow {
 
 // Helper function to associate a crossbar pin name with the type.
 static const char * GetPhysicalPinName(long lType)
@@ -287,3 +288,5 @@ HRESULT FindCrossbarRoutes( vlc_object_t *p_this, access_sys_t *p_sys,
 
     return result;
 }
+
+} // namespace

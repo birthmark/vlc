@@ -19,8 +19,12 @@
  @ Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  @****************************************************************************/
 
+#include "asm.S"
+
 	.syntax unified
-	.fpu neon
+#if HAVE_AS_FPU_DIRECTIVE
+	.fpu	neon
+#endif
 	.text
 
 /* ARM */
@@ -80,9 +84,7 @@ coefficients:
     .short  -18432
 
 	.align 2
-	.global i420_rgb_neon
-	.type	i420_rgb_neon, %function
-i420_rgb_neon:
+function i420_rgb_neon
 	push		{r4-r8,r10-r11,lr}
 	vpush		{q4-q7}
 
@@ -93,6 +95,7 @@ i420_rgb_neon:
 	/* round the width to be a multiple of 16 */
 	ands		OPAD, WIDTH, #15
 	sub			WIDTH, WIDTH, OPAD
+	it		ne
 	addne		WIDTH, WIDTH, #16
 
 	/* init constants (scale value by 64) */
@@ -113,10 +116,12 @@ i420_rgb_neon:
 	sub			YPAD,	YPITCH,	WIDTH
 
 loop_row:
+	it	gt
 	movsgt	COUNT,	WIDTH
 	add		O2,	O1,	OPITCH
 	add		Y2,	Y1,	YPITCH
 	/* exit if all rows have been processed */
+	itt	le
 	vpople	{q4-q7}
 	pople	{r4-r8,r10-r11,pc}
 

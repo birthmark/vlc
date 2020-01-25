@@ -2,7 +2,6 @@
  * http.c
  *****************************************************************************
  * Copyright (C) 2001-2009 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Remi Denis-Courmont
@@ -38,7 +37,6 @@
 #include <vlc_block.h>
 
 
-#include <vlc_input.h>
 #include <vlc_httpd.h>
 
 /*****************************************************************************
@@ -72,8 +70,7 @@ vlc_module_begin ()
     set_subcategory( SUBCAT_SOUT_ACO )
     add_string( SOUT_CFG_PREFIX "user", "",
                 USER_TEXT, USER_LONGTEXT, true )
-    add_password( SOUT_CFG_PREFIX "pwd", "",
-                  PASS_TEXT, PASS_LONGTEXT, true )
+    add_password(SOUT_CFG_PREFIX "pwd", "", PASS_TEXT, PASS_LONGTEXT)
     add_string( SOUT_CFG_PREFIX "mime", "",
                 MIME_TEXT, MIME_LONGTEXT, true )
     add_bool( SOUT_CFG_PREFIX "metacube", false,
@@ -90,10 +87,9 @@ static const char *const ppsz_sout_options[] = {
 };
 
 static ssize_t Write( sout_access_out_t *, block_t * );
-static int Seek ( sout_access_out_t *, off_t  );
 static int Control( sout_access_out_t *, int, va_list );
 
-struct sout_access_out_sys_t
+typedef struct
 {
     /* host */
     httpd_host_t        *p_httpd_host;
@@ -108,7 +104,7 @@ struct sout_access_out_sys_t
     bool                b_header_complete;
     bool                b_metacube;
     bool                b_has_keyframes;
-};
+} sout_access_out_sys_t;
 
 /* Definitions for the Metacube2 protocol, used to communicate with Cubemap. */
 
@@ -277,8 +273,11 @@ static int Open( vlc_object_t *p_this )
 
     if( p_sys->b_metacube )
     {
-        httpd_header headers[] = {{ "Content-encoding", "metacube" }};
-        int err = httpd_StreamSetHTTPHeaders( p_sys->p_httpd_stream, headers, sizeof( headers ) / sizeof( httpd_header ) );
+        const httpd_header headers[] = {
+            { (char *)"Content-encoding", (char *)"metacube" }
+        };
+        int err = httpd_StreamSetHTTPHeaders( p_sys->p_httpd_stream, headers,
+                                              ARRAY_SIZE(headers) );
         if( err != VLC_SUCCESS )
         {
             free( p_sys );
@@ -292,7 +291,6 @@ static int Open( vlc_object_t *p_this )
     p_sys->b_header_complete  = false;
 
     p_access->pf_write       = Write;
-    p_access->pf_seek        = Seek;
     p_access->pf_control     = Control;
 
     return VLC_SUCCESS;
@@ -458,14 +456,4 @@ static ssize_t Write( sout_access_out_t *p_access, block_t *p_buffer )
     }
 
     return( i_err < 0 ? VLC_EGENERIC : i_len );
-}
-
-/*****************************************************************************
- * Seek: seek to a specific location in a file
- *****************************************************************************/
-static int Seek( sout_access_out_t *p_access, off_t i_pos )
-{
-    (void)i_pos;
-    msg_Warn( p_access, "HTTP sout access cannot seek" );
-    return VLC_EGENERIC;
 }

@@ -2,11 +2,10 @@
  * http_auth.c: HTTP authentication for clients as per RFC2617
  *****************************************************************************
  * Copyright (C) 2001-2008 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Christophe Massiot <massiot@via.ecp.fr>
- *          Rémi Denis-Courmont <rem # videolan.org>
+ *          Rémi Denis-Courmont
  *          Antoine Cellerier <dionoea at videolan dot org>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -357,7 +356,7 @@ int vlc_http_auth_ParseAuthenticationInfoHeader(
          */
         psz_digest = AuthDigest( p_this, p_auth, psz_method, psz_path,
                                  psz_username, psz_password );
-        if ( strcmp( psz_digest, psz_rspauth ) != 0 )
+        if( psz_digest == NULL || strcmp( psz_digest, psz_rspauth ) != 0 )
         {
             msg_Err( p_this, "HTTP Digest Access Authentication: server "
                              "replied with an invalid response digest "

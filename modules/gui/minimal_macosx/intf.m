@@ -1,8 +1,7 @@
 /*****************************************************************************
- * intf.m: MacOS X interface module
+ * intf.m: macOS minimal interface module
  *****************************************************************************
- * Copyright (C) 2002-2012 VLC authors and VideoLAN
- * $Id$
+ * Copyright (C) 2002-2017 VLC authors and VideoLAN
  *
  * Authors: Pierre d'Herbemont <pdherbemont # videolan.org>
  *          Felix Paul Kühne <fkuehne at videolan dot org>
@@ -25,19 +24,18 @@
 /*****************************************************************************
  * Preamble
  *****************************************************************************/
-#import <stdlib.h>                                      /* malloc(), free() */
-#import <sys/param.h>                                    /* for MAXPATHLEN */
+#import <stdlib.h>
 #import <string.h>
+#import <unistd.h>
+
 #ifdef HAVE_CONFIG_H
 # import "config.h"
 #endif
-#include <unistd.h>
 
-#include <vlc_common.h>
-#include <vlc_playlist.h>
-#include <vlc_vout_window.h>
+#import <vlc_common.h>
+#import <vlc_interface.h>
+#import <vlc_vout_window.h>
 
-#import "VLCMain.h"
 #import "VLCMinimalVoutWindow.h"
 
 /*****************************************************************************
@@ -53,11 +51,7 @@ int OpenIntf (vlc_object_t *p_this)
     intf_thread_t *p_intf = (intf_thread_t*) p_this;
     msg_Dbg(p_intf, "Using minimal macosx interface");
 
-    p_intf->p_sys = malloc(sizeof(intf_sys_t));
-    if (p_intf->p_sys == NULL)
-        return VLC_ENOMEM;
-
-    memset(p_intf->p_sys, 0, sizeof(*p_intf->p_sys));
+    p_intf->p_sys = NULL;
 
     Run(p_intf);
 
@@ -104,19 +98,17 @@ static void Run(intf_thread_t *p_intf)
 /*****************************************************************************
  * Vout window management
  *****************************************************************************/
-static int WindowControl(vout_window_t *, int i_query, va_list);
 
-int WindowOpen(vout_window_t *p_wnd, const vout_window_cfg_t *cfg)
+static int WindowEnable(vout_window_t *p_wnd, const vout_window_cfg_t *cfg)
 {
-    if (cfg->type != VOUT_WINDOW_TYPE_INVALID
-     && cfg->type != VOUT_WINDOW_TYPE_NSOBJECT)
-        return VLC_EGENERIC;
-
     @autoreleasepool {
+        VLCMinimalVoutWindow __block *o_window;
         NSRect proposedVideoViewPosition = NSMakeRect(cfg->x, cfg->y, cfg->width, cfg->height);
 
-        VLCMinimalVoutWindow *o_window = [[VLCMinimalVoutWindow alloc] initWithContentRect:proposedVideoViewPosition];
-        [o_window makeKeyAndOrderFront:nil];
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            o_window = [[VLCMinimalVoutWindow alloc] initWithContentRect:proposedVideoViewPosition];
+            [o_window makeKeyAndOrderFront:nil];
+        });
 
         if (!o_window) {
             msg_Err(p_wnd, "window creation failed");
@@ -125,67 +117,82 @@ int WindowOpen(vout_window_t *p_wnd, const vout_window_cfg_t *cfg)
 
         msg_Dbg(p_wnd, "returning video window with proposed position x=%i, y=%i, width=%i, height=%i", cfg->x, cfg->y, cfg->width, cfg->height);
         p_wnd->handle.nsobject = (void *)CFBridgingRetain([o_window contentView]);
-
-        p_wnd->type = VOUT_WINDOW_TYPE_NSOBJECT;
-        p_wnd->control = WindowControl;
     }
 
-    vout_window_SetFullScreen(p_wnd, cfg->is_fullscreen);
+    if (cfg->is_fullscreen)
+        vout_window_SetFullScreen(p_wnd, NULL);
     return VLC_SUCCESS;
 }
 
-static int WindowControl(vout_window_t *p_wnd, int i_query, va_list args)
-{
-    NSWindow * o_window = [(__bridge id)p_wnd->handle.nsobject window];
-    if (!o_window) {
-        msg_Err(p_wnd, "failed to recover cocoa window");
-        return VLC_EGENERIC;
-    }
-
-    switch (i_query) {
-        case VOUT_WINDOW_SET_STATE:
-        {
-            unsigned i_state = va_arg(args, unsigned);
-
-            [o_window setLevel: i_state];
-
-            return VLC_SUCCESS;
-        }
-        case VOUT_WINDOW_SET_SIZE:
-        {
-            @autoreleasepool {
-                NSRect theFrame = [o_window frame];
-                unsigned int i_width  = va_arg(args, unsigned int);
-                unsigned int i_height = va_arg(args, unsigned int);
-                theFrame.size.width = i_width;
-                theFrame.size.height = i_height;
-                [o_window setFrame: theFrame display: YES animate: YES];
-            }
-            return VLC_SUCCESS;
-        }
-        case VOUT_WINDOW_SET_FULLSCREEN:
-        {
-            @autoreleasepool {
-                int i_full = va_arg(args, int);
-
-                if (i_full)
-                    [o_window performSelectorOnMainThread:@selector(enterFullscreen) withObject:nil waitUntilDone:NO];
-                else
-                    [o_window performSelectorOnMainThread:@selector(leaveFullscreen) withObject:nil waitUntilDone:NO];
-            }
-            return VLC_SUCCESS;
-        }
-        default:
-            msg_Warn(p_wnd, "unsupported control query");
-            return VLC_EGENERIC;
-    }
-}
-
-void WindowClose(vout_window_t *p_wnd)
+static void WindowDisable(vout_window_t *p_wnd)
 {
     @autoreleasepool {
         NSWindow * o_window = [(__bridge id)p_wnd->handle.nsobject window];
         if (o_window)
             o_window = nil;
     }
+}
+
+static void WindowResize(vout_window_t *p_wnd,
+                         unsigned i_width, unsigned i_height)
+{
+    NSWindow* o_window = [(__bridge id)p_wnd->handle.nsobject window];
+
+    @autoreleasepool {
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            NSRect theFrame = [o_window frame];
+            theFrame.size.width = i_width;
+            theFrame.size.height = i_height;
+            [o_window setFrame:theFrame display:YES animate:YES];
+        });
+    }
+}
+
+static void WindowSetState(vout_window_t *p_wnd, unsigned state)
+{
+    NSWindow* o_window = [(__bridge id)p_wnd->handle.nsobject window];
+
+    [o_window setLevel:state];
+}
+
+static void WindowUnsetFullscreen(vout_window_t *p_wnd)
+{
+    NSWindow* o_window = [(__bridge id)p_wnd->handle.nsobject window];
+
+    @autoreleasepool {
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            [(VLCMinimalVoutWindow*)o_window leaveFullscreen];
+        });
+    }
+}
+
+static void WindowSetFullscreen(vout_window_t *p_wnd, const char *psz_id)
+{
+    NSWindow* o_window = [(__bridge id)p_wnd->handle.nsobject window];
+
+    @autoreleasepool {
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            [(VLCMinimalVoutWindow*)o_window enterFullscreen];
+        });
+    }
+}
+
+static void WindowClose(vout_window_t *);
+
+static const struct vout_window_operations ops = {
+    WindowEnable,
+    WindowDisable,
+    WindowResize,
+    NULL,
+    WindowSetState,
+    WindowUnsetFullscreen,
+    WindowSetFullscreen,
+    NULL,
+};
+
+int WindowOpen(vout_window_t *p_wnd)
+{
+    p_wnd->type = VOUT_WINDOW_TYPE_NSOBJECT;
+    p_wnd->ops = &ops;
+    return VLC_SUCCESS;
 }

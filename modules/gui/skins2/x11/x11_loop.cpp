@@ -2,7 +2,6 @@
  * x11_loop.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
- * $Id$
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -42,7 +41,7 @@
 #include "../events/evt_scroll.hpp"
 #include "../commands/async_queue.hpp"
 #include "../utils/var_bool.hpp"
-#include <vlc_keys.h>
+#include <vlc_actions.h>
 
 
 // Maximum interval between clicks for a double-click (in microsec)
@@ -161,7 +160,7 @@ inline int X11Loop::X11ModToMod( unsigned state )
 void X11Loop::handleX11Event()
 {
     XEvent event;
-    OSFactory *pOsFactory = OSFactory::instance( getIntf() );
+    X11Factory *pFactory = (X11Factory*)OSFactory::instance( getIntf() );
 
     // Look for the next event in the queue
     XNextEvent( XDISPLAY, &event );
@@ -179,15 +178,14 @@ void X11Loop::handleX11Event()
                 (Atom)event.xclient.data.l[0] == wm_delete )
             {
                 msg_Dbg( getIntf(), "Received WM_DELETE_WINDOW message" );
-                libvlc_Quit( getIntf()->obj.libvlc );
+                libvlc_Quit( vlc_object_instance(getIntf()) );
             }
         }
         return;
     }
 
     // Find the window to which the event is sent
-    GenericWindow *pWin =
-        ((X11Factory*)pOsFactory)->m_windowMap[event.xany.window];
+    GenericWindow *pWin = pFactory->m_windowMap[event.xany.window];
 
     if( !pWin )
     {
@@ -223,7 +221,8 @@ void X11Loop::handleX11Event()
             // Don't trust the position in the event, it is
             // out of date. Get the actual current position instead
             int x, y;
-            pOsFactory->getMousePos( x, y );
+            pFactory->getMousePos( x, y );
+            pFactory->setPointerWindow( event.xany.window );
             EvtMotion evt( getIntf(), x, y );
             pWin->processEvent( evt );
             break;
@@ -254,9 +253,9 @@ void X11Loop::handleX11Event()
             if( event.type == ButtonPress &&
                 event.xbutton.button == 1 )
             {
-                mtime_t time = mdate();
+                vlc_tick_t time = vlc_tick_now();
                 int x, y;
-                pOsFactory->getMousePos( x, y );
+                pFactory->getMousePos( x, y );
                 if( time - m_lastClickTime < m_dblClickDelay &&
                     x == m_lastClickPosX && y == m_lastClickPosY )
                 {
@@ -343,8 +342,7 @@ void X11Loop::handleX11Event()
             std::string type = XGetAtomName( XDISPLAY, event.xclient.message_type );
 
             // Find the DnD object for this window
-            X11DragDrop *pDnd =
-                ((X11Factory*)pOsFactory)->m_dndMap[event.xany.window];
+            X11DragDrop *pDnd = pFactory->m_dndMap[event.xany.window];
             if( !pDnd )
             {
                 msg_Err( getIntf(), "no associated D&D object" );
@@ -361,6 +359,26 @@ void X11Loop::handleX11Event()
                 pDnd->dndDrop( event.xclient.data.l );
             break;
         }
+
+        case SelectionNotify:
+        {
+            // Check XConvertSelection completion
+            if( event.xselection.property == None )
+            {
+                msg_Err( getIntf(), "Convertion failed for Drag&Drop" );
+                return;
+            }
+
+            // Find the DnD object for this window
+            X11DragDrop *pDnd = pFactory->m_dndMap[event.xselection.requestor];
+            if( !pDnd )
+            {
+                msg_Err( getIntf(), "no associated D&D object" );
+                return;
+            }
+            pDnd->dndSelectionNotify( );
+        }
+
     }
 }
 

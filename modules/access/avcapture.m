@@ -39,8 +39,17 @@
 #include <vlc_dialog.h>
 #include <vlc_access.h>
 
+#import <AvailabilityMacros.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
+
+#ifndef MAC_OS_X_VERSION_10_14
+@interface AVCaptureDevice (AVCaptureDeviceAuthorizationSince10_14)
+
++ (void)requestAccessForMediaType:(AVMediaType)mediaType completionHandler:(void (^)(BOOL granted))handler API_AVAILABLE(macos(10.14), ios(7.0));
+
+@end
+#endif
 
 /*****************************************************************************
 * Local prototypes
@@ -59,7 +68,7 @@ vlc_module_begin ()
    set_category(CAT_INPUT)
    set_subcategory(SUBCAT_INPUT_ACCESS)
    add_shortcut("avcapture")
-   set_capability("access_demux", 10)
+   set_capability("access", 0)
    set_callbacks(Open, Close)
 vlc_module_end ()
 
@@ -73,8 +82,8 @@ vlc_module_end ()
 
     CVImageBufferRef    currentImageBuffer;
 
-    mtime_t             currentPts;
-    mtime_t             previousPts;
+    vlc_tick_t          currentPts;
+    vlc_tick_t          previousPts;
     size_t              bytesPerRow;
 
     long                timeScale;
@@ -87,9 +96,9 @@ vlc_module_end ()
 - (int)width;
 - (int)height;
 - (void)getVideoDimensions:(CMSampleBufferRef)sampleBuffer;
-- (mtime_t)currentPts;
+- (vlc_tick_t)currentPts;
 - (void)captureOutput:(AVCaptureOutput *)captureOutput didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection;
-- (mtime_t)copyCurrentFrameToBuffer:(void *)buffer;
+- (vlc_tick_t)copyCurrentFrameToBuffer:(void *)buffer;
 @end
 
 @implementation VLCAVDecompressedVideoOutput : AVCaptureVideoDataOutput
@@ -152,9 +161,9 @@ vlc_module_end ()
     }
 }
 
--(mtime_t)currentPts
+-(vlc_tick_t)currentPts
 {
-    mtime_t pts;
+    vlc_tick_t pts;
 
     if ( !currentImageBuffer || currentPts == previousPts )
         return 0;
@@ -181,7 +190,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         @synchronized (self) {
             imageBufferToRelease = currentImageBuffer;
             currentImageBuffer = videoFrame;
-            currentPts = (mtime_t)presentationtimestamp.value;
+            currentPts = (vlc_tick_t)presentationtimestamp.value;
             timeScale = (long)presentationtimestamp.timescale;
         }
         
@@ -189,10 +198,10 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     }
 }
 
-- (mtime_t)copyCurrentFrameToBuffer:(void *)buffer
+- (vlc_tick_t)copyCurrentFrameToBuffer:(void *)buffer
 {
     CVImageBufferRef imageBuffer;
-    mtime_t pts;
+    vlc_tick_t pts;
 
     void *pixels;
 
@@ -228,7 +237,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 * Struct
 *****************************************************************************/
 
-struct demux_sys_t
+typedef struct demux_sys_t
 {
     CFTypeRef _Nullable             session;       // AVCaptureSession
     CFTypeRef _Nullable             device;        // AVCaptureDevice
@@ -237,7 +246,7 @@ struct demux_sys_t
     es_format_t                     fmt;
     int                             height, width;
     BOOL                            b_es_setup;
-};
+} demux_sys_t;
 
 /*****************************************************************************
 * Open:
@@ -257,8 +266,7 @@ static int Open(vlc_object_t *p_this)
 
     char                    *psz_uid = NULL;
 
-    /* Only when selected */
-    if ( *p_demux->psz_access == '\0' )
+    if (p_demux->out == NULL)
         return VLC_EGENERIC;
 
     @autoreleasepool {
@@ -271,9 +279,6 @@ static int Open(vlc_object_t *p_this)
         /* Set up p_demux */
         p_demux->pf_demux = Demux;
         p_demux->pf_control = Control;
-        p_demux->info.i_update = 0;
-        p_demux->info.i_title = 0;
-        p_demux->info.i_seekpoint = 0;
 
         p_demux->p_sys = p_sys = calloc(1, sizeof(demux_sys_t));
         if ( !p_sys )
@@ -325,13 +330,31 @@ static int Open(vlc_object_t *p_this)
             goto error;
         }
 
+        if (@available(macOS 10.14, *)) {
+            msg_Dbg(p_demux, "Check user consent for access to the video device");
+
+            dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+            __block bool accessGranted = NO;
+            [AVCaptureDevice requestAccessForMediaType: AVMediaTypeVideo completionHandler:^(BOOL granted) {
+                accessGranted = granted;
+                dispatch_semaphore_signal(sema);
+            } ];
+            dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+            dispatch_release(sema);
+            if (!accessGranted) {
+                msg_Err(p_demux, "Can't use the video device as access has not been granted by the user");
+                goto error;
+            }
+        }
+
         input = [AVCaptureDeviceInput deviceInputWithDevice:(__bridge AVCaptureDevice *)p_sys->device error:&o_returnedError];
 
         if ( !input )
         {
-            msg_Err(p_demux, "can't create a valid capture input facility (%ld)", [o_returnedError code]);
+            msg_Err(p_demux, "can't create a valid capture input facility: %s (%ld)",[[o_returnedError localizedDescription] UTF8String], [o_returnedError code]);
             goto error;
         }
+
 
         int chroma = VLC_CODEC_RGB32;
 
@@ -412,7 +435,7 @@ static int Demux(demux_t *p_demux)
             {
                 /* Nothing to display yet, just forget */
                 block_Release(p_block);
-                msleep(10000);
+                vlc_tick_sleep(VLC_HARD_MIN_SLEEP);
                 return 1;
             }
             else if ( !p_sys->b_es_setup )
@@ -427,7 +450,7 @@ static int Demux(demux_t *p_demux)
             }
         }
         
-        es_out_Control(p_demux->out, ES_OUT_SET_PCR, p_block->i_pts);
+        es_out_SetPCR(p_demux->out, p_block->i_pts);
         es_out_Send(p_demux->out, p_sys->p_es_video, p_block);
         
     }
@@ -440,7 +463,6 @@ static int Demux(demux_t *p_demux)
 static int Control(demux_t *p_demux, int i_query, va_list args)
 {
     bool        *pb;
-    int64_t     *pi64;
 
     switch( i_query )
     {
@@ -449,18 +471,17 @@ static int Control(demux_t *p_demux, int i_query, va_list args)
         case DEMUX_CAN_SEEK:
         case DEMUX_SET_PAUSE_STATE:
         case DEMUX_CAN_CONTROL_PACE:
-           pb = (bool*)va_arg(args, bool *);
+           pb = va_arg(args, bool *);
            *pb = false;
            return VLC_SUCCESS;
 
         case DEMUX_GET_PTS_DELAY:
-           pi64 = (int64_t*)va_arg(args, int64_t *);
-           *pi64 = INT64_C(1000) * var_InheritInteger(p_demux, "live-caching");
+           *va_arg(args, vlc_tick_t *) =
+               VLC_TICK_FROM_MS(var_InheritInteger(p_demux, "live-caching"));
            return VLC_SUCCESS;
 
         case DEMUX_GET_TIME:
-            pi64 = (int64_t*)va_arg(args, int64_t *);
-            *pi64 = mdate();
+            *va_arg(args, vlc_tick_t *) = vlc_tick_now();
             return VLC_SUCCESS;
 
         default:

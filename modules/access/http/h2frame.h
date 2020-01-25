@@ -52,11 +52,7 @@ vlc_h2_frame_goaway(uint_fast32_t last_stream_id, uint_fast32_t error_code);
 struct vlc_h2_frame *
 vlc_h2_frame_window_update(uint_fast32_t stream_id, uint_fast32_t credit);
 
-struct vlc_object_t;
-
-void vlc_h2_frame_dump(struct vlc_object_t *, const struct vlc_h2_frame *,
-                       const char *);
-#define vlc_h2_frame_dump(o, f, m) vlc_h2_frame_dump(VLC_OBJECT(o), f, m)
+void vlc_h2_frame_dump(void *, const struct vlc_h2_frame *, const char *);
 
 enum vlc_h2_error {
     VLC_H2_NO_ERROR,
@@ -109,6 +105,7 @@ struct vlc_h2_parser_cbs
     void (*error)(void *ctx, uint_fast32_t code);
     int  (*reset)(void *ctx, uint_fast32_t last_seq, uint_fast32_t code);
     void (*window_status)(void *ctx, uint32_t *rcwd);
+    void (*window_update)(void *ctx, uint_fast32_t credit);
 
     void *(*stream_lookup)(void *ctx, uint_fast32_t id);
     int  (*stream_error)(void *ctx, uint_fast32_t id, uint_fast32_t code);
@@ -117,6 +114,7 @@ struct vlc_h2_parser_cbs
     int  (*stream_data)(void *ctx, struct vlc_h2_frame *f);
     void (*stream_end)(void *ctx);
     int  (*stream_reset)(void *ctx, uint_fast32_t code);
+    void (*stream_window_update)(void *ctx, uint_fast32_t credit);
 };
 
 struct vlc_h2_parser *vlc_h2_parse_init(void *ctx,
@@ -128,11 +126,9 @@ void vlc_h2_parse_destroy(struct vlc_h2_parser *);
 
 const uint8_t *vlc_h2_frame_data_get(const struct vlc_h2_frame *f,
                                      size_t *restrict len);
-#if (__STDC_VERSION__ >= 201112L)
 #define vlc_h2_frame_data_get(f, l) \
     _Generic((f), \
         const struct vlc_h2_frame *: (vlc_h2_frame_data_get)(f, l), \
         struct vlc_h2_frame *: (uint8_t *)(vlc_h2_frame_data_get)(f, l))
-#endif
 
 /** @} */

@@ -25,10 +25,12 @@
 
 namespace adaptive
 {
+    class SharedResources;
+
     class Retrieve
     {
         public:
-            static block_t * HTTP(vlc_object_t *, const std::string &uri);
+            static block_t * HTTP(SharedResources *, const std::string &uri);
     };
 }
 

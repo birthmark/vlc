@@ -10,8 +10,19 @@ ifeq ($(call need_pkg,"mad"),)
 PKGS_FOUND += mad
 endif
 
+ifdef HAVE_WIN32
+ifeq ($(ARCH),arm)
+MAD_CONF += --disable-aso
+endif
+endif
+
 $(TARBALLS)/libmad-$(MAD_VERSION).tar.gz:
 	$(call download,$(MAD_URL))
+
+LIBMAD_VARS := CFLAGS="$(CFLAGS) -O3"
+ifdef HAVE_IOS
+LIBMAD_VARS += CCAS="$(AS)"
+endif
 
 .sum-mad: libmad-$(MAD_VERSION).tar.gz
 
@@ -31,14 +42,12 @@ endif
 	$(APPLY) $(SRC)/mad/mad-mips-h-constraint-removal.patch
 	$(APPLY) $(SRC)/mad/mad-foreign.patch
 	$(APPLY) $(SRC)/mad/check-bitstream-length.patch
+	cd $(UNPACK_DIR) && rm -rf aclocal.m4 Makefile.in
 	$(MOVE)
 
 .mad: libmad
+	$(REQUIRE_GPL)
 	$(RECONF)
-ifdef HAVE_IOS
-	cd $< && $(HOSTVARS) CCAS="$(AS)" CFLAGS="$(CFLAGS) -O3" ./configure $(HOSTCONF) $(MAD_CONF)
-else
-	cd $< && $(HOSTVARS) CFLAGS="$(CFLAGS) -O3" ./configure $(HOSTCONF) $(MAD_CONF)
-endif
+	cd $< && $(HOSTVARS) $(LIBMAD_VARS) ./configure $(HOSTCONF) $(MAD_CONF)
 	cd $< && $(MAKE) install
 	touch $@

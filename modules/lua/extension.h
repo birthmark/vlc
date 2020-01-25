@@ -2,7 +2,6 @@
  * extension.h: Lua Extensions (meta data, web information, ...)
  *****************************************************************************
  * Copyright (C) 2009-2010 VideoLAN and authors
- * $Id$
  *
  * Authors: Jean-Philippe André < jpeg # videolan.org >
  *
@@ -28,6 +27,8 @@
 #include <vlc_arrays.h>
 #include <vlc_dialog.h>
 
+#define WATCH_TIMER_PERIOD    VLC_TICK_FROM_SEC(10) ///< 10s period for the timer
+
 /* List of available commands */
 typedef enum
 {
@@ -49,18 +50,6 @@ typedef enum
     LUA_TEXT
 } lua_datatype_e;
 
-struct extensions_manager_sys_t
-{
-    /* List of activated extensions */
-    DECL_ARRAY( extension_t* ) activated_extensions;
-
-    /* Lock for this list */
-    vlc_mutex_t lock;
-
-    /* Flag indicating that the module is about to be unloaded */
-    bool b_killed;
-};
-
 struct extension_sys_t
 {
     /* Extension general */
@@ -77,9 +66,9 @@ struct extension_sys_t
     vlc_mutex_t running_lock;
     vlc_cond_t wait;
 
-    /* The input this extension should use for vlc.input
+    /* The item this extension should use for vlc.input
      * or NULL if it should use playlist's current input */
-    struct input_thread_t *p_input;
+    struct input_item_t *p_item;
 
     extensions_manager_t *p_mgr;     ///< Parent
     /* Queue of commands to execute */
@@ -95,12 +84,15 @@ struct extension_sys_t
     vlc_timer_t timer; ///< This timer makes sure Lua never gets stuck >5s
 
     bool b_exiting;
+
+    bool b_thread_running; //< Only accessed out of the extension thread.
+    bool b_activated; ///< Protected by the command lock
 };
 
 /* Extensions: manager functions */
 int Activate( extensions_manager_t *p_mgr, extension_t * );
-bool IsActivated( extensions_manager_t *p_mgr, extension_t * );
 int Deactivate( extensions_manager_t *p_mgr, extension_t * );
+bool QueueDeactivateCommand( extension_t *p_ext );
 void KillExtension( extensions_manager_t *p_mgr, extension_t *p_ext );
 int PushCommand__( extension_t *ext, bool unique, command_type_e cmd, va_list options );
 static inline int PushCommand( extension_t *ext, int cmd, ... )
@@ -119,8 +111,6 @@ static inline int PushCommandUnique( extension_t *ext, int cmd, ... )
     va_end( args );
     return i_ret;
 }
-bool LockExtension( extension_t *p_ext );
-void UnlockExtension( extension_t *p_ext );
 
 /* Lua specific functions */
 void vlclua_extension_set( lua_State *L, extension_t * );

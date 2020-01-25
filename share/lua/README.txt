@@ -86,25 +86,33 @@ w:get_value(): Return identifier of the selected item. Corresponds to the text v
 w:clear(): Clear a list or drop_down widget. After that, all values previously added are lost.
 w:get_selection(): Retrieve a table representing the current selection. Keys are the ids, values are the texts associated. Applies to: list.
 
+errno
+-----
+List of potential errors. It contains the following values:
+  .ENOENT: No such file or directory
+  .EEXIST: File exists
+  .EACCESS: Permission denied
+  .EINVAL: Invalid argument
+
 
 Extension
 ---------
 deactivate(): Deactivate current extension (after the end of the current function).
 
-HTTPd
------
-http( host, port, [cert, key, ca, crl]): create a new HTTP (SSL) daemon.
+HTTPd (only usable for interfaces)
+----------------------------------
+httpd(): create a new HTTP daemon.
 
-local h = vlc.httpd( "localhost", 8080 )
+local h = vlc.httpd()
 h:handler( url, user, password, callback, data ) -- add a handler for given url. If user and password are non nil, they will be used to authenticate connecting clients. callback will be called to handle connections. The callback function takes 7 arguments: data, url, request, type, in, addr, host. It returns the reply as a string.
 h:file( url, mime, user, password, callback, data ) -- add a file for given url with given mime type. If user and password are non nil, they will be used to authenticate connecting clients. callback will be called to handle connections. The callback function takes 2 arguments: data and request. It returns the reply as a string.
 h:redirect( url_dst, url_src ): Redirect all connections from url_src to url_dst.
 
-Input
------
-input.is_playing(): Return true if input exists.
-input.add_subtitle(url): Add a subtitle file (by path) to the current input
-input.item(): Get the current input item. Input item methods are:
+Player
+------
+player.is_playing(): Return true if input exists.
+player.add_subtitle(url, autoselect=false): Add a subtitle file (by path) to the current input
+player.item(): Get the current input item. Input item methods are:
   :uri(): Get item's URI.
   :name(): Get item's name.
   :duration(): Get item's duration in seconds or negative value if unavailable.
@@ -116,11 +124,9 @@ input.item(): Get the current input item. Input item methods are:
     .read_packets
     .read_bytes
     .input_bitrate
-    .average_input_bitrate
     .demux_read_packets
     .demux_read_bytes
     .demux_bitrate
-    .average_demux_bitrate
     .demux_corrupted
     .demux_discontinuity
     .decoded_audio
@@ -132,6 +138,61 @@ input.item(): Get the current input item. Input item methods are:
     .send_bitrate
     .played_abuffers
     .lost_abuffers
+player.get_time(): Get the current time, in microseconds
+player.get_position(): Get the current position, as a float between 0 and 1
+player.get_rate(): Get the playing rate
+player.set_rate(f): Set the playing rate
+player.increment_rate(): Increment rate by 1 step
+player.decrement_rate(): Decrement rate by 1 step
+player.get_video_tracks(): Get the list of video tracks. Each item contains:
+  .id: the track id
+  .name: the track name
+  .selected: a boolean indicating whether the track is currently selected
+player.get_audio_tracks(): Get the list of audio tracks (items have the same format as in get_video_tracks())
+player.get_spu_tracks(): Get the list of SPU tracks (items have the same format as in get_video_tracks())
+player.toggle_video_track(): Select/deselect a video track
+player.toggle_audio_track(): Select/deselect an audio track
+player.toggle_audio_track(): Select/deselect an SPU track
+player.get_titles_count(): Get the number of titles for the current media
+player.get_title_index(): Get the current title index
+player.title_prev(): Go to the previous title
+player.title_next(): Go to the next title
+player.title_goto(i): Go to title at index i
+player.get_chapters_count(): Get the number of chapter for the current title
+player.get_chapter_index(): Get the current chapter index
+player.chapter_prev(): Go to the previous chapter
+player.chapter_next(): Go to the next chapter
+player.chapter_goto(i): Go to chapter at index i
+player.next_video_frame(): Go to the next video frame
+player.seek_by_pos_absolute(f): Seek to an absolute position (a float between 0 and 1)
+player.seek_by_pos_relative(f): Seek the position by a relative amount
+player.seek_by_time_absolute(us): Seek to an absolute time (in microseconds)
+player.seek_by_time_relative(us): Seek the time by a relative amount (in microseconds)
+player.get_audio_delay(): Get the audio delay, as a float in seconds
+player.set_audio_delay(s): Set the audio delay, as a float in seconds
+player.get_subtitle_delay(): Get the subtitle delay, as a float in seconds
+player.set_subtitle_delay(s): Set the subtitle delay, as a float in seconds
+
+Input/Output
+------------
+All path for this namespace are expected to be passed as UTF8 strings.
+
+io.mkdir("path", "mode"): Similar to mkdir(2). The mode is passed as a string
+  to allow for octal representations. This returns a success code (non 0 in
+  case of failure), and a more specific error code as its 2nd returned value
+  in case of failure. The error code is to be used with vlc.errno
+io.readdir("path"): Lists all files & directories in the provided folder.
+io.open("path"[, "mode"]): Similar to lua's io.open. Mode is optional and 
+  defaults to "r". It returns a file object with the following member functions:
+    .read
+    .write
+    .seek
+    .flush
+    .close
+  all of which are used exactly like the lua object returned by io.open
+io.unlink("path"): Similar to os.remove. First return value is 0 in case
+  of success. In case of failure, the 2nd return parameter is an error
+  code to be compared against vlc.errno values.
 
 Messages
 --------
@@ -204,13 +265,11 @@ net.opendir( path ): List a directory's contents.
 
 Objects
 -------
-object.input(): Get the current input object.
+object.player(): Get the player object.
 object.playlist(): Get the playlist object.
 object.libvlc(): Get the libvlc object.
 object.aout(): Get the audio output object.
 object.vout(): Get the video output object.
-
-object.find( object, type, mode ): Return nil. DO NOT USE.
 
 OSD
 ---
@@ -235,8 +294,11 @@ playlist.play(): Play.
 playlist.pause(): Pause.
 playlist.stop(): Stop.
 playlist.clear(): Clear the playlist.
+playlist.get_repeat(): Get current repeat mode.
 playlist.repeat_( [status] ): Toggle item repeat or set to specified value.
+playlist.get_loop(): Get current loop mode.
 playlist.loop( [status] ): Toggle playlist loop or set to specified value.
+playlist.get_random(): Get current random mode.
 playlist.random( [status] ): Toggle playlist random or set to specified value.
 playlist.goto( id ): Go to specified track.
 playlist.add( ... ): Add a bunch of items to the playlist.
@@ -285,16 +347,14 @@ playlist.get( [what, [tree]] ): Get the playlist.
       .id: The item's id.
       .flags: a table with the following members if the corresponding flag is
               set:
-          .skip
           .disabled
           .ro
       .name:
       .path:
       .duration: (-1 if unknown)
       .nb_played:
-      .children: A table of children playlist items.
-playlist.search( name ): filter the playlist items with the given string
 playlist.current(): return the current playlist item id
+playlist.current_item(): return the current playlist item (same structure as player.item())
 playlist.sort( key ): sort the playlist according to the key.
   Key must be one of the followings values: 'id', 'title', 'title nodes first',
                                             'artist', 'genre', 'random', 'duration',
@@ -309,14 +369,6 @@ FIXME: add methods to get an item's meta, options, es ...
 Services discovery
 ------------------
 
-Interfaces and extensions can use the following SD functions:
-
-sd.get_services_names(): Get a table of all available service discovery
-  modules. The module name is used as key, the long name is used as value.
-sd.add( name ): Add service discovery.
-sd.remove( name ): Remove service discovery.
-sd.is_loaded( name ): Check if service discovery is loaded.
-
 Services discovery scripts can use the following SD functions:
 
 sd.add_node( ... ): Add a node to the service discovery.
@@ -325,14 +377,13 @@ sd.add_node( ... ): Add a node to the service discovery.
       .arturl: the node's ArtURL (OPTIONAL)
       .category: the node's category (OPTIONAL)
 sd.add_item( ... ): Add an item to the service discovery.
-  The item object has the same members as the one in playlist.add() along with:
-      .category: the item's category (OPTIONAL)
+  The item object has the same members as the one in playlist.add().
   Returns the input item.
 sd.remove_item( item ): remove the item.
 
 n = vlc.sd.add_node( {title="Node"} )
-n:add_subitem( ... ): Same as sd.add_item(), but as a subitem of n.
-n:add_subnode( ... ): Same as sd.add_node(), but as a subnode of n.
+n:add_subitem( ... ): Same as sd.add_item(), but as a child item of node n.
+n:add_subnode( ... ): Same as sd.add_node(), but as a subnode of node n.
 
 d = vlc.sd.add_item( ... ) Get an item object to perform following set operations on it:
 d:set_name(): the item's name in playlist
@@ -365,6 +416,8 @@ s = vlc.stream( "http://www.videolan.org/" )
 s:read( 128 ) -- read up to 128 characters. Return 0 if no more data is available (FIXME?).
 s:readline() -- read a line. Return nil if EOF was reached.
 s:addfilter() -- add a stream filter. If no argument was specified, try to add all automatic stream filters.
+s:getsize() -- returns the size of the stream, or nil if unknown
+s:seek(offset) -- seeks from offset bytes (from the begining of the stream). Returns nil in case of error
 
 Strings
 -------
@@ -455,3 +508,9 @@ reader:node_empty(): queries whether the previous invocation of reader:read()
   1 if the node is empty, and 0 if it is not.
 
 The simplexml module can also be used to parse XML documents easily.
+
+Random number & bytes
+---------------------
+vlc.rand.number(): Returns a random number between 0 and 2^31 - 1
+vlc.rand.bytes(size): Returns <size> random bytes
+

@@ -2,7 +2,6 @@
  * scte27.c : SCTE-27 subtitles decoder
  *****************************************************************************
  * Copyright (C) Laurent Aimar
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
  *
@@ -41,7 +40,7 @@ static void Close(vlc_object_t *);
 vlc_module_begin ()
     set_description(N_("SCTE-27 decoder"))
     set_shortname(N_("SCTE-27"))
-    set_capability( "decoder", 51)
+    set_capability( "spu decoder", 51)
     set_category(CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_SCODEC)
     set_callbacks(Open, Close)
@@ -50,12 +49,13 @@ vlc_module_end ()
 /****************************************************************************
  * Local prototypes
  ****************************************************************************/
-struct decoder_sys_t {
+typedef struct
+{
     int     segment_id;
     int     segment_size;
     uint8_t *segment_buffer;
-    mtime_t segment_date;
-};
+    vlc_tick_t segment_date;
+} decoder_sys_t;
 
 typedef struct {
     uint8_t y, u, v;
@@ -142,7 +142,7 @@ static subpicture_region_t *DecodeSimpleBitmap(decoder_t *dec,
     int bitmap_h = bottom_h - top_h;
     int bitmap_v = bottom_v - top_v;
     int bitmap_size = bitmap_h * bitmap_v;
-    bool *bitmap = malloc(bitmap_size * sizeof(*bitmap));
+    bool *bitmap = vlc_alloc(bitmap_size, sizeof(*bitmap));
     if (!bitmap)
         return NULL;
     for (int position = 0; position < bitmap_size;) {
@@ -330,7 +330,7 @@ static subpicture_region_t *DecodeSimpleBitmap(decoder_t *dec,
 
 static subpicture_t *DecodeSubtitleMessage(decoder_t *dec,
                                            const uint8_t *data, int size,
-                                           mtime_t date)
+                                           vlc_tick_t date)
 {
     if (size < 12)
         goto error;
@@ -357,33 +357,33 @@ static subpicture_t *DecodeSubtitleMessage(decoder_t *dec,
             subpicture_region_Delete(region);
             return NULL;
         }
-        int frame_duration;
+        vlc_tick_t frame_duration;
         switch (display_standard) {
         case 0:
             sub->i_original_picture_width  = 720;
             sub->i_original_picture_height = 480;
-            frame_duration = 33367;
+            frame_duration = VLC_TICK_FROM_US(33367);
             break;
         case 1:
             sub->i_original_picture_width  = 720;
             sub->i_original_picture_height = 576;
-            frame_duration = 40000;
+            frame_duration = VLC_TICK_FROM_MS(40);
             break;
         case 2:
             sub->i_original_picture_width  = 1280;
             sub->i_original_picture_height =  720;
-            frame_duration = 16683;
+            frame_duration = VLC_TICK_FROM_US(16683);
             break;
         case 3:
             sub->i_original_picture_width  = 1920;
             sub->i_original_picture_height = 1080;
-            frame_duration = 16683;
+            frame_duration = VLC_TICK_FROM_US(16683);
             break;
         default:
             msg_Warn(dec, "Unknown display standard");
             sub->i_original_picture_width  = 0;
             sub->i_original_picture_height = 0;
-            frame_duration = 40000;
+            frame_duration = VLC_TICK_FROM_MS(40);
             break;
         }
         sub->b_absolute = true;
@@ -405,16 +405,12 @@ error:
     return NULL;
 }
 
-static subpicture_t *Decode(decoder_t *dec, block_t **block)
+static int Decode(decoder_t *dec, block_t *b)
 {
     decoder_sys_t *sys = dec->p_sys;
 
-    if (block == NULL || *block == NULL)
-        return NULL;
-    block_t *b = *block; *block = NULL;
-
-    subpicture_t *sub_first = NULL;
-    subpicture_t **sub_last = &sub_first;
+    if (b == NULL ) /* No Drain */
+        return VLCDEC_SUCCESS;
 
     if (b->i_flags & (BLOCK_FLAG_CORRUPTED))
         goto exit;
@@ -450,7 +446,7 @@ static subpicture_t *Decode(decoder_t *dec, block_t **block)
             if (index == 0) {
                 sys->segment_id = id;
                 sys->segment_size = 0;
-                sys->segment_date = b->i_pts > VLC_TS_INVALID ? b->i_pts : b->i_dts;
+                sys->segment_date = b->i_pts != VLC_TICK_INVALID ? b->i_pts : b->i_dts;
             } else {
                 if (sys->segment_id != id || sys->segment_size <= 0) {
                     sys->segment_id = -1;
@@ -477,11 +473,10 @@ static subpicture_t *Decode(decoder_t *dec, block_t **block)
             sub = DecodeSubtitleMessage(dec,
                                         &b->p_buffer[4],
                                         section_length - 1 - 4,
-                                        b->i_pts > VLC_TS_INVALID ? b->i_pts : b->i_dts);
+                                        b->i_pts != VLC_TICK_INVALID ? b->i_pts : b->i_dts);
         }
-        *sub_last = sub;
-        if (*sub_last)
-            sub_last = &(*sub_last)->p_next;
+        if (sub != NULL)
+            decoder_QueueSub(dec, sub);
 
         b->i_buffer -= 3 + section_length;
         b->p_buffer += 3 + section_length;
@@ -490,7 +485,7 @@ static subpicture_t *Decode(decoder_t *dec, block_t **block)
 
 exit:
     block_Release(b);
-    return sub_first;
+    return VLCDEC_SUCCESS;
 }
 
 static int Open(vlc_object_t *object)
@@ -507,9 +502,8 @@ static int Open(vlc_object_t *object)
     sys->segment_size = 0;
     sys->segment_buffer = NULL;
 
-    dec->pf_decode_sub = Decode;
-    es_format_Init(&dec->fmt_out, SPU_ES, VLC_CODEC_SPU);
-    dec->fmt_out.video.i_chroma = VLC_CODEC_YUVP;
+    dec->pf_decode = Decode;
+    dec->fmt_out.i_codec = VLC_CODEC_YUVP;
 
     return VLC_SUCCESS;
 }

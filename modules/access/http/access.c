@@ -22,6 +22,9 @@
 # include "config.h"
 #endif
 
+#undef MODULE_STRING
+#define MODULE_STRING "http"
+
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>
@@ -38,13 +41,13 @@
 #include "file.h"
 #include "live.h"
 
-struct access_sys_t
+typedef struct
 {
     struct vlc_http_mgr *manager;
     struct vlc_http_resource *resource;
-};
+} access_sys_t;
 
-static block_t *FileRead(access_t *access, bool *restrict eof)
+static block_t *FileRead(stream_t *access, bool *restrict eof)
 {
     access_sys_t *sys = access->p_sys;
 
@@ -54,7 +57,7 @@ static block_t *FileRead(access_t *access, bool *restrict eof)
     return b;
 }
 
-static int FileSeek(access_t *access, uint64_t pos)
+static int FileSeek(stream_t *access, uint64_t pos)
 {
     access_sys_t *sys = access->p_sys;
 
@@ -63,7 +66,7 @@ static int FileSeek(access_t *access, uint64_t pos)
     return VLC_SUCCESS;
 }
 
-static int FileControl(access_t *access, int query, va_list args)
+static int FileControl(stream_t *access, int query, va_list args)
 {
     access_sys_t *sys = access->p_sys;
 
@@ -93,8 +96,8 @@ static int FileControl(access_t *access, int query, va_list args)
         }
 
         case STREAM_GET_PTS_DELAY:
-            *va_arg(args, int64_t *) = INT64_C(1000) *
-                var_InheritInteger(access, "network-caching");
+            *va_arg(args, vlc_tick_t *) = VLC_TICK_FROM_MS(
+                var_InheritInteger(access, "network-caching") );
             break;
 
         case STREAM_GET_CONTENT_TYPE:
@@ -110,7 +113,7 @@ static int FileControl(access_t *access, int query, va_list args)
     return VLC_SUCCESS;
 }
 
-static block_t *LiveRead(access_t *access, bool *restrict eof)
+static block_t *LiveRead(stream_t *access, bool *restrict eof)
 {
     access_sys_t *sys = access->p_sys;
 
@@ -120,14 +123,7 @@ static block_t *LiveRead(access_t *access, bool *restrict eof)
     return b;
 }
 
-static int NoSeek(access_t *access, uint64_t pos)
-{
-    (void) access;
-    (void) pos;
-    return VLC_EGENERIC;
-}
-
-static int LiveControl(access_t *access, int query, va_list args)
+static int LiveControl(stream_t *access, int query, va_list args)
 {
     access_sys_t *sys = access->p_sys;
 
@@ -141,8 +137,8 @@ static int LiveControl(access_t *access, int query, va_list args)
             break;
 
         case STREAM_GET_PTS_DELAY:
-            *va_arg(args, int64_t *) = INT64_C(1000) *
-                var_InheritInteger(access, "network-caching");
+            *va_arg(args, vlc_tick_t *) = VLC_TICK_FROM_MS(
+                var_InheritInteger(access, "network-caching") );
             break;
 
         case STREAM_GET_CONTENT_TYPE:
@@ -157,7 +153,7 @@ static int LiveControl(access_t *access, int query, va_list args)
 
 static int Open(vlc_object_t *obj)
 {
-    access_t *access = (access_t *)obj;
+    stream_t *access = (stream_t *)obj;
     access_sys_t *sys = malloc(sizeof (*sys));
     int ret = VLC_ENOMEM;
 
@@ -178,9 +174,7 @@ static int Open(vlc_object_t *obj)
     vlc_UrlParse(&crd_url, access->psz_url);
     vlc_credential_init(&crd, &crd_url);
 
-    bool h2c = var_InheritBool(obj, "http2");
-
-    sys->manager = vlc_http_mgr_create(obj, jar, h2c);
+    sys->manager = vlc_http_mgr_create(obj, jar);
     if (sys->manager == NULL)
         goto error;
 
@@ -252,7 +246,7 @@ static int Open(vlc_object_t *obj)
     if (live)
     {
         access->pf_block = LiveRead;
-        access->pf_seek = NoSeek;
+        access->pf_seek = NULL;
         access->pf_control = LiveControl;
     }
     else
@@ -278,7 +272,7 @@ error:
 
 static void Close(vlc_object_t *obj)
 {
-    access_t *access = (access_t *)obj;
+    stream_t *access = (stream_t *)obj;
     access_sys_t *sys = access->p_sys;
 
     vlc_http_res_destroy(sys->resource);
@@ -295,12 +289,8 @@ vlc_module_begin()
     add_shortcut("https", "http")
     set_callbacks(Open, Close)
 
-    add_bool("http2", false, N_("Force HTTP/2"),
-             N_("Force HTTP version 2.0 over TCP."), true)
-
     add_bool("http-continuous", false, N_("Continuous stream"),
              N_("Keep reading a resource that keeps being updated."), true)
-        change_safe()
         change_volatile()
     add_bool("http-forward-cookies", true, N_("Cookies forwarding"),
              N_("Forward cookies across HTTP redirections."), true)

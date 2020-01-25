@@ -90,24 +90,20 @@ static int OpenResampler (vlc_object_t *obj)
     if (filter->fmt_in.audio.i_format != VLC_CODEC_FL32
      || filter->fmt_out.audio.i_format != VLC_CODEC_FL32
     /* No channels remapping */
-     || filter->fmt_in.audio.i_physical_channels
-                                  != filter->fmt_out.audio.i_physical_channels
-     || filter->fmt_in.audio.i_original_channels
-                                  != filter->fmt_out.audio.i_original_channels)
+     || filter->fmt_in.audio.i_channels != filter->fmt_out.audio.i_channels )
         return VLC_EGENERIC;
 
     int type = var_InheritInteger (obj, "src-converter-type");
-    int channels = aout_FormatNbChannels (&filter->fmt_in.audio);
     int err;
 
-    SRC_STATE *s = src_new (type, channels, &err);
+    SRC_STATE *s = src_new (type, filter->fmt_in.audio.i_channels, &err);
     if (s == NULL)
     {
         msg_Err (obj, "cannot initialize resampler: %s", src_strerror (err));
         return VLC_EGENERIC;
     }
 
-    filter->p_sys = (filter_sys_t *)s;
+    filter->p_sys = s;
     filter->pf_audio_filter = Resample;
     return VLC_SUCCESS;
 }
@@ -166,8 +162,7 @@ static block_t *Resample (filter_t *filter, block_t *in)
     out->i_buffer = src.output_frames_gen * framesize;
     out->i_nb_samples = src.output_frames_gen;
     out->i_pts = in->i_pts;
-    out->i_length = src.output_frames_gen * CLOCK_FREQ
-                  / filter->fmt_out.audio.i_rate;
+    out->i_length = vlc_tick_from_samples(src.output_frames_gen, filter->fmt_out.audio.i_rate);
 error:
     block_Release (in);
     return out;

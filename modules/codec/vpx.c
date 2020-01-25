@@ -33,6 +33,7 @@
 
 #include <vpx/vpx_decoder.h>
 #include <vpx/vp8dx.h>
+#include <vpx/vpx_image.h>
 
 #ifdef ENABLE_SOUT
 # include <vpx/vpx_encoder.h>
@@ -64,7 +65,7 @@ static block_t *Encode(encoder_t *p_enc, picture_t *p_pict);
 vlc_module_begin ()
     set_shortname("vpx")
     set_description(N_("WebM video decoder"))
-    set_capability("decoder", 100)
+    set_capability("video decoder", 60)
     set_callbacks(OpenDecoder, CloseDecoder)
     set_category(CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_VCODEC)
@@ -96,10 +97,10 @@ static void vpx_err_msg(vlc_object_t *this, struct vpx_codec_ctx *ctx,
 /*****************************************************************************
  * decoder_sys_t: libvpx decoder descriptor
  *****************************************************************************/
-struct decoder_sys_t
+typedef struct
 {
     struct vpx_codec_ctx ctx;
-};
+} decoder_sys_t;
 
 static const struct
 {
@@ -116,18 +117,6 @@ static const struct
     { VLC_CODEC_I440, VPX_IMG_FMT_I440, 8, 0 },
 
     { VLC_CODEC_YV12, VPX_IMG_FMT_YV12, 8, 0 },
-    { VLC_CODEC_YUVA, VPX_IMG_FMT_444A, 8, 0 },
-    { VLC_CODEC_YUYV, VPX_IMG_FMT_YUY2, 8, 0 },
-    { VLC_CODEC_UYVY, VPX_IMG_FMT_UYVY, 8, 0 },
-    { VLC_CODEC_YVYU, VPX_IMG_FMT_YVYU, 8, 0 },
-
-    { VLC_CODEC_RGB15, VPX_IMG_FMT_RGB555, 8, 0 },
-    { VLC_CODEC_RGB16, VPX_IMG_FMT_RGB565, 8, 0 },
-    { VLC_CODEC_RGB24, VPX_IMG_FMT_RGB24, 8, 0 },
-    { VLC_CODEC_RGB32, VPX_IMG_FMT_RGB32, 8, 0 },
-
-    { VLC_CODEC_ARGB, VPX_IMG_FMT_ARGB, 8, 0 },
-    { VLC_CODEC_BGRA, VPX_IMG_FMT_ARGB_LE, 8, 0 },
 
     { VLC_CODEC_GBR_PLANAR, VPX_IMG_FMT_I444, 8, 1 },
     { VLC_CODEC_GBR_PLANAR_10L, VPX_IMG_FMT_I44416, 10, 1 },
@@ -141,6 +130,41 @@ static const struct
     { VLC_CODEC_I444_12L, VPX_IMG_FMT_I44416, 12, 0 },
 
     { VLC_CODEC_I444_16L, VPX_IMG_FMT_I44416, 16, 0 },
+};
+
+struct video_color
+{
+    video_color_primaries_t primaries;
+    video_transfer_func_t transfer;
+    video_color_space_t space;
+};
+
+const struct video_color vpx_color_mapping_table[] =
+{
+    [VPX_CS_UNKNOWN]   =  { COLOR_PRIMARIES_UNDEF,
+                            TRANSFER_FUNC_UNDEF,
+                            COLOR_SPACE_UNDEF },
+    [VPX_CS_BT_601]    =  { COLOR_PRIMARIES_BT601_525,
+                            TRANSFER_FUNC_BT709,
+                            COLOR_SPACE_BT601 },
+    [VPX_CS_BT_709]    =  { COLOR_PRIMARIES_BT709,
+                            TRANSFER_FUNC_BT709,
+                            COLOR_SPACE_BT709 },
+    [VPX_CS_SMPTE_170] =  { COLOR_PRIMARIES_SMTPE_170,
+                            TRANSFER_FUNC_BT709,
+                            COLOR_SPACE_BT601 },
+    [VPX_CS_SMPTE_240] =  { COLOR_PRIMARIES_SMTPE_240,
+                            TRANSFER_FUNC_SMPTE_240,
+                            COLOR_SPACE_UNDEF },
+    [VPX_CS_BT_2020]   =  { COLOR_PRIMARIES_BT2020,
+                            TRANSFER_FUNC_BT2020,
+                            COLOR_SPACE_BT2020 },
+    [VPX_CS_RESERVED]  =  { COLOR_PRIMARIES_UNDEF,
+                            TRANSFER_FUNC_UNDEF,
+                            COLOR_SPACE_UNDEF },
+    [VPX_CS_SRGB]      =  { COLOR_PRIMARIES_SRGB,
+                            TRANSFER_FUNC_SRGB,
+                            COLOR_SPACE_UNDEF },
 };
 
 static vlc_fourcc_t FindVlcChroma( struct vpx_image *img )
@@ -159,67 +183,66 @@ static vlc_fourcc_t FindVlcChroma( struct vpx_image *img )
 /****************************************************************************
  * Decode: the whole thing
  ****************************************************************************/
-static picture_t *Decode(decoder_t *dec, block_t **pp_block)
+static int Decode(decoder_t *dec, block_t *block)
 {
-    struct vpx_codec_ctx *ctx = &dec->p_sys->ctx;
+    decoder_sys_t *p_sys = dec->p_sys;
+    struct vpx_codec_ctx *ctx = &p_sys->ctx;
 
-    if( !pp_block || !*pp_block )
-        return NULL;
-    block_t *block = *pp_block;
+    if (block == NULL) /* No Drain */
+        return VLCDEC_SUCCESS;
 
     if (block->i_flags & (BLOCK_FLAG_CORRUPTED)) {
         block_Release(block);
-        return NULL;
+        return VLCDEC_SUCCESS;
     }
 
     /* Associate packet PTS with decoded frame */
-    mtime_t *pkt_pts = malloc(sizeof(*pkt_pts));
+    vlc_tick_t *pkt_pts = malloc(sizeof(*pkt_pts));
     if (!pkt_pts) {
         block_Release(block);
-        *pp_block = NULL;
-        return NULL;
+        return VLCDEC_SUCCESS;
     }
 
-    *pkt_pts = block->i_pts ? block->i_pts : block->i_dts;
+    *pkt_pts = (block->i_pts != VLC_TICK_INVALID) ? block->i_pts : block->i_dts;
 
     vpx_codec_err_t err;
     err = vpx_codec_decode(ctx, block->p_buffer, block->i_buffer, pkt_pts, 0);
 
     block_Release(block);
-    *pp_block = NULL;
 
     if (err != VPX_CODEC_OK) {
         free(pkt_pts);
         VPX_ERR(dec, ctx, "Failed to decode frame");
         if (err == VPX_CODEC_UNSUP_BITSTREAM)
-            dec->b_error = true;
-        return NULL;
+            return VLCDEC_ECRITICAL;
+        else
+            return VLCDEC_SUCCESS;
     }
 
     const void *iter = NULL;
     struct vpx_image *img = vpx_codec_get_frame(ctx, &iter);
     if (!img) {
         free(pkt_pts);
-        return NULL;
+        return VLCDEC_SUCCESS;
     }
 
     /* fetches back the PTS */
     pkt_pts = img->user_priv;
-    mtime_t pts = *pkt_pts;
+    vlc_tick_t pts = *pkt_pts;
     free(pkt_pts);
 
     dec->fmt_out.i_codec = FindVlcChroma(img);
 
     if( dec->fmt_out.i_codec == 0 ) {
         msg_Err(dec, "Unsupported output colorspace %d", img->fmt);
-        return NULL;
+        return VLCDEC_SUCCESS;
     }
 
     video_format_t *v = &dec->fmt_out.video;
 
     if (img->d_w != v->i_visible_width || img->d_h != v->i_visible_height) {
-        v->i_visible_width = img->d_w;
-        v->i_visible_height = img->d_h;
+        v->i_visible_width = dec->fmt_out.video.i_width = img->d_w;
+        v->i_visible_height = dec->fmt_out.video.i_height = img->d_h;
     }
 
     if( !dec->fmt_out.video.i_sar_num || !dec->fmt_out.video.i_sar_den )
@@ -228,34 +251,24 @@ static picture_t *Decode(decoder_t *dec, block_t **pp_block)
         dec->fmt_out.video.i_sar_den = 1;
     }
 
-    v->b_color_range_full = img->range == VPX_CR_FULL_RANGE;
-
-    switch( img->cs )
+    if(dec->fmt_in.video.primaries == COLOR_PRIMARIES_UNDEF &&
+       img->cs >= 0 && img->cs < ARRAY_SIZE(vpx_color_mapping_table))
     {
-        case VPX_CS_SRGB:
-        case VPX_CS_BT_709:
-            v->space = COLOR_SPACE_BT709;
-            break;
-        case VPX_CS_BT_601:
-        case VPX_CS_SMPTE_170:
-        case VPX_CS_SMPTE_240:
-            v->space = COLOR_SPACE_BT601;
-            break;
-        case VPX_CS_BT_2020:
-            v->space = COLOR_SPACE_BT2020;
-            break;
-        default:
-            break;
+        v->primaries = vpx_color_mapping_table[img->cs].primaries;
+        v->transfer = vpx_color_mapping_table[img->cs].transfer;
+        v->space = vpx_color_mapping_table[img->cs].space;
+        v->color_range = img->range == VPX_CR_FULL_RANGE ? COLOR_RANGE_FULL : COLOR_RANGE_LIMITED;
     }
 
     dec->fmt_out.video.projection_mode = dec->fmt_in.video.projection_mode;
+    dec->fmt_out.video.multiview_mode = dec->fmt_in.video.multiview_mode;
     dec->fmt_out.video.pose = dec->fmt_in.video.pose;
 
     if (decoder_UpdateVideoFormat(dec))
-        return NULL;
+        return VLCDEC_SUCCESS;
     picture_t *pic = decoder_NewPicture(dec);
     if (!pic)
-        return NULL;
+        return VLCDEC_SUCCESS;
 
     for (int plane = 0; plane < pic->i_planes; plane++ ) {
         uint8_t *src = img->planes[plane];
@@ -274,7 +287,8 @@ static picture_t *Decode(decoder_t *dec, block_t **pp_block)
     pic->b_progressive = true; /* codec does not support interlacing */
     pic->date = pts;
 
-    return pic;
+    decoder_QueueVideo(dec, pic);
+    return VLCDEC_SUCCESS;
 }
 
 /*****************************************************************************
@@ -289,6 +303,7 @@ static int OpenDecoder(vlc_object_t *p_this)
     switch (dec->fmt_in.i_codec)
     {
 #ifdef ENABLE_VP8_DECODER
+    case VLC_CODEC_WEBP:
     case VLC_CODEC_VP8:
         iface = &vpx_codec_vp8_dx_algo;
         vp_version = 8;
@@ -322,9 +337,8 @@ static int OpenDecoder(vlc_object_t *p_this)
         return VLC_EGENERIC;;
     }
 
-    dec->pf_decode_video = Decode;
+    dec->pf_decode = Decode;
 
-    dec->fmt_out.i_cat = VIDEO_ES;
     dec->fmt_out.video.i_width = dec->fmt_in.video.i_width;
     dec->fmt_out.video.i_height = dec->fmt_in.video.i_height;
 
@@ -363,10 +377,11 @@ static void CloseDecoder(vlc_object_t *p_this)
 /*****************************************************************************
  * encoder_sys_t: libvpx encoder descriptor
  *****************************************************************************/
-struct encoder_sys_t
+typedef struct
 {
     struct vpx_codec_ctx ctx;
-};
+    unsigned long quality;
+} encoder_sys_t;
 
 /*****************************************************************************
  * OpenEncoder: probe the encoder
@@ -404,7 +419,7 @@ static int OpenEncoder(vlc_object_t *p_this)
         return VLC_EGENERIC;
     }
 
-    struct vpx_codec_enc_cfg enccfg = {};
+    struct vpx_codec_enc_cfg enccfg = {0};
     vpx_codec_enc_config_default(iface, &enccfg, 0);
     enccfg.g_threads = __MIN(vlc_GetCPUCount(), 4);
     enccfg.g_w = p_enc->fmt_in.video.i_visible_width;
@@ -424,6 +439,19 @@ static int OpenEncoder(vlc_object_t *p_this)
     p_enc->fmt_in.i_codec = VLC_CODEC_I420;
     config_ChainParse(p_enc, ENC_CFG_PREFIX, ppsz_sout_options, p_enc->p_cfg);
 
+    /* Deadline (in ms) to spend in encoder */
+    switch (var_GetInteger(p_enc, ENC_CFG_PREFIX "quality-mode")) {
+        case 1:
+            p_sys->quality = VPX_DL_REALTIME;
+            break;
+        case 2:
+            p_sys->quality = VPX_DL_BEST_QUALITY;
+            break;
+        default:
+            p_sys->quality = VPX_DL_GOOD_QUALITY;
+            break;
+    }
+
     return VLC_SUCCESS;
 }
 
@@ -437,48 +465,29 @@ static block_t *Encode(encoder_t *p_enc, picture_t *p_pict)
 
     if (!p_pict) return NULL;
 
-    vpx_image_t img = {};
+    vpx_image_t img = {0};
     unsigned i_w = p_enc->fmt_in.video.i_visible_width;
     unsigned i_h = p_enc->fmt_in.video.i_visible_height;
 
     /* Create and initialize the vpx_image */
-    if (!vpx_img_alloc(&img, VPX_IMG_FMT_I420, i_w, i_h, 1)) {
-        VPX_ERR(p_enc, ctx, "Failed to allocate image");
+    if (!vpx_img_wrap(&img, VPX_IMG_FMT_I420, i_w, i_h, 32, p_pict->p[0].p_pixels)) {
+        VPX_ERR(p_enc, ctx, "Failed to wrap image");
         return NULL;
     }
-    for (int plane = 0; plane < p_pict->i_planes; plane++) {
-        uint8_t *src = p_pict->p[plane].p_pixels;
-        uint8_t *dst = img.planes[plane];
-        int src_stride = p_pict->p[plane].i_pitch;
-        int dst_stride = img.stride[plane];
 
-        int size = __MIN(src_stride, dst_stride);
-        for (int line = 0; line < p_pict->p[plane].i_visible_lines; line++)
-        {
-            memcpy(dst, src, size);
-            src += src_stride;
-            dst += dst_stride;
-        }
+    /* Correct chroma plane offsets. */
+    for (int plane = 1; plane < p_pict->i_planes; plane++) {
+        img.planes[plane] = p_pict->p[plane].p_pixels;
+        img.stride[plane] = p_pict->p[plane].i_pitch;
     }
 
     int flags = 0;
-    /* Deadline (in ms) to spend in encoder */
-    int quality = VPX_DL_GOOD_QUALITY;
-    switch (var_GetInteger(p_enc, ENC_CFG_PREFIX "quality-mode")) {
-        case 1:
-            quality = VPX_DL_REALTIME;
-            break;
-        case 2:
-            quality = VPX_DL_BEST_QUALITY;
-            break;
-        default:
-            break;
-    }
 
     vpx_codec_err_t res = vpx_codec_encode(ctx, &img, p_pict->date, 1,
-     flags, quality);
+     flags, p_sys->quality);
     if (res != VPX_CODEC_OK) {
         VPX_ERR(p_enc, ctx, "Failed to encode frame");
+        vpx_img_free(&img);
         return NULL;
     }
 
@@ -491,6 +500,12 @@ static block_t *Encode(encoder_t *p_enc, picture_t *p_pict)
         {
             int keyframe = pkt->data.frame.flags & VPX_FRAME_IS_KEY;
             block_t *p_block = block_Alloc(pkt->data.frame.sz);
+            if (unlikely(p_block == NULL))
+            {
+                block_ChainRelease(p_out);
+                p_out = NULL;
+                break;
+            }
 
             memcpy(p_block->p_buffer, pkt->data.frame.buf, pkt->data.frame.sz);
             p_block->i_dts = p_block->i_pts = pkt->data.frame.pts;

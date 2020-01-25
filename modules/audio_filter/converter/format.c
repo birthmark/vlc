@@ -3,7 +3,6 @@
  *****************************************************************************
  * Copyright (C) 2002-2005 VLC authors and VideoLAN
  * Copyright (C) 2010 Laurent Aimar
- * $Id$
  *
  * Authors: Christophe Massiot <massiot@via.ecp.fr>
  *          Gildas Bazin <gbazin@videolan.org>
@@ -50,7 +49,7 @@ vlc_module_begin()
     set_category(CAT_AUDIO)
     set_subcategory(SUBCAT_AUDIO_MISC)
     set_capability("audio converter", 1)
-    set_callbacks(Open, NULL)
+    set_callback(Open)
 vlc_module_end()
 
 /*****************************************************************************

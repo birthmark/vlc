@@ -44,10 +44,10 @@ static void CloseRD( vlc_object_t * );
 VLC_SD_PROBE_HELPER( "Bonjour", N_("Bonjour Network Discovery"), SD_CAT_LAN )
 VLC_RD_PROBE_HELPER( "Bonjour_renderer", "Bonjour Renderer Discovery" )
 
-struct services_discovery_sys_t
+typedef struct services_discovery_sys_t
 {
     CFTypeRef _Nullable discoveryController;
-};
+} services_discovery_sys_t;
 
 struct vlc_renderer_discovery_sys
 {
@@ -81,6 +81,14 @@ NSString *const VLCBonjourProtocolServiceName   = @"VLCBonjourProtocolServiceNam
 NSString *const VLCBonjourIsRenderer            = @"VLCBonjourIsRenderer";
 NSString *const VLCBonjourRendererFlags         = @"VLCBonjourRendererFlags";
 NSString *const VLCBonjourRendererDemux         = @"VLCBonjourRendererDemux";
+
+/*
+ * For chromecast, the `ca=` is composed from (at least)
+ * 0x01 to indicate video support
+ * 0x04 to indivate audio support
+ */
+#define CHROMECAST_FLAG_VIDEO 0x01
+#define CHROMECAST_FLAG_AUDIO 0x04
 
 #pragma mark -
 #pragma mark Interface definition
@@ -177,23 +185,21 @@ NSString *const VLCBonjourRendererDemux         = @"VLCBonjourRendererDemux";
 
     msg_Info(_p_this, "starting discovery");
     for (NSDictionary *protocol in VLCSupportedProtocols) {
-        msg_Info(_p_this, "looking up %s", [[protocol objectForKey: VLCBonjourProtocolName] UTF8String]);
-
         /* Only discover services if we actually have a module that can handle those */
         if (!module_exists([[protocol objectForKey: VLCBonjourProtocolName] UTF8String]) && !_isRendererDiscovery) {
-            msg_Info(_p_this, "no module for %s, skipping", [[protocol objectForKey: VLCBonjourProtocolName] UTF8String]);
+            msg_Dbg(_p_this, "no module for %s, skipping", [[protocol objectForKey: VLCBonjourProtocolName] UTF8String]);
             continue;
         }
 
         /* Only discover hosts it they match the current mode (renderer or service) */
         if ([[protocol objectForKey: VLCBonjourIsRenderer] boolValue] != _isRendererDiscovery) {
-            msg_Info(_p_this, "%s does not match current discovery mode, skipping", [[protocol objectForKey: VLCBonjourProtocolName] UTF8String]);
+            msg_Dbg(_p_this, "%s does not match current discovery mode, skipping", [[protocol objectForKey: VLCBonjourProtocolName] UTF8String]);
             continue;
         }
 
         NSNetServiceBrowser *serviceBrowser = [[NSNetServiceBrowser alloc] init];
         [serviceBrowser setDelegate:self];
-        msg_Info(_p_this, "starting discovery for type %s", [[protocol objectForKey: VLCBonjourProtocolServiceName] UTF8String]);
+        msg_Dbg(_p_this, "starting discovery for type %s", [[protocol objectForKey: VLCBonjourProtocolServiceName] UTF8String]);
         [serviceBrowser searchForServicesOfType:[protocol objectForKey: VLCBonjourProtocolServiceName] inDomain:@"local."];
         [discoverers addObject:serviceBrowser];
         [protocols addObject:protocol];
@@ -229,8 +235,7 @@ NSString *const VLCBonjourRendererDemux         = @"VLCBonjourRendererDemux";
 
 - (void)netServiceBrowser:(NSNetServiceBrowser *)aNetServiceBrowser didFindService:(NSNetService *)aNetService moreComing:(BOOL)moreComing
 {
-    msg_Info(_p_this, "found something, looking up");
-    msg_Dbg(self.p_this, "found bonjour service: %s (%s)", [aNetService.name UTF8String], [aNetService.type UTF8String]);
+    msg_Dbg(_p_this, "service found: %s (%s), resolving", [aNetService.name UTF8String], [aNetService.type UTF8String]);
     [_rawNetServices addObject:aNetService];
     aNetService.delegate = self;
     [aNetService resolveWithTimeout:5.];
@@ -238,7 +243,7 @@ NSString *const VLCBonjourRendererDemux         = @"VLCBonjourRendererDemux";
 
 - (void)netServiceBrowser:(NSNetServiceBrowser *)aNetServiceBrowser didRemoveService:(NSNetService *)aNetService moreComing:(BOOL)moreComing
 {
-    msg_Dbg(self.p_this, "bonjour service disappeared: %s", [aNetService.name UTF8String]);
+    msg_Dbg(self.p_this, "service disappeared: %s (%s), removing", [aNetService.name UTF8String], [aNetService.type UTF8String]);
 
     /* If the item was not looked-up yet, just remove it */
     if ([_rawNetServices containsObject:aNetService])
@@ -266,7 +271,7 @@ NSString *const VLCBonjourRendererDemux         = @"VLCBonjourRendererDemux";
 
 - (void)netServiceDidResolveAddress:(NSNetService *)aNetService
 {
-    msg_Info(_p_this, "resolved something");
+    msg_Dbg(_p_this, "service resolved: %s", [aNetService.name UTF8String]);
     if (![_resolvedNetServices containsObject:aNetService]) {
         NSString *serviceType = aNetService.type;
         NSString *protocol = nil;
@@ -288,7 +293,7 @@ NSString *const VLCBonjourRendererDemux         = @"VLCBonjourRendererDemux";
 
 - (void)netService:(NSNetService *)aNetService didNotResolve:(NSDictionary *)errorDict
 {
-    msg_Dbg(_p_this, "failed to resolve: %s", [aNetService.name UTF8String]);
+    msg_Warn(_p_this, "service resolution failed: %s, removing", [aNetService.name UTF8String]);
     [_rawNetServices removeObject:aNetService];
 }
 
@@ -301,11 +306,41 @@ NSString *const VLCBonjourRendererDemux         = @"VLCBonjourRendererDemux";
 
     NSString *uri = [NSString stringWithFormat:@"%@://%@:%ld", protocol, netService.hostName, netService.port];
     NSDictionary *txtDict = [NSNetService dictionaryFromTXTRecordData:[netService TXTRecordData]];
+    NSString *displayName = netService.name;
+    int rendererFlags = 0;
 
-    // TODO: Detect rendered capabilities and adapt to work with not just chromecast
-    vlc_renderer_item_t *p_renderer_item = vlc_renderer_item_new( "chromecast", [netService.name UTF8String],
-                                                                 [uri UTF8String], NULL, "cc_demux",
-                                                                 "", VLC_RENDERER_CAN_VIDEO );
+    if ([netService.type isEqualToString:@"_googlecast._tcp."]) {
+        NSData *modelData = [txtDict objectForKey:@"md"];
+        NSData *nameData = [txtDict objectForKey:@"fn"];
+        NSData *flagsData = [txtDict objectForKey:@"ca"];
+
+        // Get CC capability flags from TXT data
+        if (flagsData) {
+            NSString *flagsString = [[NSString alloc] initWithData:flagsData encoding:NSUTF8StringEncoding];
+            NSInteger flags = [flagsString intValue];
+
+            if ((flags & CHROMECAST_FLAG_VIDEO) != 0) {
+                rendererFlags |= VLC_RENDERER_CAN_VIDEO;
+            }
+            if ((flags & CHROMECAST_FLAG_AUDIO) != 0) {
+                rendererFlags |= VLC_RENDERER_CAN_AUDIO;
+            }
+        }
+
+        // Get CC model and name from TXT data
+        if (modelData && nameData) {
+            NSString *model = [[NSString alloc] initWithData:modelData encoding:NSUTF8StringEncoding];
+            NSString *name = [[NSString alloc] initWithData:nameData encoding:NSUTF8StringEncoding];
+            displayName = [NSString stringWithFormat:@"%@ (%@)", name, model];
+        }
+    }
+
+    const char *extra_uri = rendererFlags & VLC_RENDERER_CAN_VIDEO ? NULL : "no-video";
+
+    // TODO: Adapt to work with not just chromecast!
+    vlc_renderer_item_t *p_renderer_item = vlc_renderer_item_new("chromecast", [displayName UTF8String],
+                                                                 [uri UTF8String], extra_uri, "cc_demux",
+                                                                 "", rendererFlags );
     if (p_renderer_item != NULL) {
         vlc_rd_add_item( p_rd, p_renderer_item );
         [_inputItemsForNetServices addObject:[NSValue valueWithPointer:p_renderer_item]];
@@ -331,7 +366,7 @@ NSString *const VLCBonjourRendererDemux         = @"VLCBonjourRendererDemux";
     NSString *uri = [NSString stringWithFormat:@"%@://%@:%ld", protocol, netService.hostName, netService.port];
     input_item_t *p_input_item = input_item_NewDirectory([uri UTF8String], [netService.name UTF8String], ITEM_NET );
     if (p_input_item != NULL) {
-        services_discovery_AddItem( p_sd, p_input_item, NULL);
+        services_discovery_AddItem(p_sd, p_input_item);
         [_inputItemsForNetServices addObject:[NSValue valueWithPointer:p_input_item]];
         [_resolvedNetServices addObject:netService];
     }
@@ -388,9 +423,9 @@ static void CloseSD(vlc_object_t *p_this)
 static int OpenRD(vlc_object_t *p_this)
 {
     vlc_renderer_discovery_t *p_rd = (vlc_renderer_discovery_t *)p_this;
-    vlc_renderer_discovery_sys *p_sys = NULL;
+    struct vlc_renderer_discovery_sys *p_sys = NULL;
 
-    p_rd->p_sys = p_sys = calloc(1, sizeof(vlc_renderer_discovery_sys));
+    p_rd->p_sys = p_sys = calloc(1, sizeof(struct vlc_renderer_discovery_sys));
     if (!p_sys) {
         return VLC_ENOMEM;
     }
@@ -407,7 +442,7 @@ static int OpenRD(vlc_object_t *p_this)
 static void CloseRD(vlc_object_t *p_this)
 {
     vlc_renderer_discovery_t *p_rd = (vlc_renderer_discovery_t *)p_this;
-    vlc_renderer_discovery_sys *p_sys = p_rd->p_sys;
+    struct vlc_renderer_discovery_sys *p_sys = p_rd->p_sys;
 
     VLCNetServiceDiscoveryController *discoveryController = (__bridge VLCNetServiceDiscoveryController *)(p_sys->discoveryController);
     [discoveryController stopDiscovery];

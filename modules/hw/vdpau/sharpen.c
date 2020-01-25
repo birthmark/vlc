@@ -22,19 +22,19 @@
 # include "config.h"
 #endif
 
+#include <stdatomic.h>
 #include <stdlib.h>
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_filter.h>
 #include <vlc_picture.h>
-#include <vlc_atomic.h>
 #include "vlc_vdpau.h"
 
-struct filter_sys_t
+typedef struct
 {
     atomic_uint_fast32_t sigma;
-};
+} filter_sys_t;
 
 static float vlc_to_vdp_sigma(float sigma)
 {
@@ -61,7 +61,7 @@ static int SharpenCallback(vlc_object_t *obj, const char *varname,
 static picture_t *Sharpen(filter_t *filter, picture_t *pic)
 {
     filter_sys_t *sys = filter->p_sys;
-    vlc_vdp_video_field_t *f = pic->context;
+    vlc_vdp_video_field_t *f = VDPAU_FIELD_FROM_PICCTX(pic->context);
     union { uint32_t u; float f; } u;
 
     if (unlikely(f == NULL))
@@ -83,6 +83,9 @@ static int Open(vlc_object_t *obj)
 {
     filter_t *filter = (filter_t *)obj;
 
+    if ( filter->vctx_in == NULL ||
+         vlc_video_context_GetType(filter->vctx_in) != VLC_VIDEO_CONTEXT_VDPAU )
+        return VLC_EGENERIC;
     if (filter->fmt_in.video.i_chroma != VLC_CODEC_VDPAU_VIDEO_420
      && filter->fmt_in.video.i_chroma != VLC_CODEC_VDPAU_VIDEO_422
      && filter->fmt_in.video.i_chroma != VLC_CODEC_VDPAU_VIDEO_444)
@@ -90,21 +93,26 @@ static int Open(vlc_object_t *obj)
     if (!video_format_IsSimilar(&filter->fmt_in.video, &filter->fmt_out.video))
         return VLC_EGENERIC;
 
+    vlc_decoder_device *dec_dev = vlc_video_context_HoldDevice(filter->vctx_in);
+    assert(dec_dev != NULL);
+
+    vdpau_decoder_device_t *vdpau_decoder = GetVDPAUOpaqueDevice(dec_dev);
+    if (vdpau_decoder == NULL)
+    {
+        vlc_decoder_device_Release(dec_dev);
+        return VLC_EBADVAR;
+    }
+
     /* Check for sharpen support */
-    vdp_t *vdp;
-    VdpDevice device;
     VdpStatus err;
     VdpBool ok;
 
-    err = vdp_get_x11(NULL, -1, &vdp, &device);
-    if (err != VDP_STATUS_OK)
-        return VLC_EGENERIC; /* Weird. The decoder should be active... */
-
-    err = vdp_video_mixer_query_feature_support(vdp, device,
+    err = vdp_video_mixer_query_feature_support(vdpau_decoder->vdp,
+                                                vdpau_decoder->device,
                                        VDP_VIDEO_MIXER_FEATURE_SHARPNESS, &ok);
+    vlc_decoder_device_Release(dec_dev);
     if (err != VDP_STATUS_OK)
         ok = VDP_FALSE;
-    vdp_release_x11(vdp);
 
     if (ok != VDP_TRUE)
     {

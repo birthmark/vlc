@@ -24,15 +24,16 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <pthread.h>
+#include <linux/limits.h>
 
 #include <vlc_common.h>
 #include "libvlc.h"
 #include "config/configuration.h"
 
-char *config_GetLibDir (void)
+static char *config_GetLibDirRaw(void)
 {
     char *path = NULL;
-
     /* Find the path to libvlc (i.e. ourselves) */
     FILE *maps = fopen ("/proc/self/maps", "rte");
     if (maps == NULL)
@@ -64,43 +65,34 @@ char *config_GetLibDir (void)
             continue;
         *file = '\0';
 
-        if (asprintf (&path, "%s/"PACKAGE, dir) == -1)
-            path = NULL;
+        path = strdup(dir);
         break;
     }
 
     free (line);
     fclose (maps);
 error:
-    return (path != NULL) ? path : strdup (PKGLIBDIR);
+    if (path == NULL)
+        path = strdup(LIBDIR);
+    return path;
 }
 
-char *config_GetDataDir (void)
+static char cached_path[PATH_MAX] = LIBDIR;
+
+static void config_GetLibDirOnce(void)
 {
-    const char *path = getenv ("VLC_DATA_PATH");
-    if (path != NULL)
-        return strdup (path);
+    char *path = config_GetLibDirRaw();
+    if (likely(path != NULL && sizeof (cached_path) > strlen(path)))
+        strcpy(cached_path, path);
+    free(path);
+}
 
-    char *libdir = config_GetLibDir ();
-    if (libdir == NULL)
-        return NULL; /* OOM */
+char *config_GetLibDir(void)
+{
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
 
-    char *datadir = NULL;
-
-    /* There are no clean ways to do this, are there?
-     * Due to multilibs, we cannot simply append ../share/. */
-    char *p = strstr (libdir, "/lib/");
-    if (p != NULL)
-    {
-        char *p2;
-        /* Deal with nested "lib" directories. Grmbl. */
-        while ((p2 = strstr (p + 4, "/lib/")) != NULL)
-            p = p2;
-        *p = '\0';
-
-        if (unlikely(asprintf (&datadir, "%s/share/"PACKAGE, libdir) == -1))
-            datadir = NULL;
-    }
-    free (libdir);
-    return (datadir != NULL) ? datadir : strdup (PKGDATADIR);
+    /* Reading and parsing /proc/self/maps is slow, so cache the value since
+     * it's guaranteed not to change during the life-time of the process. */
+    pthread_once(&once, config_GetLibDirOnce);
+    return strdup(cached_path);
 }

@@ -35,7 +35,6 @@
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_access.h>
-#include <vlc_input.h>
 #include <vlc_interrupt.h>
 #include <vlc_dialog.h>
 
@@ -47,7 +46,7 @@
 #include "dvb.h"
 #include "scan.h"
 
-struct access_sys_t
+typedef struct
 {
     demux_handle_t p_demux_handles[MAX_DEMUX];
     dvb_sys_t dvb;
@@ -55,7 +54,7 @@ struct access_sys_t
     /* Scan */
     struct scan_t *scan;
     bool done;
-};
+} access_sys_t;
 
 /*****************************************************************************
  * Module descriptor
@@ -68,10 +67,10 @@ static void Close( vlc_object_t *p_this );
 
 /* Satellite */
 #define SATELLITE_TEXT N_("Satellite scanning config")
-#define SATELLITE_LONGTEXT N_("filename of config file in share/dvb/dvb-s")
+#define SATELLITE_LONGTEXT N_("Filename of config file in share/dvb/dvb-s.")
 
 #define SCANLIST_TEXT N_("Scan tuning list")
-#define SCANLIST_LONGTEXT N_("filename containing initial scan tuning data")
+#define SCANLIST_LONGTEXT N_("Filename containing initial scan tuning data.")
 
 #define SCAN_NIT_TEXT N_("Use NIT for scanning services")
 
@@ -103,17 +102,17 @@ vlc_module_end ()
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int Control( access_t *, int, va_list );
+static int Control( stream_t *, int, va_list );
 
-static block_t *BlockScan( access_t *, bool * );
+static block_t *BlockScan( stream_t *, bool * );
 
-#define DVB_SCAN_MAX_LOCK_TIME (2*CLOCK_FREQ)
+#define DVB_SCAN_MAX_LOCK_TIME VLC_TICK_FROM_SEC(2)
 
-static void FilterUnset( access_t *, int i_max );
-static void FilterSet( access_t *, int i_pid, int i_type );
+static void FilterUnset( stream_t *, int i_max );
+static void FilterSet( stream_t *, int i_pid, int i_type );
 
-static void VarInit( access_t * );
-static int  ParseMRL( access_t * );
+static void VarInit( stream_t * );
+static int  ParseMRL( stream_t * );
 
 static int ScanFrontendTuningHandler( scan_t *, void *, const scan_tuner_config_t * );
 static int ScanFilterHandler( scan_t *, void *, uint16_t, bool );
@@ -125,7 +124,7 @@ static int ScanReadCallback( scan_t *, void *,  unsigned, size_t, uint8_t *, siz
  *****************************************************************************/
 static int Open( vlc_object_t *p_this )
 {
-    access_t     *p_access = (access_t*)p_this;
+    stream_t     *p_access = (stream_t*)p_this;
     access_sys_t *p_sys;
 
     if( p_access->b_preparsing )
@@ -152,7 +151,10 @@ static int Open( vlc_object_t *p_this )
         p_access->pf_block = BlockScan;
     }
     else
+    {
+        free( p_sys );
         return VLC_EGENERIC; /* let the DTV plugin do the work */
+    }
 
     /* Getting frontend info */
     if( FrontendOpen( p_this, &p_sys->dvb, p_access->psz_name ) )
@@ -204,7 +206,7 @@ static int Open( vlc_object_t *p_this )
  *****************************************************************************/
 static void Close( vlc_object_t *p_this )
 {
-    access_t     *p_access = (access_t*)p_this;
+    stream_t     *p_access = (stream_t*)p_this;
     access_sys_t *p_sys = p_access->p_sys;
 
     FilterUnset( p_access, MAX_DEMUX );
@@ -219,7 +221,7 @@ static void Close( vlc_object_t *p_this )
 static int ScanFrontendTuningHandler( scan_t *p_scan, void *p_privdata,
                                       const scan_tuner_config_t *p_cfg )
 {
-    access_t *p_access = (access_t *) p_privdata;
+    stream_t *p_access = (stream_t *) p_privdata;
     access_sys_t *sys = p_access->p_sys;
     VLC_UNUSED(p_scan);
 
@@ -247,7 +249,7 @@ static int ScanFrontendTuningHandler( scan_t *p_scan, void *p_privdata,
 
 static int ScanStatsCallback( scan_t *p_scan, void *p_privdata, int *pi_snr )
 {
-    access_t *p_access = (access_t *) p_privdata;
+    stream_t *p_access = (stream_t *) p_privdata;
     access_sys_t *sys = p_access->p_sys;
     VLC_UNUSED(p_scan);
 
@@ -263,7 +265,7 @@ static int ScanStatsCallback( scan_t *p_scan, void *p_privdata, int *pi_snr )
 
 static int ScanFilterHandler( scan_t *p_scan, void *p_privdata, uint16_t i_pid, bool b_set )
 {
-    access_t *p_access = (access_t *) p_privdata;
+    stream_t *p_access = (stream_t *) p_privdata;
     VLC_UNUSED(p_scan);
 
     if( b_set )
@@ -276,7 +278,7 @@ static int ScanReadCallback( scan_t *p_scan, void *p_privdata,
                              unsigned i_probe_timeout, size_t i_packets_max,
                              uint8_t *p_packet, size_t *pi_count )
 {
-    access_t *p_access = (access_t *) p_privdata;
+    stream_t *p_access = (stream_t *) p_privdata;
     access_sys_t *p_sys = p_access->p_sys;
     *pi_count = 0;
 
@@ -292,19 +294,19 @@ static int ScanReadCallback( scan_t *p_scan, void *p_privdata,
     FrontendGetStatus( &p_sys->dvb, &status );
     bool b_has_lock = status.b_has_lock;
 
-    mtime_t i_scan_start = mdate();
+    vlc_tick_t i_scan_start = vlc_tick_now();
 
     for( ; *pi_count == 0; )
     {
         /* Find if some data is available */
         int i_ret;
 
-        mtime_t i_timeout = b_has_lock ? i_probe_timeout:
+        vlc_tick_t i_timeout = b_has_lock ? i_probe_timeout:
                                          DVB_SCAN_MAX_LOCK_TIME;
 
         do
         {
-            mtime_t i_poll_timeout = i_scan_start - mdate() + i_timeout;
+            vlc_tick_t i_poll_timeout = i_scan_start - vlc_tick_now() + i_timeout;
 
             i_ret = 0;
 
@@ -332,7 +334,7 @@ static int ScanReadCallback( scan_t *p_scan, void *p_privdata,
             FrontendGetStatus( &p_sys->dvb, &status );
             if( status.b_has_lock && !b_has_lock )
             {
-                i_scan_start = mdate();
+                i_scan_start = vlc_tick_now();
                 b_has_lock = true;
             }
         }
@@ -358,7 +360,7 @@ static int ScanReadCallback( scan_t *p_scan, void *p_privdata,
 /*****************************************************************************
  * BlockScan:
  *****************************************************************************/
-static block_t *BlockScan( access_t *p_access, bool *restrict eof )
+static block_t *BlockScan( stream_t *p_access, bool *restrict eof )
 {
     access_sys_t *p_sys = p_access->p_sys;
     scan_t *p_scan = p_sys->scan;
@@ -381,11 +383,10 @@ static block_t *BlockScan( access_t *p_access, bool *restrict eof )
 /*****************************************************************************
  * Control:
  *****************************************************************************/
-static int Control( access_t *p_access, int i_query, va_list args )
+static int Control( stream_t *p_access, int i_query, va_list args )
 {
     access_sys_t *sys = p_access->p_sys;
     bool         *pb_bool;
-    int64_t      *pi_64;
     double       *pf1, *pf2;
     frontend_statistic_t stat;
 
@@ -395,7 +396,7 @@ static int Control( access_t *p_access, int i_query, va_list args )
         case STREAM_CAN_FASTSEEK:
         case STREAM_CAN_PAUSE:
         case STREAM_CAN_CONTROL_PACE:
-            pb_bool = (bool*)va_arg( args, bool* );
+            pb_bool = va_arg( args, bool * );
             *pb_bool = false;
             break;
 
@@ -404,13 +405,12 @@ static int Control( access_t *p_access, int i_query, va_list args )
             return VLC_SUCCESS;
 
         case STREAM_GET_PTS_DELAY:
-            pi_64 = (int64_t*)va_arg( args, int64_t * );
-            *pi_64 = DEFAULT_PTS_DELAY;
+            *va_arg( args, vlc_tick_t * ) = DEFAULT_PTS_DELAY;
             break;
 
         case STREAM_GET_SIGNAL:
-            pf1 = (double*)va_arg( args, double * );
-            pf2 = (double*)va_arg( args, double * );
+            pf1 = va_arg( args, double * );
+            pf2 = va_arg( args, double * );
 
             *pf1 = *pf2 = 0;
             if( !FrontendGetStatistic( &sys->dvb, &stat ) )
@@ -430,7 +430,7 @@ static int Control( access_t *p_access, int i_query, va_list args )
 /*****************************************************************************
  * FilterSet/FilterUnset:
  *****************************************************************************/
-static void FilterSet( access_t *p_access, int i_pid, int i_type )
+static void FilterSet( stream_t *p_access, int i_pid, int i_type )
 {
     access_sys_t *p_sys = p_access->p_sys;
     int i;
@@ -461,7 +461,7 @@ static void FilterSet( access_t *p_access, int i_pid, int i_type )
     p_sys->p_demux_handles[i].i_pid = i_pid;
 }
 
-static void FilterUnset( access_t *p_access, int i_max )
+static void FilterUnset( stream_t *p_access, int i_max )
 {
     access_sys_t *p_sys = p_access->p_sys;
 
@@ -478,7 +478,7 @@ static void FilterUnset( access_t *p_access, int i_max )
 /*****************************************************************************
  * VarInit/ParseMRL:
  *****************************************************************************/
-static void VarInit( access_t *p_access )
+static void VarInit( stream_t *p_access )
 {
     var_Create( p_access, "dvb-adapter", VLC_VAR_INTEGER | VLC_VAR_DOINHERIT );
     var_Create( p_access, "dvb-device", VLC_VAR_INTEGER | VLC_VAR_DOINHERIT );
@@ -504,7 +504,7 @@ static void VarInit( access_t *p_access )
 }
 
 /* */
-static int ParseMRL( access_t *p_access )
+static int ParseMRL( stream_t *p_access )
 {
     char *psz_dup = strdup( p_access->psz_location );
     char *psz_parser = psz_dup;

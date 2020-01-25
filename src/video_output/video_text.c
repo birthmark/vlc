@@ -2,7 +2,6 @@
  * video_text.c : OSD text manipulation functions
  *****************************************************************************
  * Copyright (C) 1999-2010 VLC authors and VideoLAN
- * $Id$
  *
  * Author: Sigmund Augdal Helberg <dnumgis@videolan.org>
  *         Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
@@ -31,15 +30,15 @@
 #include <vlc_vout.h>
 #include <vlc_vout_osd.h>
 
-struct subpicture_updater_sys_t {
+typedef struct {
     int  position;
     char *text;
-};
+} osd_spu_updater_sys_t;
 
 static int OSDTextValidate(subpicture_t *subpic,
                            bool has_src_changed, const video_format_t *fmt_src,
                            bool has_dst_changed, const video_format_t *fmt_dst,
-                           mtime_t ts)
+                           vlc_tick_t ts)
 {
     VLC_UNUSED(subpic); VLC_UNUSED(ts);
     VLC_UNUSED(fmt_src); VLC_UNUSED(has_src_changed);
@@ -53,9 +52,9 @@ static int OSDTextValidate(subpicture_t *subpic,
 static void OSDTextUpdate(subpicture_t *subpic,
                           const video_format_t *fmt_src,
                           const video_format_t *fmt_dst,
-                          mtime_t ts)
+                          vlc_tick_t ts)
 {
-    subpicture_updater_sys_t *sys = subpic->updater.p_sys;
+    osd_spu_updater_sys_t *sys = subpic->updater.p_sys;
     VLC_UNUSED(fmt_src); VLC_UNUSED(ts);
 
     if( fmt_dst->i_sar_num <= 0 || fmt_dst->i_sar_den <= 0 )
@@ -80,6 +79,7 @@ static void OSDTextUpdate(subpicture_t *subpic,
     const int   margin_h     = margin_ratio * fmt_dst->i_visible_width;
     const int   margin_v     = margin_ratio * fmt_dst->i_visible_height;
 
+    r->i_text_align = sys->position;
     r->i_align = sys->position;
     r->i_x = 0;
     if (r->i_align & SUBPICTURE_ALIGN_LEFT)
@@ -96,20 +96,20 @@ static void OSDTextUpdate(subpicture_t *subpic,
 
 static void OSDTextDestroy(subpicture_t *subpic)
 {
-    subpicture_updater_sys_t *sys = subpic->updater.p_sys;
+    osd_spu_updater_sys_t *sys = subpic->updater.p_sys;
 
     free(sys->text);
     free(sys);
 }
 
 void vout_OSDText(vout_thread_t *vout, int channel,
-                   int position, mtime_t duration, const char *text)
+                   int position, vlc_tick_t duration, const char *text)
 {
     assert( (position & ~SUBPICTURE_ALIGN_MASK) == 0);
     if (!var_InheritBool(vout, "osd") || duration <= 0)
         return;
 
-    subpicture_updater_sys_t *sys = malloc(sizeof(*sys));
+    osd_spu_updater_sys_t *sys = malloc(sizeof(*sys));
     if (!sys)
         return;
     sys->position = position;
@@ -129,7 +129,7 @@ void vout_OSDText(vout_thread_t *vout, int channel,
     }
 
     subpic->i_channel  = channel;
-    subpic->i_start    = mdate();
+    subpic->i_start    = vlc_tick_now();
     subpic->i_stop     = subpic->i_start + duration;
     subpic->b_ephemer  = true;
     subpic->b_absolute = false;
@@ -138,18 +138,14 @@ void vout_OSDText(vout_thread_t *vout, int channel,
     vout_PutSubpicture(vout, subpic);
 }
 
-void vout_OSDMessage(vout_thread_t *vout, int channel, const char *format, ...)
+void vout_OSDMessageVa(vout_thread_t *vout, int channel,
+                       const char *format, va_list args)
 {
-    va_list args;
-    va_start(args, format);
-
     char *string;
     if (vasprintf(&string, format, args) != -1) {
         vout_OSDText(vout, channel,
-                     SUBPICTURE_ALIGN_TOP|SUBPICTURE_ALIGN_RIGHT, 1000000,
+                     SUBPICTURE_ALIGN_TOP|SUBPICTURE_ALIGN_RIGHT, VLC_TICK_FROM_SEC(1),
                      string);
         free(string);
     }
-    va_end(args);
 }
-

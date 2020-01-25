@@ -35,7 +35,7 @@ PKGS_FOUND += lua luac
 endif
 
 $(TARBALLS)/lua-$(LUA_VERSION).tar.gz:
-	$(call download,$(LUA_URL))
+	$(call download_pkg,$(LUA_URL),lua)
 
 .sum-lua: lua-$(LUA_VERSION).tar.gz
 
@@ -46,6 +46,7 @@ lua: lua-$(LUA_VERSION).tar.gz .sum-lua
 	$(APPLY) $(SRC)/lua/luac-32bits.patch
 	$(APPLY) $(SRC)/lua/no-localeconv.patch
 	$(APPLY) $(SRC)/lua/lua-ios-support.patch
+	$(APPLY) $(SRC)/lua/implib.patch
 ifdef HAVE_WINSTORE
 	$(APPLY) $(SRC)/lua/lua-winrt.patch
 endif
@@ -64,16 +65,17 @@ ifdef HAVE_WIN32
 	cd $(UNPACK_DIR) && sed -i.orig -e 's/lua luac/lua.exe luac.exe/' Makefile
 endif
 	cd $(UNPACK_DIR)/src && sed -i.orig \
-		-e 's/CC=/#CC=/' \
-		-e 's/= *strip/=$(STRIP)/' \
-		-e 's/= *ranlib/= $(RANLIB)/' \
+		-e 's%CC=%#CC=%' \
+		-e 's%= *strip%=$(STRIP)%' \
+		-e 's%= *ranlib%= $(RANLIB)%' \
+		-e 's%AR= *ar%AR= $(AR)%' \
 		Makefile
 	$(MOVE)
 
 .lua: lua
 	cd $< && $(HOSTVARS_PIC) $(MAKE) $(LUA_TARGET)
 ifdef HAVE_WIN32
-	cd $</src && $(HOSTVARS) $(MAKE) liblua.a
+	cd $< && $(HOSTVARS) $(MAKE) -C src liblua.a
 endif
 	cd $< && $(HOSTVARS) $(MAKE) install INSTALL_TOP="$(PREFIX)"
 ifdef HAVE_WIN32
@@ -96,7 +98,7 @@ luac: lua-$(LUA_VERSION).tar.gz .sum-luac
 	# DO NOT use the same intermediate directory as the lua target
 	rm -Rf -- $@-$(LUA_VERSION) $@
 	mkdir -- $@-$(LUA_VERSION)
-	tar -x -v -z -C $@-$(LUA_VERSION) --strip-components=1 -f $<
+	tar -x -v -z -o -C $@-$(LUA_VERSION) --strip-components=1 -f $<
 	(cd luac-$(LUA_VERSION) && patch -p1) < $(SRC)/lua/luac-32bits.patch
 	mv luac-$(LUA_VERSION) luac
 

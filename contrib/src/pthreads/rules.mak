@@ -1,37 +1,23 @@
-# POSIX threads
+# winpthreads
 
-ifndef HAVE_WIN32
-PKGS_FOUND += pthreads
-endif
-
-PTHREADS_W32_VERSION := 2-9-1
-PTHREADS_W32_URL := ftp://sources.redhat.com/pub/pthreads-win32/pthreads-w32-$(PTHREADS_W32_VERSION)-release.tar.gz
-
-$(TARBALLS)/pthreads-w32-$(PTHREADS_W32_VERSION)-release.tar.gz:
-	$(call download_pkg,$(PTHREADS_W32_URL),pthreads)
-
-.sum-pthreads: pthreads-w32-$(PTHREADS_W32_VERSION)-release.tar.gz
+WINPTHREADS_VERSION := 5.0.3
+WINPTHREADS_URL := https://sourceforge.net/projects/mingw-w64/files/mingw-w64/mingw-w64-release/mingw-w64-v$(WINPTHREADS_VERSION).tar.bz2/download
 
 ifdef HAVE_WIN32
-pthreads: pthreads-w32-$(PTHREADS_W32_VERSION)-release.tar.gz .sum-pthreads
-	$(UNPACK)
-	sed -e 's/^CROSS.*=/CROSS ?=/' -i.orig $(UNPACK_DIR)/GNUmakefile
-ifdef HAVE_WINSTORE
-	$(APPLY) $(SRC)/pthreads/winrt.patch
+PKGS += pthreads
 endif
+
+$(TARBALLS)/mingw-w64-v$(WINPTHREADS_VERSION).tar.bz2:
+	$(call download_pkg,$(WINPTHREADS_URL),winpthreads)
+
+.sum-pthreads: mingw-w64-v$(WINPTHREADS_VERSION).tar.bz2
+
+pthreads: mingw-w64-v$(WINPTHREADS_VERSION).tar.bz2 .sum-pthreads
+	$(UNPACK)
+	$(APPLY) $(SRC)/pthreads/0001-winpthreads-Fix-building-for-ARM-and-ARM64.patch
 	$(MOVE)
 
-ifdef HAVE_CROSS_COMPILE
-PTHREADS_W32_CONF := CROSS="$(HOST)-"
-endif
-
 .pthreads: pthreads
-	cd $< && $(HOSTVARS) $(PTHREADS_W32_CONF) $(MAKE) MAKEFLAGS=-j1 GC GC-static
-	mkdir -p -- "$(PREFIX)/include"
-	cd $< && cp -v pthread.h sched.h semaphore.h "$(PREFIX)/include/"
-	sed -e 's/#if HAVE_CONFIG_H/#if 0 \&\& HAVE_CONFIG_H/' -i \
-		"$(PREFIX)/include/pthread.h"
-	mkdir -p -- "$(PREFIX)/lib"
-	cp -v $</*.a $</*.dll "$(PREFIX)/lib/"
+	cd $</mingw-w64-libraries/winpthreads && $(HOSTVARS) ./configure $(HOSTCONF)
+	cd $< && $(MAKE) -C mingw-w64-libraries -C winpthreads install
 	touch $@
-endif

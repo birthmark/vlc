@@ -1,11 +1,13 @@
 # DVDNAV
 
-LIBDVDNAV_VERSION := 5.0.3
+LIBDVDNAV_VERSION := 6.0.1
 LIBDVDNAV_URL := $(VIDEOLAN)/libdvdnav/$(LIBDVDNAV_VERSION)/libdvdnav-$(LIBDVDNAV_VERSION).tar.bz2
 
 ifdef BUILD_DISCS
 ifdef GPL
+ifndef HAVE_WINSTORE
 PKGS += dvdnav
+endif
 endif
 endif
 ifeq ($(call need_pkg,"dvdnav >= 5.0.3"),)
@@ -19,12 +21,13 @@ $(TARBALLS)/libdvdnav-$(LIBDVDNAV_VERSION).tar.bz2:
 
 dvdnav: libdvdnav-$(LIBDVDNAV_VERSION).tar.bz2 .sum-dvdnav
 	$(UNPACK)
-	cd $(UNPACK_DIR) && sed -i -e 's,Requires.private,Requires,g' misc/*.pc.in
+	$(call pkg_static,"misc/dvdnav.pc.in")
 	$(MOVE)
 
-DEPS_dvdnav = dvdcss dvdread
+DEPS_dvdnav = dvdread $(DEPS_dvdread)
 
-.dvdnav: dvdnav .dvdcss .dvdread
+.dvdnav: dvdnav
+	$(REQUIRE_GPL)
 	$(RECONF) -I m4
 	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) --disable-examples
 	cd $< && $(MAKE) install

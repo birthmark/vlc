@@ -2,7 +2,6 @@
  * visual.c : Visualisation system
  *****************************************************************************
  * Copyright (C) 2002-2009 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Clément Stenac <zorglub@via.ecp.fr>
  *
@@ -65,11 +64,11 @@
 #define KAISER_PARAMETER_TEXT N_( "Kaiser window parameter" )
 #define KAISER_PARAMETER_LONGTEXT N_( \
       "The parameter alpha for the Kaiser window. Increasing alpha " \
-      "increases the main-lobe width and decreases the side-lobe amplitude. " )
+      "increases the main-lobe width and decreases the side-lobe amplitude." )
 
 #define NBBANDS_TEXT N_( "Show 80 bands instead of 20" )
 #define SPNBBANDS_LONGTEXT N_( \
-      "More bands for the spectrometer : 80 if enabled else 20." )
+      "More bands for the spectrometer: 80 if enabled, else 20." )
 
 #define SEPAR_TEXT N_( "Number of blank pixels between bands.")
 
@@ -175,16 +174,17 @@ vlc_module_end ()
  * Local prototypes
  *****************************************************************************/
 static block_t *DoWork( filter_t *, block_t * );
+static void Flush( filter_t * );
 static void *Thread( void *);
 
-struct filter_sys_t
+typedef struct
 {
     block_fifo_t    *fifo;
     vout_thread_t   *p_vout;
     visual_effect_t **effect;
     int             i_effect;
     vlc_thread_t    thread;
-};
+} filter_sys_t;
 
 /*****************************************************************************
  * Open: open the visualizer
@@ -298,8 +298,11 @@ static int Open( vlc_object_t *p_this )
         .i_visible_height = height,
         .i_sar_num = 1,
         .i_sar_den = 1,
+        .transfer = TRANSFER_FUNC_SRGB,
+        .primaries = COLOR_PRIMARIES_SRGB,
+        .space = COLOR_SPACE_SRGB,
     };
-    p_sys->p_vout = aout_filter_RequestVout( p_filter, NULL, &fmt );
+    p_sys->p_vout = aout_filter_GetVout( p_filter, &fmt );
     if( p_sys->p_vout == NULL )
     {
         msg_Err( p_filter, "no suitable vout module" );
@@ -309,7 +312,7 @@ static int Open( vlc_object_t *p_this )
     p_sys->fifo = block_FifoNew();
     if( unlikely( p_sys->fifo == NULL ) )
     {
-        aout_filter_RequestVout( p_filter, p_sys->p_vout, NULL );
+        vout_Close( p_sys->p_vout );
         goto error;
     }
 
@@ -317,13 +320,14 @@ static int Open( vlc_object_t *p_this )
                    VLC_THREAD_PRIORITY_VIDEO ) )
     {
         block_FifoRelease( p_sys->fifo );
-        aout_filter_RequestVout( p_filter, p_sys->p_vout, NULL );
+        vout_Close( p_sys->p_vout );
         goto error;
     }
 
     p_filter->fmt_in.audio.i_format = VLC_CODEC_FL32;
     p_filter->fmt_out.audio = p_filter->fmt_in.audio;
     p_filter->pf_audio_filter = DoWork;
+    p_filter->pf_flush = Flush;
     return VLC_SUCCESS;
 
 error:
@@ -340,6 +344,7 @@ static block_t *DoRealWork( filter_t *p_filter, block_t *p_in_buf )
 
     /* First, get a new picture */
     picture_t *p_outpic = vout_GetPicture( p_sys->p_vout );
+    p_outpic->b_progressive = true;
     if( unlikely(p_outpic == NULL) )
         return p_in_buf;
 
@@ -387,9 +392,16 @@ static void *Thread( void *data )
 static block_t *DoWork( filter_t *p_filter, block_t *p_in_buf )
 {
     block_t *block = block_Duplicate( p_in_buf );
+    filter_sys_t *p_sys = p_filter->p_sys;
     if( likely(block != NULL) )
-        block_FifoPut( p_filter->p_sys->fifo, block );
+        block_FifoPut( p_sys->fifo, block );
     return p_in_buf;
+}
+
+static void Flush( filter_t *p_filter )
+{
+    filter_sys_t *p_sys = p_filter->p_sys;
+    vout_FlushAll( p_sys->p_vout );
 }
 
 /*****************************************************************************
@@ -403,7 +415,7 @@ static void Close( vlc_object_t *p_this )
     vlc_cancel( p_sys->thread );
     vlc_join( p_sys->thread, NULL );
     block_FifoRelease( p_sys->fifo );
-    aout_filter_RequestVout( p_filter, p_filter->p_sys->p_vout, NULL );
+    vout_Close( p_sys->p_vout );
 
     /* Free the list */
     for( int i = 0; i < p_sys->i_effect; i++ )

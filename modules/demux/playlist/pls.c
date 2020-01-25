@@ -2,7 +2,6 @@
  * pls.c : PLS playlist format import
  *****************************************************************************
  * Copyright (C) 2004 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Clément Stenac <zorglub@videolan.org>
  * Authors: Sigmund Augdal Helberg <dnumgis@videolan.org>
@@ -30,45 +29,44 @@
 #endif
 
 #include <vlc_common.h>
-#include <vlc_demux.h>
+#include <vlc_access.h>
+#include <vlc_charset.h>
 
 #include "playlist.h"
 
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int Demux( demux_t *p_demux);
+static int ReadDir( stream_t *, input_item_node_t * );
 
 /*****************************************************************************
  * Import_PLS: main import function
  *****************************************************************************/
 int Import_PLS( vlc_object_t *p_this )
 {
-    demux_t *p_demux = (demux_t *)p_this;
+    stream_t *p_demux = (stream_t *)p_this;
     const uint8_t *p_peek;
-    CHECK_FILE();
-    CHECK_PEEK( p_peek, 10 );
 
-    if( POKE( p_peek, "[playlist]", 10 ) || POKE( p_peek, "[Reference]", 10 ) ||
-        demux_IsPathExtension( p_demux, ".pls" )   || demux_IsForced( p_demux, "pls" ) )
-    {
-        ;
+    CHECK_FILE(p_demux);
+
+    if( vlc_stream_Peek( p_demux->s, &p_peek, 10 ) < 10 ) {
+        msg_Dbg( p_demux, "not enough data" );
+        return VLC_EGENERIC;
     }
-    else return VLC_EGENERIC;
+
+    if( strncasecmp( (const char *)p_peek, "[playlist]", 10 )
+     && !stream_HasExtension( p_demux, ".pls" ) )
+        return VLC_EGENERIC;
 
     msg_Dbg( p_demux, "found valid PLS playlist file");
-    p_demux->pf_demux = Demux;
-    p_demux->pf_control = Control;
+    p_demux->pf_readdir = ReadDir;
+    p_demux->pf_control = access_vaDirectoryControlHelper;
 
     return VLC_SUCCESS;
 }
 
-static int Demux( demux_t *p_demux )
+static int ReadDir( stream_t *p_demux, input_item_node_t *p_subitems )
 {
-    char *psz_prefix = FindPrefix( p_demux );
-    if( unlikely(psz_prefix == NULL) )
-        return VLC_DEMUXER_EOF;
-
     char          *psz_name = NULL;
     char          *psz_line;
     char          *psz_mrl = NULL;
@@ -77,15 +75,25 @@ static int Demux( demux_t *p_demux )
     char          *psz_value;
     int            i_item = -1;
     input_item_t *p_input;
-
-    input_item_t *p_current_input = GetCurrentItem(p_demux);
-
-    input_item_node_t *p_subitems = input_item_node_Create( p_current_input );
+    bool ascii = true;
+    bool unicode = true;
 
     while( ( psz_line = vlc_stream_ReadLine( p_demux->s ) ) )
     {
-        if( !strncasecmp( psz_line, "[playlist]", sizeof("[playlist]")-1 ) ||
-            !strncasecmp( psz_line, "[Reference]", sizeof("[Reference]")-1 ) )
+        if (ascii && !IsASCII(psz_line))
+        {
+            unicode = IsUTF8(psz_line);
+            ascii = false;
+        }
+
+        if (!unicode)
+        {
+            char *latin = FromLatin1(psz_line);
+            free(psz_line);
+            psz_line = latin;
+        }
+
+        if( !strncasecmp( psz_line, "[playlist]", sizeof("[playlist]")-1 ) )
         {
             free( psz_line );
             continue;
@@ -132,9 +140,8 @@ static int Demux( demux_t *p_demux )
             if( psz_mrl )
             {
                 p_input = input_item_New( psz_mrl, psz_name );
-                input_item_CopyOptions( p_input, p_current_input );
                 input_item_node_AppendItem( p_subitems, p_input );
-                vlc_gc_decref( p_input );
+                input_item_Release( p_input );
                 free( psz_mrl_orig );
                 psz_mrl_orig = psz_mrl = NULL;
             }
@@ -147,18 +154,11 @@ static int Demux( demux_t *p_demux )
             i_item = i_new_item;
         }
 
-        if( !strncasecmp( psz_key, "file", sizeof("file") -1 ) ||
-            !strncasecmp( psz_key, "Ref", sizeof("Ref") -1 ) )
+        if( !strncasecmp( psz_key, "file", sizeof("file") -1 ) )
         {
             free( psz_mrl_orig );
             psz_mrl_orig =
-            psz_mrl = ProcessMRL( psz_value, psz_prefix );
-
-            if( !strncasecmp( psz_key, "Ref", sizeof("Ref") -1 ) )
-            {
-                if( !strncasecmp( psz_mrl, "http://", sizeof("http://") -1 ) )
-                    memcpy( psz_mrl, "mmsh", 4 );
-            }
+            psz_mrl = ProcessMRL( psz_value, p_demux->psz_url );
         }
         else if( !strncasecmp( psz_key, "title", sizeof("title") -1 ) )
         {
@@ -177,9 +177,8 @@ static int Demux( demux_t *p_demux )
     if( psz_mrl )
     {
         p_input = input_item_New( psz_mrl, psz_name );
-        input_item_CopyOptions( p_input, p_current_input );
         input_item_node_AppendItem( p_subitems, p_input );
-        vlc_gc_decref( p_input );
+        input_item_Release( p_input );
         free( psz_mrl_orig );
     }
     else
@@ -189,9 +188,5 @@ static int Demux( demux_t *p_demux )
     free( psz_name );
     psz_name = NULL;
 
-    input_item_node_PostAndDelete( p_subitems );
-
-    vlc_gc_decref(p_current_input);
-    free( psz_prefix );
-    return 0; /* Needed for correct operation of go back */
+    return VLC_SUCCESS;
 }

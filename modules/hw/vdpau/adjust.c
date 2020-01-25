@@ -32,13 +32,13 @@
 #include <vlc_picture.h>
 #include "vlc_vdpau.h"
 
-struct filter_sys_t
+typedef struct
 {
     vlc_atomic_float brightness;
     vlc_atomic_float contrast;
     vlc_atomic_float saturation;
     vlc_atomic_float hue;
-};
+} filter_sys_t;
 
 static float vlc_to_vdp_brightness(float brightness)
 {
@@ -108,7 +108,7 @@ static int HueCallback(vlc_object_t *obj, const char *varname,
 static picture_t *Adjust(filter_t *filter, picture_t *pic)
 {
     filter_sys_t *sys = filter->p_sys;
-    vlc_vdp_video_field_t *f = pic->context;
+    vlc_vdp_video_field_t *f = VDPAU_FIELD_FROM_PICCTX(pic->context);
 
     if (unlikely(f == NULL))
         return pic;
@@ -129,6 +129,9 @@ static int Open(vlc_object_t *obj)
 {
     filter_t *filter = (filter_t *)obj;
 
+    if ( filter->vctx_in == NULL ||
+         vlc_video_context_GetType(filter->vctx_in) != VLC_VIDEO_CONTEXT_VDPAU )
+        return VLC_EGENERIC;
     if (filter->fmt_in.video.i_chroma != VLC_CODEC_VDPAU_VIDEO_420
      && filter->fmt_in.video.i_chroma != VLC_CODEC_VDPAU_VIDEO_422
      && filter->fmt_in.video.i_chroma != VLC_CODEC_VDPAU_VIDEO_444)

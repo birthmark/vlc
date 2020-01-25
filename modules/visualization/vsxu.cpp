@@ -2,7 +2,6 @@
  * vsxu.cpp: visualization module wrapper for Vovoid VSXu
  *****************************************************************************
  * Copyright © 2009-2012 the VideoLAN team, Vovoid Media Technologies
- * $Id$
  *
  * Authors: Rémi Duraffort <ivoire@videolan.org>
  *          Laurent Aimar
@@ -73,6 +72,7 @@ vlc_module_end ()
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
+namespace {
 
 struct filter_sys_t
 {
@@ -91,6 +91,8 @@ struct filter_sys_t
 
     bool b_quit;
 };
+
+} // namespace
 
 static block_t *DoWork( filter_t *, block_t * );
 static void *Thread( void * );
@@ -248,7 +250,11 @@ static void *Thread( void *p_data )
     bool run = true;
 
     // tell main thread we are ready
-    vlc_gl_MakeCurrent( gl );
+    if( vlc_gl_MakeCurrent( gl ) != VLC_SUCCESS )
+    {
+        msg_Err( p_filter, "Can't attach gl context" );
+        return NULL;
+    }
 
     while ( run )
     {

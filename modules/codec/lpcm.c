@@ -2,7 +2,6 @@
  * lpcm.c: lpcm decoder/packetizer module
  *****************************************************************************
  * Copyright (C) 1999-2008 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Samuel Hocevar <sam@zoy.org>
  *          Henri Fallon <henri@videolan.org>
@@ -58,7 +57,7 @@ vlc_module_begin ()
     set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_ACODEC )
     set_description( N_("Linear PCM audio decoder") )
-    set_capability( "decoder", 100 )
+    set_capability( "audio decoder", 100 )
     set_callbacks( OpenDecoder, CloseCommon )
 
     add_submodule ()
@@ -80,7 +79,7 @@ vlc_module_end ()
 /*****************************************************************************
  * decoder_sys_t : lpcm decoder descriptor
  *****************************************************************************/
-struct decoder_sys_t
+typedef struct
 {
     /* Module mode */
     bool b_packetizer;
@@ -95,10 +94,10 @@ struct decoder_sys_t
     int      i_type;
     uint8_t  i_chans_to_reorder;
     uint8_t  pi_chan_table[AOUT_CHAN_MAX];
-};
+} decoder_sys_t;
 
 #ifdef ENABLE_SOUT
-struct encoder_sys_t
+typedef struct
 {
     int     i_channels;
     int     i_rate;
@@ -107,7 +106,7 @@ struct encoder_sys_t
     uint8_t *p_buffer;
     int     i_buffer_used;
     int     i_frame_num;
-};
+} encoder_sys_t;
 #endif
 
 /*
@@ -178,7 +177,8 @@ typedef struct
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static block_t *DecodeFrame  ( decoder_t *, block_t ** );
+static int DecodeFrame    ( decoder_t *, block_t * );
+static block_t *Packetize ( decoder_t *, block_t ** );
 static void Flush( decoder_t * );
 
 /* */
@@ -213,9 +213,8 @@ static int WidiHeader( unsigned *pi_rate,
 /*****************************************************************************
  * OpenCommon:
  *****************************************************************************/
-static int OpenCommon( vlc_object_t *p_this, bool b_packetizer )
+static int OpenCommon( decoder_t *p_dec, bool b_packetizer )
 {
-    decoder_t *p_dec = (decoder_t*)p_this;
     decoder_sys_t *p_sys;
     int i_type;
     int i_header_size;
@@ -252,14 +251,12 @@ static int OpenCommon( vlc_object_t *p_this, bool b_packetizer )
 
     /* Misc init */
     p_sys->b_packetizer = b_packetizer;
-    date_Set( &p_sys->end_date, 0 );
+    date_Set( &p_sys->end_date, VLC_TICK_INVALID );
     p_sys->i_type = i_type;
     p_sys->i_header_size = i_header_size;
     p_sys->i_chans_to_reorder = 0;
 
     /* Set output properties */
-    p_dec->fmt_out.i_cat = AUDIO_ES;
-
     if( b_packetizer )
     {
         switch( i_type )
@@ -297,19 +294,21 @@ static int OpenCommon( vlc_object_t *p_this, bool b_packetizer )
     }
 
     /* Set callback */
-    p_dec->pf_decode_audio = DecodeFrame;
-    p_dec->pf_packetize    = DecodeFrame;
-    p_dec->pf_flush        = Flush;
+    if( !b_packetizer )
+        p_dec->pf_decode    = DecodeFrame;
+    else
+        p_dec->pf_packetize = Packetize;
+    p_dec->pf_flush     = Flush;
 
     return VLC_SUCCESS;
 }
 static int OpenDecoder( vlc_object_t *p_this )
 {
-    return OpenCommon( p_this, false );
+    return OpenCommon( (decoder_t*) p_this, false );
 }
 static int OpenPacketizer( vlc_object_t *p_this )
 {
-    return OpenCommon( p_this, true );
+    return OpenCommon( (decoder_t*) p_this, true );
 }
 
 /*****************************************************************************
@@ -319,7 +318,7 @@ static void Flush( decoder_t *p_dec )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
 
-    date_Set( &p_sys->end_date, 0 );
+    date_Set( &p_sys->end_date, VLC_TICK_INVALID );
 }
 
 /*****************************************************************************
@@ -327,7 +326,7 @@ static void Flush( decoder_t *p_dec )
  ****************************************************************************
  * Beware, this function must be fed with complete frames (PES packet).
  *****************************************************************************/
-static block_t *DecodeFrame( decoder_t *p_dec, block_t **pp_block )
+static block_t *Packetize( decoder_t *p_dec, block_t **pp_block )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
     block_t       *p_block;
@@ -339,23 +338,25 @@ static block_t *DecodeFrame( decoder_t *p_dec, block_t **pp_block )
     p_block = *pp_block;
     *pp_block = NULL; /* So the packet doesn't get re-sent */
 
-    if( p_block->i_flags & BLOCK_FLAG_DISCONTINUITY )
-        Flush( p_dec );
-
-    if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
+    if( p_block->i_flags & (BLOCK_FLAG_CORRUPTED|BLOCK_FLAG_DISCONTINUITY) )
     {
-        block_Release( p_block );
-        return NULL;
+        Flush( p_dec );
+        if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
+        {
+            block_Release( p_block );
+            *pp_block = NULL;
+            return NULL;
+        }
     }
 
     /* Date management */
-    if( p_block->i_pts > VLC_TS_INVALID &&
+    if( p_block->i_pts != VLC_TICK_INVALID &&
         p_block->i_pts != date_Get( &p_sys->end_date ) )
     {
         date_Set( &p_sys->end_date, p_block->i_pts );
     }
 
-    if( !date_Get( &p_sys->end_date ) )
+    if( date_Get( &p_sys->end_date ) == VLC_TICK_INVALID )
     {
         /* We've just started the stream, wait for the first PTS. */
         block_Release( p_block );
@@ -412,7 +413,6 @@ static block_t *DecodeFrame( decoder_t *p_dec, block_t **pp_block )
     }
     p_dec->fmt_out.audio.i_rate = i_rate;
     p_dec->fmt_out.audio.i_channels = i_channels;
-    p_dec->fmt_out.audio.i_original_channels = i_original_channels;
     p_dec->fmt_out.audio.i_physical_channels = i_original_channels;
 
     if ( p_sys->i_type == LPCM_AOB )
@@ -444,22 +444,26 @@ static block_t *DecodeFrame( decoder_t *p_dec, block_t **pp_block )
         /* */
         if( i_bits == 16 )
         {
+            p_dec->fmt_out.audio.i_format =
             p_dec->fmt_out.i_codec = VLC_CODEC_S16N;
             p_dec->fmt_out.audio.i_bitspersample = 16;
         }
         else
         {
+            p_dec->fmt_out.audio.i_format =
             p_dec->fmt_out.i_codec = VLC_CODEC_S32N;
             p_dec->fmt_out.audio.i_bitspersample = 32;
         }
+        aout_FormatPrepare(&p_dec->fmt_out.audio);
 
         /* */
         block_t *p_aout_buffer;
-        if( decoder_UpdateAudioFormat( p_dec ) )
+        if( decoder_UpdateAudioFormat( p_dec ) != VLC_SUCCESS ||
+           !(p_aout_buffer = decoder_NewAudioBuffer( p_dec, i_frame_length )) )
+        {
+            block_Release( p_block );
             return NULL;
-        p_aout_buffer = decoder_NewAudioBuffer( p_dec, i_frame_length );
-        if( !p_aout_buffer )
-            return NULL;
+        }
 
         p_aout_buffer->i_pts = date_Get( &p_sys->end_date );
         p_aout_buffer->i_length =
@@ -468,20 +472,6 @@ static block_t *DecodeFrame( decoder_t *p_dec, block_t **pp_block )
 
         p_block->p_buffer += p_sys->i_header_size + i_padding;
         p_block->i_buffer -= p_sys->i_header_size + i_padding;
-
-        const unsigned block_nb_frames = p_block->i_buffer / ( i_bits * 4 / 8 );
-        const unsigned aout_nb_frames = p_aout_buffer->i_nb_samples
-            / ( p_dec->fmt_out.audio.i_bitspersample / 8 );
-
-        if( block_nb_frames > aout_nb_frames )
-        {
-            msg_Warn( p_dec, "invalid block size" );
-
-            block_Release( p_block );
-            block_Release( p_aout_buffer );
-
-            return NULL;
-        }
 
         switch( p_sys->i_type )
         {
@@ -509,6 +499,14 @@ static block_t *DecodeFrame( decoder_t *p_dec, block_t **pp_block )
         block_Release( p_block );
         return p_aout_buffer;
     }
+}
+
+static int DecodeFrame( decoder_t *p_dec, block_t *p_block )
+{
+    block_t *p_out = Packetize( p_dec, &p_block );
+    if( p_out != NULL )
+        decoder_QueueAudio( p_dec, p_out );
+    return VLCDEC_SUCCESS;
 }
 
 /*****************************************************************************
@@ -662,10 +660,10 @@ static block_t *EncodeFrames( encoder_t *p_enc, block_t *p_aout_buf )
         i_bytes_consumed += i_consume_bytes;
 
         /* We need to find i_length by means of next_pts due to possible roundoff errors. */
-        mtime_t this_pts = p_aout_buf->i_pts +
-            (i * p_sys->i_frame_samples + i_start_offset) * CLOCK_FREQ / p_sys->i_rate;
-        mtime_t next_pts = p_aout_buf->i_pts +
-            ((i + 1) * p_sys->i_frame_samples + i_start_offset) * CLOCK_FREQ / p_sys->i_rate;
+        vlc_tick_t this_pts = p_aout_buf->i_pts +
+            vlc_tick_from_samples(i * p_sys->i_frame_samples + i_start_offset, p_sys->i_rate);
+        vlc_tick_t next_pts = p_aout_buf->i_pts +
+            vlc_tick_from_samples((i + 1) * p_sys->i_frame_samples + i_start_offset, p_sys->i_rate);
 
         p_block->i_pts = p_block->i_dts = this_pts;
         p_block->i_length = next_pts - this_pts;
@@ -835,9 +833,9 @@ static int AobHeader( unsigned *pi_rate,
      *         + 3 bytes (1 for continuity counter + 2 for header_size ) */
     *pi_padding = 3 + i_header_size - LPCM_AOB_HEADER_LEN;
 
-    const int i_index_size_g1 = (p_header[6] >> 4) & 0x0f;
+    const int i_index_size_g1 = (p_header[6] >> 4);
     const int i_index_size_g2 = (p_header[6]     ) & 0x0f;
-    const int i_index_rate_g1 = (p_header[7] >> 4) & 0x0f;
+    const int i_index_rate_g1 = (p_header[7] >> 4);
     const int i_index_rate_g2 = (p_header[7]     ) & 0x0f;
     const int i_assignment     = p_header[9];
 
@@ -1041,7 +1039,7 @@ static int BdHeader( decoder_sys_t *p_sys,
     default:
         return -1;
     }
-    switch( (h >> 8) & 0x0f ) 
+    switch( (h >> 8) & 0x0f )
     {
     case 1:
         *pi_rate = 48000;
@@ -1208,7 +1206,7 @@ static void AobExtract( block_t *p_aout_buffer,
                                  | (p_block->p_buffer[2*i_src+1] << 16)
                                  | (p_block->p_buffer[4*g->i_channels+i_src] <<  8);
 #ifdef WORDS_BIGENDIAN
-                        *p_out32 = bswap32(*p_out32);
+                        *p_out32 = vlc_bswap32(*p_out32);
 #endif
                         i_aout_written += 4;
                     }
@@ -1219,7 +1217,7 @@ static void AobExtract( block_t *p_aout_buffer,
                                  | (p_block->p_buffer[2*i_src+1] << 16)
                                  | (((p_block->p_buffer[4*g->i_channels+i_src] << ((!n)?0:4) ) & 0xf0) <<  8);
 #ifdef WORDS_BIGENDIAN
-                        *p_out32 = bswap32(*p_out32);
+                        *p_out32 = vlc_bswap32(*p_out32);
 #endif
                         i_aout_written += 4;
                     }
@@ -1242,7 +1240,7 @@ static void AobExtract( block_t *p_aout_buffer,
                             *p_out32 = (p_block->p_buffer[2*i_src+0] << 24)
                                      | (p_block->p_buffer[2*i_src+1] << 16);
 #ifdef WORDS_BIGENDIAN
-                            *p_out32 = bswap32(*p_out32);
+                            *p_out32 = vlc_bswap32(*p_out32);
 #endif
                             i_aout_written += 4;
                         }

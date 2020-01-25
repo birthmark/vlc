@@ -2,7 +2,6 @@
  * window_manager.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
- * $Id$
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -326,9 +325,7 @@ void WindowManager::maximize( TopWindow &rWindow )
                                rWindow.getTop() + rWindow.getHeight() );
 
     // maximise the window within the current screen (multiple screens allowed)
-    int x, y, width, height;
-    rWindow.getMonitorInfo( &x, &y, &width, &height );
-    SkinsRect workArea(x, y, x + width, y + height);
+    SkinsRect workArea = OSFactory::instance( getIntf() )->getWorkArea();
 
     // Move the window
     startMove( rWindow );
@@ -440,10 +437,10 @@ void WindowManager::showAll( bool firstTime ) const
 
 void WindowManager::show( TopWindow &rWindow ) const
 {
-    rWindow.show();
-
     if( isOpacityNeeded() )
         rWindow.setOpacity( m_alpha );
+
+    rWindow.show();
 }
 
 

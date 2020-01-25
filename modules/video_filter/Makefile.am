@@ -107,19 +107,38 @@ video_filter_LTLIBRARIES = \
 	libpuzzle_plugin.la \
 	librotate_plugin.la
 
+# macOS / iOS hardware video filters
+libci_filters_plugin_la_SOURCES = video_filter/ci_filters.m codec/vt_utils.c codec/vt_utils.h
+if HAVE_OSX
+libci_filters_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(video_filterdir)' \
+	-Wl,-framework,Foundation -Wl,-framework,CoreGraphics -Wl,-framework,CoreImage -Wl,-framework,CoreVideo
+video_filter_LTLIBRARIES += libci_filters_plugin.la
+endif
+
+if HAVE_IOS
+video_filter_LTLIBRARIES += libci_filters_plugin.la
+endif
+
+libdeinterlace_common_la_SOURCES = video_filter/deinterlace/common.c video_filter/deinterlace/common.h
+libdeinterlace_common_la_LDFLAGS = -static
+noinst_LTLIBRARIES += libdeinterlace_common.la
+
 libdeinterlace_plugin_la_SOURCES = \
 	video_filter/deinterlace/deinterlace.c video_filter/deinterlace/deinterlace.h \
-	video_filter/deinterlace/mmx.h video_filter/deinterlace/common.h \
+        video_filter/deinterlace/mmx.h \
 	video_filter/deinterlace/merge.c video_filter/deinterlace/merge.h \
 	video_filter/deinterlace/helpers.c video_filter/deinterlace/helpers.h \
 	video_filter/deinterlace/algo_basic.c video_filter/deinterlace/algo_basic.h \
 	video_filter/deinterlace/algo_x.c video_filter/deinterlace/algo_x.h \
 	video_filter/deinterlace/algo_yadif.c video_filter/deinterlace/algo_yadif.h \
-	video_filter/deinterlace/yadif.h video_filter/deinterlace/yadif_template.h \
+	video_filter/deinterlace/yadif.h \
 	video_filter/deinterlace/algo_phosphor.c video_filter/deinterlace/algo_phosphor.h \
 	video_filter/deinterlace/algo_ivtc.c video_filter/deinterlace/algo_ivtc.h
 # inline ASM doesn't build with -O0
 libdeinterlace_plugin_la_CFLAGS = $(AM_CFLAGS) -O2
+if HAVE_X86ASM
+libdeinterlace_plugin_la_SOURCES += video_filter/deinterlace/yadif_x86.asm
+endif
 if HAVE_NEON
 libdeinterlace_plugin_la_SOURCES += video_filter/deinterlace/merge_arm.S
 libdeinterlace_plugin_la_CFLAGS += -DCAN_COMPILE_ARM
@@ -128,6 +147,11 @@ if HAVE_ARM64
 libdeinterlace_plugin_la_SOURCES += video_filter/deinterlace/merge_arm64.S
 libdeinterlace_plugin_la_CFLAGS += -DCAN_COMPILE_ARM64
 endif
+if HAVE_SVE
+libdeinterlace_plugin_la_SOURCES += video_filter/deinterlace/merge_sve.S
+libdeinterlace_plugin_la_CFLAGS += -DCAN_COMPILE_SVE
+endif
+libdeinterlace_plugin_la_LIBADD = libdeinterlace_common.la
 video_filter_LTLIBRARIES += libdeinterlace_plugin.la
 
 libopencv_wrapper_plugin_la_SOURCES = video_filter/opencv_wrapper.c

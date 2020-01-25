@@ -3,9 +3,8 @@
  *****************************************************************************
  * Copyright (C) 2005 VLC authors and VideoLAN
  * Copyright (C) 2002-2007 Rémi Denis-Courmont
- * $Id$
  *
- * Author: Rémi Denis-Courmont <rem # videolan.org>
+ * Author: Rémi Denis-Courmont
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -121,7 +120,8 @@ int vlc_getaddrinfo (const char *node, unsigned port,
 }
 
 #if defined (_WIN32) || defined (__OS2__) \
- || defined (__ANDROID__) || defined (__APPLE__)
+ || defined (__ANDROID__) || defined (__APPLE__) \
+ || defined (__native_client__)
 #warning vlc_getaddr_info_i11e() not implemented!
 int vlc_getaddrinfo_i11e(const char *node, unsigned port,
                          const struct addrinfo *hints, struct addrinfo **res)

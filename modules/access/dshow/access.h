@@ -3,7 +3,6 @@
  * access_sys_t definition
  *****************************************************************************
  * Copyright (C) 2002, 2004, 2010-2011 VLC authors and VideoLAN
- * $Id$
  *
  * Author: Gildas Bazin <gbazin@videolan.org>
  *
@@ -33,6 +32,10 @@
 #include <wrl/client.h>
 using Microsoft::WRL::ComPtr;
 
+typedef struct demux_sys_t demux_sys_t;
+
+namespace dshow {
+
 /****************************************************************************
  * Crossbar stuff
  ****************************************************************************/
@@ -46,6 +49,8 @@ struct CrossbarRoute
     LONG        AudioInputIndex;
     LONG        AudioOutputIndex;
 };
+
+struct access_sys_t;
 
 void DeleteCrossbarRoutes( access_sys_t * );
 HRESULT FindCrossbarRoutes( vlc_object_t *, access_sys_t *,
@@ -75,6 +80,8 @@ struct access_sys_t
     int            i_width;
     int            i_height;
     int            i_chroma;
-    bool           b_chroma; /* Force a specific chroma on the dshow input */
+    vlc_tick_t     i_start;
 };
+
+}
 

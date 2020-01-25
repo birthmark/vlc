@@ -2,7 +2,6 @@
  * bandlimited.c : band-limited interpolation resampler
  *****************************************************************************
  * Copyright (C) 2002, 2006 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Gildas Bazin <gbazin@netcourrier.com>
  *
@@ -66,7 +65,7 @@ static void ResampleFloat( filter_t *p_filter,
 /*****************************************************************************
  * Local structures
  *****************************************************************************/
-struct filter_sys_t
+typedef struct
 {
     int32_t *p_buf;                        /* this filter introduces a delay */
     size_t i_buf_size;
@@ -78,7 +77,7 @@ struct filter_sys_t
     bool b_first;
 
     date_t end_date;
-};
+} filter_sys_t;
 
 /*****************************************************************************
  * Module descriptor
@@ -109,7 +108,7 @@ static block_t *Resample( filter_t * p_filter, block_t * p_in_buf )
 
     filter_sys_t *p_sys = p_filter->p_sys;
     unsigned int i_out_rate = p_filter->fmt_out.audio.i_rate;
-    int i_nb_channels = aout_FormatNbChannels( &p_filter->fmt_in.audio );
+    int i_nb_channels = p_filter->fmt_in.audio.i_channels;
 
     /* Check if we really need to run the resampler */
     if( i_out_rate == p_filter->fmt_in.audio.i_rate )
@@ -291,10 +290,7 @@ static int OpenFilter( vlc_object_t *p_this )
 
     if ( p_filter->fmt_in.audio.i_rate == p_filter->fmt_out.audio.i_rate
       || p_filter->fmt_in.audio.i_format != p_filter->fmt_out.audio.i_format
-      || p_filter->fmt_in.audio.i_physical_channels
-              != p_filter->fmt_out.audio.i_physical_channels
-      || p_filter->fmt_in.audio.i_original_channels
-              != p_filter->fmt_out.audio.i_original_channels
+      || p_filter->fmt_in.audio.i_channels != p_filter->fmt_out.audio.i_channels
       || p_filter->fmt_in.audio.i_format != VLC_CODEC_FL32 )
     {
         return VLC_EGENERIC;

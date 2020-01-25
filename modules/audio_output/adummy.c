@@ -2,7 +2,6 @@
  * adummy.c : dummy audio output plugin
  *****************************************************************************
  * Copyright (C) 2002 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Christophe Massiot <massiot@via.ecp.fr>
  *
@@ -30,56 +29,131 @@
 #include <vlc_aout.h>
 #include <vlc_cpu.h>
 
-static int Open( vlc_object_t * p_this );
+static int Open(vlc_object_t *);
+static void Close(vlc_object_t *);
 
 vlc_module_begin ()
     set_shortname( N_("Dummy") )
     set_description( N_("Dummy audio output") )
     set_capability( "audio output", 0 )
-    set_callbacks( Open, NULL )
+    set_callbacks( Open, Close )
     add_shortcut( "dummy" )
 vlc_module_end ()
 
 #define A52_FRAME_NB 1536
 
-static void Play(audio_output_t *aout, block_t *block)
+struct aout_sys
 {
-    block_Release( block );
-    (void) aout;
+    vlc_tick_t first_play_date;
+    vlc_tick_t length;
+};
+
+static int TimeGet(audio_output_t *aout, vlc_tick_t *restrict delay)
+{
+    struct aout_sys *sys = aout->sys;
+
+    if (unlikely(sys->first_play_date == VLC_TICK_INVALID))
+    {
+        *delay = 0;
+        return 0;
+    }
+
+    vlc_tick_t time_since_first_play = vlc_tick_now() - sys->first_play_date;
+    assert(time_since_first_play >= 0);
+
+    if (likely(sys->length > time_since_first_play))
+    {
+        *delay = sys->length - time_since_first_play;
+        return 0;
+    }
+
+    msg_Warn(aout, "underflow");
+    return -1;
 }
 
-static void Flush(audio_output_t *aout, bool wait)
+static void Play(audio_output_t *aout, block_t *block, vlc_tick_t date)
 {
-    (void) aout; (void) wait;
+    struct aout_sys *sys = aout->sys;
+
+    if (unlikely(sys->first_play_date == VLC_TICK_INVALID))
+        sys->first_play_date = vlc_tick_now();
+    sys->length += block->i_length;
+
+    block_Release( block );
+    (void) date;
+}
+
+static void Pause(audio_output_t *aout, bool paused, vlc_tick_t date)
+{
+    (void) aout; (void) paused; (void) date;
+}
+
+static void Flush(audio_output_t *aout)
+{
+    struct aout_sys *sys = aout->sys;
+
+    sys->first_play_date = VLC_TICK_INVALID;
+    sys->length = 0;
 }
 
 static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
 {
-    if (aout_FormatNbChannels(fmt) == 0)
-        return VLC_EGENERIC;
+    (void) aout;
 
-    if (AOUT_FMT_SPDIF(fmt) && var_InheritBool(aout, "spdif"))
+    switch (fmt->i_format)
     {
-        fmt->i_format = VLC_CODEC_SPDIFL;
-        fmt->i_bytes_per_frame = AOUT_SPDIF_SIZE;
-        fmt->i_frame_length = A52_FRAME_NB;
+        case VLC_CODEC_A52:
+        case VLC_CODEC_EAC3:
+            fmt->i_format = VLC_CODEC_SPDIFL;
+            fmt->i_bytes_per_frame = 4;
+            fmt->i_frame_length = 1;
+            break;
+        case VLC_CODEC_DTS:
+        case VLC_CODEC_TRUEHD:
+        case VLC_CODEC_MLP:
+            fmt->i_format = VLC_CODEC_SPDIFL;
+            fmt->i_rate = 768000;
+            fmt->i_bytes_per_frame = 16;
+            fmt->i_frame_length = 1;
+            break;
+        default:
+            assert(AOUT_FMT_LINEAR(fmt));
+            assert(aout_FormatNbChannels(fmt) > 0);
+            fmt->i_format = HAVE_FPU ? VLC_CODEC_FL32 : VLC_CODEC_S16N;
+            fmt->channel_type = AUDIO_CHANNEL_TYPE_BITMAP;
+            break;
     }
-    else
-        fmt->i_format = HAVE_FPU ? VLC_CODEC_FL32 : VLC_CODEC_S16N;
 
     return VLC_SUCCESS;
+}
+
+static void Stop(audio_output_t *aout)
+{
+    (void) aout;
+}
+
+static void Close(vlc_object_t *obj)
+{
+    audio_output_t *aout = (audio_output_t *)obj;
+    free(aout->sys);
 }
 
 static int Open(vlc_object_t *obj)
 {
     audio_output_t *aout = (audio_output_t *)obj;
 
+    struct aout_sys *sys = aout->sys = malloc(sizeof(*sys));
+    if (!sys)
+        return VLC_ENOMEM;
+    sys->first_play_date = VLC_TICK_INVALID;
+    sys->length = 0;
+
     aout->start = Start;
-    aout->time_get = NULL;
+    aout->time_get = TimeGet;
     aout->play = Play;
-    aout->pause = NULL;
+    aout->pause = Pause;
     aout->flush = Flush;
-    aout->stop = NULL;
+    aout->stop = Stop;
     aout->volume_set = NULL;
     aout->mute_set = NULL;
     return VLC_SUCCESS;

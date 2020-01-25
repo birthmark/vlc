@@ -28,7 +28,9 @@
 #include <assert.h>
 
 #include <vlc_common.h>
-#undef msleep
+#undef vlc_tick_sleep
+
+const char vlc_module_name[] = "test_timer";
 
 struct timer_data
 {
@@ -52,7 +54,7 @@ static void callback (void *ptr)
 int main (void)
 {
     struct timer_data data;
-    mtime_t ts;
+    vlc_tick_t ts;
     int val;
 
     vlc_mutex_init (&data.lock);
@@ -74,35 +76,35 @@ int main (void)
     assert (val == 0);
 
     /* Relative timer */
-    ts = mdate ();
-    vlc_timer_schedule (data.timer, false, 1, CLOCK_FREQ / 100);
+    ts = vlc_tick_now ();
+    vlc_timer_schedule (data.timer, false, 1, VLC_TICK_FROM_MS(10));
 
     vlc_mutex_lock (&data.lock);
     while (data.count <= 10)
         vlc_cond_wait(&data.wait, &data.lock);
 
-    ts = mdate () - ts;
+    ts = vlc_tick_now () - ts;
     printf ("%u iterations in %"PRId64" us\n", data.count, ts);
     data.count = 0;
     vlc_mutex_unlock (&data.lock);
-    assert(ts >= (CLOCK_FREQ / 10));
+    assert(ts >= VLC_TICK_FROM_MS(100));
 
-    vlc_timer_schedule (data.timer, false, 0, 0);
+    vlc_timer_disarm (data.timer);
 
     /* Absolute timer */
-    ts = mdate ();
+    ts = vlc_tick_now ();
 
-    vlc_timer_schedule (data.timer, true, ts + CLOCK_FREQ / 10,
-                        CLOCK_FREQ / 100);
+    vlc_timer_schedule (data.timer, true, ts + VLC_TICK_FROM_MS(100),
+                        VLC_TICK_FROM_MS(10));
 
     vlc_mutex_lock (&data.lock);
     while (data.count <= 10)
         vlc_cond_wait(&data.wait, &data.lock);
 
-    ts = mdate () - ts;
+    ts = vlc_tick_now () - ts;
     printf ("%u iterations in %"PRId64" us\n", data.count, ts);
     vlc_mutex_unlock (&data.lock);
-    assert(ts >= (CLOCK_FREQ / 5));
+    assert(ts >= VLC_TICK_FROM_MS(200));
 
     vlc_timer_destroy (data.timer);
     vlc_cond_destroy (&data.wait);

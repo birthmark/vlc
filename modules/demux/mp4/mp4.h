@@ -55,17 +55,30 @@ typedef struct
     uint32_t     *p_sample_count_pts;
     int32_t      *p_sample_offset_pts;  /* pts-dts */
 
-    uint8_t      **p_sample_data;     /* set when b_fragmented is true */
     uint32_t     *p_sample_size;
     /* TODO if needed add pts
         but quickly *add* support for edts and seeking */
 
 } mp4_chunk_t;
 
+typedef struct
+{
+    uint64_t i_offset;
+    stime_t  i_first_dts;
+    const MP4_Box_t *p_trun;
+} mp4_run_t;
+
 typedef enum RTP_timstamp_synchronization_s
 {
     UNKNOWN_SYNC = 0, UNSYNCHRONIZED = 1, SYNCHRONIZED = 2, RESERVED = 3
 } RTP_timstamp_synchronization_t;
+
+enum
+{
+    USEAS_NONE = 0,
+    USEAS_CHAPTERS = 1 << 0,
+    USEAS_TIMECODE = 1 << 1,
+};
 
  /* Contain all needed information for read all track with vlc */
 typedef struct
@@ -75,7 +88,8 @@ typedef struct
     int b_ok;               /* The track is usable */
     int b_enable;           /* is the trak enable by default */
     bool b_selected;  /* is the trak being played */
-    bool b_chapters_source;   /* True when used for chapter only */
+    int i_use_flags;  /* !=0 Set when track is referenced by specific reference types.
+                         You'll need to lookup other tracks tref to know the ref source */
     bool b_forced_spu; /* forced track selection (never done by default/priority) */
     uint32_t i_switch_group;
 
@@ -92,6 +106,7 @@ typedef struct
     int i_width;
     int i_height;
     float f_rotation;
+    int i_flip;
 
     /* more internal data */
     uint32_t        i_timescale;    /* time scale for this track only */
@@ -110,13 +125,12 @@ typedef struct
     uint32_t         i_sample_count;
 
     mp4_chunk_t    *chunk; /* always defined  for each chunk */
-    mp4_chunk_t    *cchunk; /* current chunk if b_fragmented is true */
 
     /* sample size, p_sample_size defined only if i_sample_size == 0
         else i_sample_size is size for all sample */
     uint32_t         i_sample_size;
     uint32_t         *p_sample_size; /* XXX perhaps add file offset if take
-                                    too much time to do sumations each time*/
+//                                    too much time to do sumations each time*/
 
     uint32_t     i_sample_first; /* i_sample_first value
                                                    of the next chunk */
@@ -128,10 +142,11 @@ typedef struct
     const MP4_Box_t *p_stsd;  /* will contain all data to initialize decoder */
     const MP4_Box_t *p_sample;/* point on actual sdsd */
 
-    bool b_has_non_empty_cchunk;
+#if 0
     bool b_codec_need_restart;
+#endif
 
-    mtime_t i_time; // track scaled
+    stime_t i_time; // track scaled
 
     /* rrtp reception hint track */
     MP4_Box_t *p_sdp;                         /* parsed for codec and other info */
@@ -144,16 +159,28 @@ typedef struct
     struct
     {
         /* for moof parsing */
-        const MP4_Box_t *p_traf;
-        const MP4_Box_t *p_tfhd;
-        const MP4_Box_t *p_trun;
-        uint64_t   i_traf_base_offset;
+        bool b_resync_time_offset;
+
+        /* tfhd defaults */
+        uint32_t i_default_sample_size;
+        uint32_t i_default_sample_duration;
+
+        struct
+        {
+            mp4_run_t *p_array;
+            uint32_t   i_current;
+            uint32_t   i_count;
+        } runs;
+        uint64_t i_trun_sample;
+        uint64_t i_trun_sample_pos;
+
+        int i_temp;
     } context;
 
     /* ASF packets handling */
     const MP4_Box_t *p_asf;
-    mtime_t          i_dts_backup;
-    mtime_t          i_pts_backup;
+    vlc_tick_t       i_dts_backup;
+    vlc_tick_t       i_pts_backup;
     asf_track_info_t asfinfo;
 } mp4_track_t;
 
@@ -161,7 +188,7 @@ int SetupVideoES( demux_t *p_demux, mp4_track_t *p_track, MP4_Box_t *p_sample );
 int SetupAudioES( demux_t *p_demux, mp4_track_t *p_track, MP4_Box_t *p_sample );
 int SetupSpuES( demux_t *p_demux, mp4_track_t *p_track, MP4_Box_t *p_sample );
 int SetupCCES( demux_t *p_demux, mp4_track_t *p_track, MP4_Box_t *p_sample );
-void SetupMeta( vlc_meta_t *p_meta, MP4_Box_t *p_udta );
+void SetupMeta( vlc_meta_t *p_meta, const MP4_Box_t *p_udta );
 
 /* format of RTP reception hint track sample constructor */
 typedef struct

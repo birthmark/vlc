@@ -40,7 +40,7 @@
 
 #if defined( _WIN32 )
 # include <vlc_charset.h>
-# define wcwidth(cp) (cp, 1) /* LOL */
+# define wcwidth(cp) ((void)(cp), 1) /* LOL */
 #else
 # include <unistd.h>
 # include <termios.h>
@@ -90,7 +90,7 @@ static unsigned ConsoleWidth(void)
  * Checks for help command line options such as --help or --version.
  * If one is found, print the corresponding text.
  * \return true if a command line options caused some help message to be
- * printed, false otherwise. 
+ * printed, false otherwise.
  */
 bool config_PrintHelp (vlc_object_t *obj)
 {
@@ -122,8 +122,6 @@ bool config_PrintHelp (vlc_object_t *obj)
     /* Check for full help option */
     if (var_InheritBool (obj, "full-help"))
     {
-        var_Create (obj, "advanced", VLC_VAR_BOOL);
-        var_SetBool (obj, "advanced", true);
         var_Create (obj, "help-verbose", VLC_VAR_BOOL);
         var_SetBool (obj, "help-verbose", true);
         Help (obj, "full-help");
@@ -379,60 +377,88 @@ static void print_item(const module_t *m, const module_config_t *item,
             return;
 
         case CONFIG_ITEM_STRING:
+        {
             type = _("string");
-            if (item->list_count > 0)
+
+            char **ppsz_values, **ppsz_texts;
+
+            ssize_t i_count = config_GetPszChoices(item->psz_name, &ppsz_values, &ppsz_texts);
+
+            if (i_count > 0)
             {
                 size_t len = 0;
 
-                for (unsigned i = 0; i < item->list_count; i++)
-                    len += strlen(item->list.psz[i]) + 1;
+                for (size_t i = 0; i < (size_t)i_count; i++)
+                    len += strlen(ppsz_values[i]) + 1;
 
                 typebuf = malloc(len);
                 if (typebuf == NULL)
-                    break;
+                    goto end_string;
 
                 bra = OPTION_VALUE_SEP "{";
                 type = typebuf;
                 ket = "}";
 
                 *typebuf = 0;
-                for (unsigned i = 0; i < item->list_count; i++)
+                for (size_t i = 0; i < (size_t)i_count; i++)
                 {
                     if (i > 0)
                         strcat(typebuf, ",");
-                    strcat(typebuf, item->list.psz[i]);
+                    strcat(typebuf, ppsz_values[i]);
                 }
-            }
-            break;
 
+            end_string:
+                for (size_t i = 0; i < (size_t)i_count; i++)
+                {
+                    free(ppsz_values[i]);
+                    free(ppsz_texts[i]);
+                }
+                free(ppsz_values);
+                free(ppsz_texts);
+            }
+
+            break;
+        }
         case CONFIG_ITEM_INTEGER:
+        {
             type = _("integer");
 
-            if (item->list_count > 0)
+            int64_t *pi_values;
+            char **ppsz_texts;
+
+            ssize_t i_count = config_GetIntChoices(item->psz_name, &pi_values, &ppsz_texts);
+
+            if (i_count > 0)
             {
                 size_t len = 0;
 
-                for (unsigned i = 0; i < item->list_count; i++)
-                    len += strlen(module_gettext(m, item->list_text[i]))
-                           + 4 * sizeof (int) + 5;
+                for (size_t i = 0; i < (size_t)i_count; i++)
+                    len += strlen(ppsz_texts[i])
+                           + 4 * sizeof (int64_t) + 5;
 
                 typebuf = malloc(len);
                 if (typebuf == NULL)
-                    break;
+                    goto end_integer;
 
                 bra = OPTION_VALUE_SEP "{";
                 type = typebuf;
                 ket = "}";
 
                 *typebuf = 0;
-                for (unsigned i = 0; i < item->list_count; i++)
+                for (size_t i = 0; i < (size_t)i_count; i++)
                 {
                     if (i != 0)
                         strcat(typebuf, ", ");
-                    sprintf(typebuf + strlen(typebuf), "%i (%s)",
-                            item->list.i[i],
-                            module_gettext(m, item->list_text[i]));
+                    sprintf(typebuf + strlen(typebuf), "%"PRIi64" (%s)",
+                            pi_values[i],
+                            ppsz_texts[i]);
                 }
+
+            end_integer:
+                for (size_t i = 0; i < (size_t)i_count; i++)
+                    free(ppsz_texts[i]);
+                free(pi_values);
+                free(ppsz_texts);
             }
             else if (item->min.i != INT64_MIN || item->max.i != INT64_MAX )
             {
@@ -443,7 +469,7 @@ static void print_item(const module_t *m, const module_config_t *item,
                     typebuf = NULL;
             }
             break;
-
+        }
         case CONFIG_ITEM_FLOAT:
             type = _("float");
             if (item->min.f != FLT_MIN || item->max.f != FLT_MAX)
@@ -537,7 +563,7 @@ static bool module_match(const module_t *m, const char *pattern, bool strict)
     return false;
 }
 
-static bool plugin_show(const vlc_plugin_t *plugin, bool advanced)
+static bool plugin_show(const vlc_plugin_t *plugin)
 {
     for (size_t i = 0; i < plugin->conf.size; i++)
     {
@@ -547,8 +573,6 @@ static bool plugin_show(const vlc_plugin_t *plugin, bool advanced)
             continue;
         if (item->b_removed)
             continue;
-        if ((!advanced) && item->b_advanced)
-            continue;
         return true;
     }
     return false;
@@ -556,10 +580,7 @@ static bool plugin_show(const vlc_plugin_t *plugin, bool advanced)
 
 static void Usage (vlc_object_t *p_this, char const *psz_search)
 {
-    bool b_has_advanced = false;
     bool found = false;
-    unsigned i_only_advanced = 0; /* Number of modules ignored because they
-                               * only have advanced options */
     bool strict = false;
     if (psz_search != NULL && psz_search[0] == '=')
     {
@@ -574,7 +595,6 @@ static void Usage (vlc_object_t *p_this, char const *psz_search)
 #endif
 
     const bool desc = var_InheritBool(p_this, "help-verbose");
-    const bool advanced = var_InheritBool(p_this, "advanced");
 
     /* Enumerate the config for each module */
     for (const vlc_plugin_t *p = vlc_plugins; p != NULL; p = p->next)
@@ -589,11 +609,8 @@ static void Usage (vlc_object_t *p_this, char const *psz_search)
             continue;
         found = true;
 
-        if (!plugin_show(p, advanced))
-        {   /* Ignore plugins with only advanced config options if requested */
-            i_only_advanced++;
+        if (!plugin_show(p))
             continue;
-        }
 
         /* Print name of module */
         printf(color ? "\n " GREEN "%s" GRAY " (%s)\n" : "\n %s (%s)\n",
@@ -609,28 +626,12 @@ static void Usage (vlc_object_t *p_this, char const *psz_search)
 
             if (item->b_removed)
                 continue; /* Skip removed options */
-            if (item->b_advanced && !advanced)
-            {   /* Skip advanced options unless requested */
-                b_has_advanced = true;
-                continue;
-            }
+
             print_item(m, item, &section, color, desc);
         }
     }
 
-    if( b_has_advanced )
-        printf(color ? "\n" WHITE "%s" GRAY " %s\n"
-                     : "\n%s %s\n", _( "Note:" ), _( "add --advanced to your "
-                                     "command line to see advanced options."));
-    if( i_only_advanced > 0 )
-    {
-        printf(color ? "\n" WHITE "%s" GRAY " " : "\n%s ", _( "Note:" ) );
-        printf(vlc_ngettext("%u module was not displayed because it only has "
-               "advanced options.\n", "%u modules were not displayed because "
-               "they only have advanced options.\n", i_only_advanced),
-               i_only_advanced);
-    }
-    else if (!found)
+    if (!found)
         printf(color ? "\n" WHITE "%s" GRAY "\n" : "\n%s\n",
                _("No matching module found. Use --list or "
                  "--list-verbose to list available modules."));

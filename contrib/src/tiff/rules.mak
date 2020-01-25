@@ -1,6 +1,6 @@
 # tiff
 
-TIFF_VERSION := 4.0.6
+TIFF_VERSION := 4.0.9
 TIFF_URL := http://download.osgeo.org/libtiff/tiff-$(TIFF_VERSION).tar.gz
 
 $(TARBALLS)/tiff-$(TIFF_VERSION).tar.gz:
@@ -11,7 +11,9 @@ $(TARBALLS)/tiff-$(TIFF_VERSION).tar.gz:
 tiff: tiff-$(TIFF_VERSION).tar.gz .sum-tiff
 	$(UNPACK)
 	$(UPDATE_AUTOCONFIG)
+	$(APPLY) $(SRC)/tiff/tiff-winstore.patch
 	$(MOVE)
+	mv tiff/config.sub tiff/config.guess tiff/config
 
 .tiff: tiff
 	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) \

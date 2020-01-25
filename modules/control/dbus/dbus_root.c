@@ -5,7 +5,6 @@
  * Copyright © 2007-2011 Mirsal Ennaime
  * Copyright © 2009-2011 The VideoLAN team
  * Copyright © 2013      Alex Merry
- * $Id$
  *
  * Authors:    Mirsal Ennaime <mirsal at mirsal fr>
  *             Rafaël Carré <funman at videolanorg>
@@ -32,10 +31,8 @@
 
 #include <vlc_common.h>
 #include <vlc_interface.h>
-#include <vlc_input.h>
 #include <vlc_vout.h>
 #include <vlc_plugin.h>
-#include <vlc_playlist.h>
 
 #include <unistd.h>
 #include <limits.h>
@@ -44,7 +41,7 @@
 #include "dbus_common.h"
 
 static const char ppsz_supported_uri_schemes[][9] = {
-    "file", "http", "https", "rtsp", "realrtsp", "pnm", "ftp", "mtp", "smb",
+    "file", "http", "https", "rtsp", "ftp", "mtp", "smb",
     "mms", "mmsu", "mmst", "mmsh", "unsv", "itpc", "icyx", "rtmp", "rtp",
     "dccp", "dvd", "vcd"
 };
@@ -88,26 +85,10 @@ MarshalIdentity( intf_thread_t *p_intf, DBusMessageIter *container )
 
 static int
 MarshalCanSetFullscreen( intf_thread_t *p_intf, DBusMessageIter *container )
-{
-    input_thread_t *p_input = NULL;
-    dbus_bool_t     b_ret   = FALSE;
-
-    if (p_intf->p_sys->p_input)
-    {
-        p_input = (input_thread_t*) vlc_object_hold( p_intf->p_sys->p_input );
-        vout_thread_t* p_vout = input_GetVout( p_input );
-        vlc_object_release( p_input );
-
-        if ( p_vout )
-        {
-            b_ret = TRUE;
-            vlc_object_release( p_vout );
-        }
-    }
-
+{ VLC_UNUSED(p_intf);
+    dbus_bool_t b_ret = TRUE;
     if (!dbus_message_iter_append_basic( container, DBUS_TYPE_BOOLEAN, &b_ret ))
         return VLC_ENOMEM;
-
     return VLC_SUCCESS;
 }
 
@@ -115,16 +96,11 @@ static int
 MarshalFullscreen( intf_thread_t *p_intf, DBusMessageIter *container )
 {
     dbus_bool_t b_fullscreen;
-
-    if ( p_intf->p_sys->p_playlist )
-        b_fullscreen = var_GetBool( p_intf->p_sys->p_playlist , "fullscreen" );
-    else
-        b_fullscreen = FALSE;
-
+    vlc_player_t *player = vlc_playlist_GetPlayer(p_intf->p_sys->playlist);
+    b_fullscreen = vlc_player_vout_IsFullscreen(player);
     if (!dbus_message_iter_append_basic( container,
             DBUS_TYPE_BOOLEAN, &b_fullscreen ))
         return VLC_ENOMEM;
-
     return VLC_SUCCESS;
 }
 
@@ -132,22 +108,12 @@ DBUS_METHOD( FullscreenSet )
 {
     REPLY_INIT;
     dbus_bool_t b_fullscreen;
-    input_thread_t *p_input = NULL;
 
     if( VLC_SUCCESS != DemarshalSetPropertyValue( p_from, &b_fullscreen ) )
         return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 
-    if (INTF->p_sys->p_input)
-    {
-        p_input = (input_thread_t*) vlc_object_hold( INTF->p_sys->p_input );
-        vout_thread_t* p_vout = input_GetVout( p_input );
-        vlc_object_release( p_input );
-
-        if ( p_vout )
-            var_SetBool( p_vout, "fullscreen", ( b_fullscreen == TRUE ) );
-        if ( PL )
-            var_SetBool( PL , "fullscreen", ( b_fullscreen == TRUE ) );
-    }
+    vlc_player_t *player = vlc_playlist_GetPlayer(PL);
+    vlc_player_vout_SetFullscreen(player, b_fullscreen);
 
     REPLY_SEND;
 }
@@ -168,7 +134,7 @@ static int
 MarshalCanRaise( intf_thread_t *p_intf, DBusMessageIter *container )
 {
     VLC_UNUSED( p_intf );
-    const dbus_bool_t b_ret = FALSE;
+    const dbus_bool_t b_ret = TRUE;
 
     if (!dbus_message_iter_append_basic( container, DBUS_TYPE_BOOLEAN, &b_ret ))
         return VLC_ENOMEM;
@@ -180,7 +146,7 @@ static int
 MarshalHasTrackList( intf_thread_t *p_intf, DBusMessageIter *container )
 {
     VLC_UNUSED( p_intf );
-    const dbus_bool_t b_ret = FALSE;
+    const dbus_bool_t b_ret = TRUE;
 
     if (!dbus_message_iter_append_basic( container, DBUS_TYPE_BOOLEAN, &b_ret ))
         return VLC_ENOMEM;
@@ -261,20 +227,20 @@ MarshalSupportedUriSchemes( intf_thread_t *p_intf, DBusMessageIter *container )
 DBUS_METHOD( Quit )
 { /* exits vlc */
     REPLY_INIT;
-    libvlc_Quit(INTF->obj.libvlc);
+    libvlc_Quit(vlc_object_instance(INTF));
     REPLY_SEND;
 }
 
 DBUS_METHOD( Raise )
 {/* shows vlc's main window */
     REPLY_INIT;
-    var_ToggleBool( INTF->obj.libvlc, "intf-show" );
+    var_TriggerCallback(vlc_object_instance(INTF), "intf-show" );
     REPLY_SEND;
 }
 
-#define PROPERTY_MAPPING_BEGIN if( 0 ) {}
+#define PROPERTY_MAPPING_BEGIN
 #define PROPERTY_GET_FUNC( prop, signature ) \
-    else if( !strcmp( psz_property_name,  #prop ) ) { \
+    if( !strcmp( psz_property_name,  #prop ) ) { \
         if( !dbus_message_iter_open_container( &args, DBUS_TYPE_VARIANT, signature, &v ) ) \
             return DBUS_HANDLER_RESULT_NEED_MEMORY; \
         if( VLC_SUCCESS != Marshal##prop( p_this, &v ) ) { \
@@ -283,12 +249,12 @@ DBUS_METHOD( Raise )
         } \
         if( !dbus_message_iter_close_container( &args, &v ) ) \
             return DBUS_HANDLER_RESULT_NEED_MEMORY; \
-    }
+    } else
 #define PROPERTY_SET_FUNC( prop ) \
-    else if( !strcmp( psz_property_name,  #prop ) ) { \
+    if( !strcmp( psz_property_name,  #prop ) ) \
         return prop##Set( p_conn, p_from, p_this ); \
-    }
-#define PROPERTY_MAPPING_END else { return DBUS_HANDLER_RESULT_NOT_YET_HANDLED; }
+    else
+#define PROPERTY_MAPPING_END return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 
 DBUS_METHOD( GetProperty )
 {
@@ -398,8 +364,6 @@ DBUS_METHOD( GetAllProperties )
         return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
     }
 
-    msg_Dbg( (vlc_object_t*) p_this, "Getting All properties" );
-
     if( !dbus_message_iter_open_container( &args, DBUS_TYPE_ARRAY, "{sv}", &dict ) )
         return DBUS_HANDLER_RESULT_NEED_MEMORY;
 
@@ -453,8 +417,6 @@ PropertiesChangedSignal( intf_thread_t    *p_intf,
     DBusConnection  *p_conn = p_intf->p_sys->p_conn;
     DBusMessageIter changed_properties, invalidated_properties;
     const char *psz_interface_name = DBUS_MPRIS_ROOT_INTERFACE;
-    char **ppsz_properties = NULL;
-    int i_properties = 0;
 
     SIGNAL_INIT( DBUS_INTERFACE_PROPERTIES,
                  DBUS_MPRIS_OBJECT_PATH,
@@ -467,23 +429,15 @@ PropertiesChangedSignal( intf_thread_t    *p_intf,
                                            &changed_properties ) )
         return DBUS_HANDLER_RESULT_NEED_MEMORY;
 
-    i_properties = vlc_dictionary_keys_count( p_changed_properties );
-    ppsz_properties = vlc_dictionary_all_keys( p_changed_properties );
-
-    if( unlikely(!ppsz_properties) )
+    if( vlc_dictionary_has_key( p_changed_properties, "Fullscreen" ) )
     {
-        dbus_message_iter_abandon_container( &args, &changed_properties );
-        return DBUS_HANDLER_RESULT_NEED_MEMORY;
+        if( AddProperty( p_intf, &changed_properties, "Fullscreen", "b",
+                     MarshalFullscreen ) != VLC_SUCCESS )
+        {
+            dbus_message_iter_abandon_container( &args, &changed_properties );
+            return DBUS_HANDLER_RESULT_NEED_MEMORY;
+        }
     }
-
-    for( int i = 0; i < i_properties; i++ )
-    {
-        if( !strcmp( ppsz_properties[i], "Fullscreen" ) )
-             AddProperty( p_intf, &changed_properties, "Fullscreen", "b",
-                          MarshalFullscreen );
-        free( ppsz_properties[i] );
-    }
-    free( ppsz_properties );
 
     if( !dbus_message_iter_close_container( &args, &changed_properties ) )
         return DBUS_HANDLER_RESULT_NEED_MEMORY;

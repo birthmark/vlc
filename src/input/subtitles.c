@@ -2,7 +2,6 @@
  * subtitles.c : subtitles detection
  *****************************************************************************
  * Copyright (C) 2003-2009 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Derk-Jan Hartman <hartman at videolan.org>
  * This is adapted code from the GPL'ed MPlayer (http://mplayerhq.hu)
@@ -45,6 +44,9 @@
  * The possible extensions for subtitle files we support
  */
 static const char *const sub_exts[] = { SLAVE_SPU_EXTENSIONS, "" };
+/* As core can't handle non default program hijacking by slaves,
+ * we need to disable any SPU slave for those masters for now */
+static const char *const noslave_exts[] = { "m2ts", "ts" };
 
 static void strcpy_trim( char *d, const char *s )
 {
@@ -217,7 +219,7 @@ int subtitles_Detect( input_thread_t *p_this, char *psz_path, const char *psz_na
     int i_fuzzy = var_GetInteger( p_this, "sub-autodetect-fuzzy" );
     if ( i_fuzzy == 0 )
         return VLC_EGENERIC;
-    int j, i_fname_len;
+    int i_fname_len;
     input_item_slave_t **pp_slaves = *ppp_slaves;
     int i_slaves = *p_slaves;
     char *f_fname_noext = NULL, *f_fname_trim = NULL;
@@ -229,6 +231,19 @@ int subtitles_Detect( input_thread_t *p_this, char *psz_path, const char *psz_na
     char *psz_fname = vlc_uri2path( psz_name_org );
     if( !psz_fname )
         return VLC_EGENERIC;
+
+    const char *ext = strrchr( psz_fname, '.' );
+    if( ext != NULL )
+    {
+        for( size_t i=0; i<ARRAY_SIZE(noslave_exts); i++ )
+        {
+            if( !strcasecmp( &ext[1], noslave_exts[i] ) )
+            {
+                free( psz_fname );
+                return VLC_EGENERIC;
+            }
+        }
+    }
 
     /* extract filename & dirname from psz_fname */
     char *f_dir = strdup( psz_fname );
@@ -265,7 +280,7 @@ int subtitles_Detect( input_thread_t *p_this, char *psz_path, const char *psz_na
     strcpy_trim( f_fname_trim, f_fname_noext );
 
     subdirs = paths_to_list( f_dir, psz_path );
-    for( j = -1; (j == -1) || ( j >= 0 && subdirs != NULL && subdirs[j] != NULL ); j++ )
+    for( int j = -1; (j == -1) || ( j >= 0 && subdirs != NULL && subdirs[j] != NULL ); j++ )
     {
         const char *psz_dir = (j < 0) ? f_dir : subdirs[j];
         if( psz_dir == NULL || ( j >= 0 && !strcmp( psz_dir, f_dir ) ) )
@@ -352,7 +367,7 @@ int subtitles_Detect( input_thread_t *p_this, char *psz_path, const char *psz_na
                     if( p_sub )
                     {
                         p_sub->b_forced = true;
-                        INSERT_ELEM( pp_slaves, i_slaves, i_slaves, p_sub );
+                        TAB_APPEND(i_slaves, pp_slaves, p_sub);
                     }
                     free( psz_uri );
                 }
@@ -363,7 +378,7 @@ int subtitles_Detect( input_thread_t *p_this, char *psz_path, const char *psz_na
     }
     if( subdirs )
     {
-        for( j = 0; subdirs[j]; j++ )
+        for( size_t j = 0; subdirs[j] != NULL; j++ )
             free( subdirs[j] );
         free( subdirs );
     }

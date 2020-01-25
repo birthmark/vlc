@@ -2,7 +2,6 @@
  * directory.c: expands a directory (directory: access_browser plug-in)
  *****************************************************************************
  * Copyright (C) 2002-2015 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Derk-Jan Hartman <hartman at videolan dot org>
  *          Rémi Denis-Courmont
@@ -42,18 +41,18 @@
 #include <vlc_fs.h>
 #include <vlc_url.h>
 
-struct access_sys_t
+typedef struct
 {
     char *base_uri;
     DIR *dir;
-};
+} access_sys_t;
 
 /*****************************************************************************
  * DirInit: Init the directory access with a directory stream
  *****************************************************************************/
-int DirInit (access_t *access, DIR *dir)
+int DirInit (stream_t *access, DIR *dir)
 {
-    access_sys_t *sys = malloc(sizeof (*sys));
+    access_sys_t *sys = vlc_obj_malloc(VLC_OBJECT(access), sizeof (*sys));
     if (unlikely(sys == NULL))
         goto error;
 
@@ -77,7 +76,6 @@ int DirInit (access_t *access, DIR *dir)
 
 error:
     closedir(dir);
-    free(sys);
     return VLC_ENOMEM;
 }
 
@@ -86,7 +84,7 @@ error:
  *****************************************************************************/
 int DirOpen (vlc_object_t *obj)
 {
-    access_t *access = (access_t *)obj;
+    stream_t *access = (stream_t *)obj;
 
     if (access->psz_filepath == NULL)
         return VLC_EGENERIC;
@@ -103,15 +101,14 @@ int DirOpen (vlc_object_t *obj)
  *****************************************************************************/
 void DirClose(vlc_object_t *obj)
 {
-    access_t *access = (access_t *)obj;
+    stream_t *access = (stream_t *)obj;
     access_sys_t *sys = access->p_sys;
 
     free(sys->base_uri);
     closedir(sys->dir);
-    free(sys);
 }
 
-int DirRead (access_t *access, input_item_node_t *node)
+int DirRead (stream_t *access, input_item_node_t *node)
 {
     access_sys_t *sys = access->p_sys;
     const char *entry;
@@ -119,15 +116,15 @@ int DirRead (access_t *access, input_item_node_t *node)
 
     bool special_files = var_InheritBool(access, "list-special-files");
 
-    struct access_fsdir fsdir;
-    access_fsdir_init(&fsdir, access, node);
+    struct vlc_readdir_helper rdh;
+    vlc_readdir_helper_init(&rdh, access, node);
 
     while (ret == VLC_SUCCESS && (entry = vlc_readdir(sys->dir)) != NULL)
     {
         struct stat st;
         int type;
 
-#ifdef HAVE_OPENAT
+#ifdef HAVE_FSTATAT
         if (fstatat(dirfd(sys->dir), entry, &st, 0))
             continue;
 #else
@@ -139,11 +136,13 @@ int DirRead (access_t *access, input_item_node_t *node)
 #endif
         switch (st.st_mode & S_IFMT)
         {
+#ifdef S_IFBLK
             case S_IFBLK:
                 if (!special_files)
                     continue;
                 type = ITEM_TYPE_DISC;
                 break;
+#endif
             case S_IFCHR:
                 if (!special_files)
                     continue;
@@ -183,11 +182,12 @@ int DirRead (access_t *access, input_item_node_t *node)
             ret = VLC_ENOMEM;
             break;
         }
-        ret = access_fsdir_additem(&fsdir, uri, entry, type, ITEM_NET_UNKNOWN);
+        ret = vlc_readdir_helper_additem(&rdh, uri, NULL, entry, type,
+                                         ITEM_NET_UNKNOWN);
         free(uri);
     }
 
-    access_fsdir_finish(&fsdir, ret == VLC_SUCCESS);
+    vlc_readdir_helper_finish(&rdh, ret == VLC_SUCCESS);
 
     return ret;
 }

@@ -2,10 +2,9 @@
  * sap.c : SAP announce handler
  *****************************************************************************
  * Copyright (C) 2002-2008 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Clément Stenac <zorglub@videolan.org>
- *          Rémi Denis-Courmont <rem # videolan.org>
+ *          Rémi Denis-Courmont
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -28,6 +27,7 @@
 
 #include <vlc_common.h>
 
+#include <stdnoreturn.h>
 #include <stdlib.h>                                                /* free() */
 #include <stdio.h>                                              /* sprintf() */
 #include <string.h>
@@ -35,6 +35,7 @@
 
 #include <vlc_sout.h>
 #include <vlc_network.h>
+#include <vlc_memstream.h>
 
 #include "stream_output.h"
 #include "libvlc.h"
@@ -46,8 +47,8 @@
 struct session_descriptor_t
 {
     struct session_descriptor_t *next;
-    size_t  length;
-    uint8_t data[];
+    size_t length;
+    char *data;
 };
 
 /* A SAP announce address. For each of these, we run the
@@ -77,7 +78,7 @@ static vlc_mutex_t sap_mutex = VLC_STATIC_MUTEX;
 #define MIN_INTERVAL 2
 #define MAX_INTERVAL 300
 
-static void *RunThread (void *);
+noreturn static void *RunThread (void *);
 
 static sap_address_t *AddressCreate (vlc_object_t *obj, const char *group)
 {
@@ -130,8 +131,7 @@ static void AddressDestroy (sap_address_t *addr)
  * \param p_this the SAP Handler object
  * \return nothing
  */
-VLC_NORETURN
-static void *RunThread (void *self)
+noreturn static void *RunThread (void *self)
 {
     sap_address_t *addr = self;
 
@@ -141,18 +141,18 @@ static void *RunThread (void *self)
     for (;;)
     {
         session_descriptor_t *p_session;
-        mtime_t deadline;
+        vlc_tick_t deadline;
 
         while (addr->first == NULL)
             vlc_cond_wait (&addr->wait, &addr->lock);
 
         assert (addr->session_count > 0);
 
-        deadline = mdate ();
+        deadline = vlc_tick_now ();
         for (p_session = addr->first; p_session; p_session = p_session->next)
         {
             send (addr->fd, p_session->data, p_session->length, 0);
-            deadline += addr->interval * CLOCK_FREQ / addr->session_count;
+            deadline += vlc_tick_from_samples(addr->interval, addr->session_count);
 
             if (vlc_cond_timedwait (&addr->wait, &addr->lock, deadline) == 0)
                 break; /* list may have changed! */
@@ -191,13 +191,13 @@ sout_AnnounceRegisterSDP (vlc_object_t *obj, const char *sdp,
 
     if (vlc_getaddrinfo (dst, 0, NULL, &res) == 0)
     {
-        if (res->ai_addrlen <= sizeof (addr))
+        if ((size_t)res->ai_addrlen <= sizeof (addr))
             memcpy (&addr, res->ai_addr, res->ai_addrlen);
         addrlen = res->ai_addrlen;
         freeaddrinfo (res);
     }
 
-    if (addrlen == 0 || addrlen > sizeof (addr))
+    if (addrlen == 0 || (size_t)addrlen > sizeof (addr))
     {
         msg_Err (obj, "No/invalid address specified for SAP announce" );
         return NULL;
@@ -259,8 +259,8 @@ sout_AnnounceRegisterSDP (vlc_object_t *obj, const char *sdp,
         }
 
         default:
-            msg_Err (obj, "Address family %d not supported by SAP",
-                     addr.a.sa_family);
+            msg_Err (obj, "Address family %u not supported by SAP",
+                     (unsigned)addr.a.sa_family);
             return NULL;
     }
 
@@ -298,43 +298,26 @@ sout_AnnounceRegisterSDP (vlc_object_t *obj, const char *sdp,
     vlc_mutex_lock (&sap_addr->lock);
     vlc_mutex_unlock (&sap_mutex);
 
-    size_t length = 20;
-    switch (sap_addr->orig.ss_family)
-    {
-#ifdef AF_INET6
-        case AF_INET6:
-            length += 16;
-            break;
-#endif
-        case AF_INET:
-            length += 4;
-            break;
-        default:
-            vlc_assert_unreachable ();
-    }
-
-    /* XXX: Check for dupes */
-    length += strlen (sdp);
-
-    session_descriptor_t *session = malloc (sizeof (*session) + length);
+    session_descriptor_t *session = malloc(sizeof (*session));
     if (unlikely(session == NULL))
-    {
-        vlc_mutex_unlock (&sap_addr->lock);
-        return NULL; /* NOTE: we should destroy the thread if left unused */
-    }
+        goto out; /* NOTE: we should destroy the thread if left unused */
+
     session->next = sap_addr->first;
-    sap_addr->first = session;
-    session->length = length;
 
     /* Build the SAP Headers */
-    uint8_t *buf = session->data;
+    struct vlc_memstream stream;
+    vlc_memstream_open(&stream);
 
     /* SAPv1, not encrypted, not compressed */
-    buf[0] = 0x20;
-    buf[1] = 0x00; /* No authentication length */
-    SetWBE(buf + 2, mdate()); /* ID hash */
+    uint8_t flags = 0x20;
+#ifdef AF_INET6
+    if (sap_addr->orig.ss_family == AF_INET6)
+        flags |= 0x10;
+#endif
+    vlc_memstream_putc(&stream, flags);
+    vlc_memstream_putc(&stream, 0x00); /* No authentication length */
+    vlc_memstream_write(&stream, &(uint16_t){ vlc_tick_now() }, 2); /* ID hash */
 
-    size_t offset = 4;
     switch (sap_addr->orig.ss_family)
     {
 #ifdef AF_INET6
@@ -342,9 +325,7 @@ sout_AnnounceRegisterSDP (vlc_object_t *obj, const char *sdp,
         {
             const struct in6_addr *a6 =
                 &((const struct sockaddr_in6 *)&sap_addr->orig)->sin6_addr;
-            memcpy (buf + offset, a6, 16);
-            buf[0] |= 0x10; /* IPv6 flag */
-            offset += 16;
+            vlc_memstream_write(&stream, &a6, 16);
             break;
         }
 #endif
@@ -352,21 +333,32 @@ sout_AnnounceRegisterSDP (vlc_object_t *obj, const char *sdp,
         {
             const struct in_addr *a4 =
                 &((const struct sockaddr_in *)&sap_addr->orig)->sin_addr;
-            memcpy (buf + offset, a4, 4);
-            offset += 4;
+            vlc_memstream_write(&stream, &a4, 4);
             break;
         }
-
+        default:
+            vlc_assert_unreachable ();
     }
 
-    memcpy (buf + offset, "application/sdp", 16);
-    offset += 16;
+    vlc_memstream_puts(&stream, "application/sdp");
+    vlc_memstream_putc(&stream, '\0');
 
     /* Build the final message */
-    strcpy((char *)buf + offset, sdp);
+    vlc_memstream_puts(&stream, sdp);
 
+    if (vlc_memstream_close(&stream))
+    {
+        free(session);
+        session = NULL;
+        goto out;
+    }
+
+    session->data = stream.ptr;
+    session->length = stream.length;
+    sap_addr->first = session;
     sap_addr->session_count++;
     vlc_cond_signal (&sap_addr->wait);
+out:
     vlc_mutex_unlock (&sap_addr->lock);
     return session;
 }
@@ -424,5 +416,6 @@ found:
         vlc_mutex_unlock (&addr->lock);
     }
 
-    free (session);
+    free(session->data);
+    free(session);
 }

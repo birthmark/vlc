@@ -2,7 +2,6 @@
  * ctrl_list.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
- * $Id$
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -34,7 +33,7 @@
 #include "../events/evt_key.hpp"
 #include "../events/evt_mouse.hpp"
 #include "../events/evt_scroll.hpp"
-#include <vlc_keys.h>
+#include <vlc_actions.h>
 
 #define SCROLL_STEP 0.05f
 #define LINE_INTERVAL 1  // Number of pixels inserted between 2 lines

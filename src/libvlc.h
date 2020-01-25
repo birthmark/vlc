@@ -3,7 +3,6 @@
  *****************************************************************************
  * Copyright (C) 1999, 2000, 2001, 2002 VLC authors and VideoLAN
  * Copyright © 2006-2007 Rémi Denis-Courmont
- * $Id$
  *
  * Authors: Vincent Seguin <seguin@via.ecp.fr>
  *
@@ -25,14 +24,11 @@
 #ifndef LIBVLC_LIBVLC_H
 # define LIBVLC_LIBVLC_H 1
 
+#include <vlc_input_item.h>
+
 extern const char psz_vlc_changeset[];
 
 typedef struct variable_t variable_t;
-
-/* Actions (hot keys) */
-struct vlc_actions;
-struct vlc_actions *vlc_InitActions (libvlc_int_t *);
-extern void vlc_DeinitActions (libvlc_int_t *, struct vlc_actions *);
 
 /*
  * OS-specific initialization
@@ -41,11 +37,7 @@ void system_Init      ( void );
 void system_Configure ( libvlc_int_t *, int, const char *const [] );
 #if defined(_WIN32) || defined(__OS2__)
 void system_End(void);
-#ifndef __OS2__
-size_t EnumClockSource( vlc_object_t *, const char *, char ***, char *** );
 #endif
-#endif
-void vlc_CPU_init(void);
 void vlc_CPU_dump(vlc_object_t *);
 
 /*
@@ -62,20 +54,28 @@ void vlc_threads_setup (libvlc_int_t *);
 void vlc_trace (const char *fn, const char *file, unsigned line);
 #define vlc_backtrace() vlc_trace(__func__, __FILE__, __LINE__)
 
-#if (defined (LIBVLC_USE_PTHREAD) || defined(__ANDROID__)) && !defined (NDEBUG)
-void vlc_assert_locked (vlc_mutex_t *);
+#ifndef NDEBUG
+/**
+ * Marks a mutex locked.
+ */
+void vlc_mutex_mark(const vlc_mutex_t *);
+
+/**
+ * Unmarks a mutex.
+ */
+void vlc_mutex_unmark(const vlc_mutex_t *);
 #else
-# define vlc_assert_locked( m ) (void)m
+# define vlc_mutex_mark(m) ((void)(m))
+# define vlc_mutex_unmark(m) ((void)(m))
 #endif
 
 /*
  * Logging
  */
-typedef struct vlc_logger_t vlc_logger_t;
+typedef struct vlc_logger vlc_logger_t;
 
-int vlc_LogPreinit(libvlc_int_t *);
-int vlc_LogInit(libvlc_int_t *);
-void vlc_LogDeinit(libvlc_int_t *);
+int vlc_LogPreinit(libvlc_int_t *) VLC_USED;
+void vlc_LogInit(libvlc_int_t *);
 
 /*
  * LibVLC exit event handling
@@ -93,6 +93,30 @@ void vlc_ExitDestroy( vlc_exit_t * );
 /*
  * LibVLC objects stuff
  */
+
+/**
+ * Initializes a VLC object.
+ *
+ * @param obj storage space for object to initialize [OUT]
+ * @param parent parent object (or NULL to initialize the root) [IN]
+ * @param type_name object type name
+ *
+ * @note The type name pointer must remain valid even after the object is
+ * deinitialized, as it might be passed by address to log message queue.
+ * Using constant string literals is appropriate.
+ *
+ * @retval 0 on success
+ * @retval -1 on (out of memory) error
+ */
+int vlc_object_init(vlc_object_t *obj, vlc_object_t *parent,
+                    const char *type_name);
+
+/**
+ * Deinitializes a VLC object.
+ *
+ * This frees resources allocated by vlc_object_init().
+ */
+void vlc_object_deinit(vlc_object_t *obj);
 
 /**
  * Creates a VLC object.
@@ -113,16 +137,46 @@ vlc_custom_create (vlc_object_t *p_this, size_t i_size, const char *psz_type);
         vlc_custom_create(VLC_OBJECT(o), s, n)
 
 /**
- * Assign a name to an object for vlc_object_find_name().
+ * Allocates an object resource.
+ *
+ * @param size storage size in bytes of the resource data
+ * @param release callback to release the resource
+ *
+ * @return a pointer to the (uninitialized) storage space, or NULL on error
  */
-extern int vlc_object_set_name(vlc_object_t *, const char *);
-#define vlc_object_set_name(o, n) vlc_object_set_name(VLC_OBJECT(o), n)
+void *vlc_objres_new(size_t size, void (*release)(void *));
 
-/* Types */
-typedef void (*vlc_destructor_t) (struct vlc_object_t *);
-void vlc_object_set_destructor (vlc_object_t *, vlc_destructor_t);
-#define vlc_object_set_destructor(a,b) \
-        vlc_object_set_destructor (VLC_OBJECT(a), b)
+/**
+ * Pushes an object resource on the object resources stack.
+ *
+ * @param obj object to allocate the resource for
+ * @param data resource base address (as returned by vlc_objres_new())
+ */
+void vlc_objres_push(vlc_object_t *obj, void *data);
+
+/**
+ * Releases all resources of an object.
+ *
+ * All resources added with vlc_objres_add() are released in reverse order.
+ * The resource list is reset to empty.
+ *
+ * @param obj object whose resources to release
+ */
+void vlc_objres_clear(vlc_object_t *obj);
+
+/**
+ * Releases one object resource explicitly.
+ *
+ * If a resource associated with an object needs to be released explicitly
+ * earlier than normal, call this function. This is relatively slow and should
+ * be avoided.
+ *
+ * @param obj object whose resource to release
+ * @param data private data for the comparison function
+ * @param match comparison function to match the targeted resource
+ */
+void vlc_objres_remove(vlc_object_t *obj, void *data,
+                       bool (*match)(void *, void *));
 
 #define ZOOM_SECTION N_("Zoom")
 #define ZOOM_QUARTER_KEY_TEXT N_("1:4 Quarter")
@@ -135,22 +189,27 @@ void vlc_object_set_destructor (vlc_object_t *, vlc_destructor_t);
  */
 typedef struct vlc_dialog_provider vlc_dialog_provider;
 typedef struct vlc_keystore vlc_keystore;
+typedef struct vlc_actions_t vlc_actions_t;
+typedef struct vlc_playlist vlc_playlist_t;
+typedef struct vlc_media_source_provider_t vlc_media_source_provider_t;
+typedef struct intf_thread_t intf_thread_t;
 
 typedef struct libvlc_priv_t
 {
     libvlc_int_t       public_data;
 
-    /* Logging */
-    bool               b_stats;     ///< Whether to collect stats
-
     /* Singleton objects */
-    vlc_logger_t      *logger;
+    vlc_mutex_t lock; ///< protect playlist and interfaces
     vlm_t             *p_vlm;  ///< the VLM singleton (or NULL)
     vlc_dialog_provider *p_dialog_provider; ///< dialog provider
     vlc_keystore      *p_memory_keystore; ///< memory keystore
-    struct playlist_t *playlist; ///< Playlist for interfaces
-    struct playlist_preparser_t *parser; ///< Input item meta data handler
-    struct vlc_actions *actions; ///< Hotkeys handler
+    intf_thread_t *interfaces;  ///< Linked-list of interfaces
+    vlc_playlist_t *main_playlist;
+    struct input_preparser_t *parser; ///< Input item meta data handler
+    vlc_media_source_provider_t *media_source_provider;
+    vlc_actions_t *actions; ///< Hotkeys handler
+    struct vlc_medialibrary_t *p_media_library; ///< Media library instance
+    struct vlc_thumbnailer_t *p_thumbnailer; ///< Lazily instantiated media thumbnailer
 
     /* Exit callback */
     vlc_exit_t       exit;
@@ -158,72 +217,22 @@ typedef struct libvlc_priv_t
 
 static inline libvlc_priv_t *libvlc_priv (libvlc_int_t *libvlc)
 {
-    return (libvlc_priv_t *)libvlc;
+    return container_of(libvlc, libvlc_priv_t, public_data);
 }
 
 int intf_InsertItem(libvlc_int_t *, const char *mrl, unsigned optc,
                     const char * const *optv, unsigned flags);
 void intf_DestroyAll( libvlc_int_t * );
 
-#define libvlc_stats( o ) (libvlc_priv((VLC_OBJECT(o))->obj.libvlc)->b_stats)
+int vlc_MetadataRequest(libvlc_int_t *libvlc, input_item_t *item,
+                        input_item_meta_request_option_t i_options,
+                        const input_preparser_callbacks_t *cbs,
+                        void *cbs_userdata,
+                        int timeout, void *id);
 
 /*
  * Variables stuff
  */
 void var_OptionParse (vlc_object_t *, const char *, bool trusted);
-
-/*
- * Stats stuff
- */
-enum
-{
-    STATS_COUNTER,
-    STATS_DERIVATIVE,
-};
-
-typedef struct counter_sample_t
-{
-    uint64_t value;
-    mtime_t  date;
-} counter_sample_t;
-
-typedef struct counter_t
-{
-    int                 i_compute_type;
-    int                 i_samples;
-    counter_sample_t ** pp_samples;
-
-    mtime_t             last_update;
-} counter_t;
-
-enum
-{
-    STATS_INPUT_BITRATE,
-    STATS_READ_BYTES,
-    STATS_READ_PACKETS,
-    STATS_DEMUX_READ,
-    STATS_DEMUX_BITRATE,
-    STATS_DEMUX_CORRUPTED,
-    STATS_DEMUX_DISCONTINUITY,
-    STATS_PLAYED_ABUFFERS,
-    STATS_LOST_ABUFFERS,
-    STATS_DECODED_AUDIO,
-    STATS_DECODED_VIDEO,
-    STATS_DECODED_SUB,
-    STATS_CLIENT_CONNECTIONS,
-    STATS_ACTIVE_CONNECTIONS,
-    STATS_SOUT_SENT_PACKETS,
-    STATS_SOUT_SENT_BYTES,
-    STATS_SOUT_SEND_BITRATE,
-    STATS_DISPLAYED_PICTURES,
-    STATS_LOST_PICTURES,
-};
-
-counter_t * stats_CounterCreate (int);
-void stats_Update (counter_t *, uint64_t, uint64_t *);
-void stats_CounterClean (counter_t * );
-
-void stats_ComputeInputStats(input_thread_t*, input_stats_t*);
-void stats_ReinitInputStats(input_stats_t *);
 
 #endif

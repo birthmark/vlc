@@ -2,7 +2,6 @@
  * dummy.c: dummy muxer module for vlc
  *****************************************************************************
  * Copyright (C) 2001, 2002 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Eric Petit <titer@videolan.org>
@@ -58,12 +57,12 @@ static int AddStream( sout_mux_t *, sout_input_t * );
 static void DelStream( sout_mux_t *, sout_input_t * );
 static int Mux      ( sout_mux_t * );
 
-struct sout_mux_sys_t
+typedef struct
 {
     /* Some streams have special initialization data, we'll output this
      * data as an header in the stream. */
     bool b_header;
-};
+} sout_mux_sys_t;
 
 /*****************************************************************************
  * Open:
@@ -110,12 +109,12 @@ static int Control( sout_mux_t *p_mux, int i_query, va_list args )
     switch( i_query )
     {
         case MUX_CAN_ADD_STREAM_WHILE_MUXING:
-            pb_bool = (bool*)va_arg( args, bool * );
+            pb_bool = va_arg( args, bool * );
             *pb_bool = true;
             return VLC_SUCCESS;
 
         case MUX_GET_ADD_STREAM_WAIT:
-            pb_bool = (bool*)va_arg( args, bool * );
+            pb_bool = va_arg( args, bool * );
             *pb_bool = false;
             return VLC_SUCCESS;
 

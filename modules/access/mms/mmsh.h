@@ -2,7 +2,6 @@
  * mmsh.h:
  *****************************************************************************
  * Copyright (C) 2001, 2002 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
@@ -40,11 +39,11 @@ typedef struct
 } chunk_t;
 
 #define BUFFER_SIZE 65536
-struct access_sys_t
+typedef struct
 {
     int             i_proto;
 
-    int             fd;
+    struct vlc_tls *stream;
     vlc_url_t       url;
 
     bool      b_proxy;
@@ -68,7 +67,7 @@ struct access_sys_t
     uint64_t        i_position;
 
     asf_header_t    asfh;
-    guid_t          guid;
-};
+    vlc_guid_t          guid;
+} access_sys_t;
 
 #endif

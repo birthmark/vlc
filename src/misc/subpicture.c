@@ -2,7 +2,6 @@
  * subpicture.c: Subpicture functions
  *****************************************************************************
  * Copyright (C) 2010 Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
  *
@@ -128,8 +127,8 @@ subpicture_t *subpicture_NewFromPicture( vlc_object_t *p_obj,
          return NULL;
     }
 
-    p_subpic->i_original_picture_width  = fmt_out.i_width;
-    p_subpic->i_original_picture_height = fmt_out.i_height;
+    p_subpic->i_original_picture_width  = fmt_out.i_visible_width;
+    p_subpic->i_original_picture_height = fmt_out.i_visible_height;
 
     fmt_out.i_sar_num =
     fmt_out.i_sar_den = 0;
@@ -150,7 +149,7 @@ subpicture_t *subpicture_NewFromPicture( vlc_object_t *p_obj,
 void subpicture_Update( subpicture_t *p_subpicture,
                         const video_format_t *p_fmt_src,
                         const video_format_t *p_fmt_dst,
-                        mtime_t i_ts )
+                        vlc_tick_t i_ts )
 {
     subpicture_updater_t *p_upd = &p_subpicture->updater;
     subpicture_private_t *p_private = p_subpicture->p_private;
@@ -203,11 +202,14 @@ void subpicture_region_private_Delete( subpicture_region_private_t *p_private )
     free( p_private );
 }
 
-subpicture_region_t *subpicture_region_New( const video_format_t *p_fmt )
+subpicture_region_t * subpicture_region_NewInternal( const video_format_t *p_fmt )
 {
     subpicture_region_t *p_region = calloc( 1, sizeof(*p_region ) );
     if( !p_region )
         return NULL;
+
+    p_region->zoom_h.den = p_region->zoom_h.num = 1;
+    p_region->zoom_v.den = p_region->zoom_v.num = 1;
 
     if ( p_fmt->i_chroma == VLC_CODEC_YUVP )
     {
@@ -230,6 +232,17 @@ subpicture_region_t *subpicture_region_New( const video_format_t *p_fmt )
     }
 
     p_region->i_alpha = 0xff;
+    p_region->b_balanced_text = true;
+
+    return p_region;
+}
+
+subpicture_region_t *subpicture_region_New( const video_format_t *p_fmt )
+{
+    subpicture_region_t *p_region =
+        subpicture_region_NewInternal( p_fmt );
+    if( !p_region )
+        return NULL;
 
     if( p_fmt->i_chroma == VLC_CODEC_TEXT )
         return p_region;
@@ -276,7 +289,7 @@ void subpicture_region_ChainDelete( subpicture_region_t *p_head )
 #include <vlc_filter.h>
 
 unsigned picture_BlendSubpicture(picture_t *dst,
-                                 filter_t *blend, subpicture_t *src)
+                                 vlc_blender_t *blend, subpicture_t *src)
 {
     unsigned done = 0;
 

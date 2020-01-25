@@ -28,25 +28,18 @@ typedef struct
     uint8_t         i_continuity_counter;
     bool            b_discontinuity;
 
-} ts_stream_t;
+} tsmux_stream_t;
 
 typedef struct
 {
-    vlc_fourcc_t    i_codec;
-
     int             i_stream_id; /* keep as int for drac */
-
-    int             i_width, i_height;
 
     /* Specific to mpeg4 in mpeg2ts */
     int             i_es_id;
 
-    size_t          i_extra;
-    uint8_t         *p_extra;
-
     /* language is iso639-2T */
     size_t          i_langs;
     uint8_t         *lang;
-} pes_stream_t;
+} pesmux_stream_t;
 
 #endif

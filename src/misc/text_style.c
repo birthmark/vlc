@@ -2,7 +2,6 @@
  * text_style.c
  *****************************************************************************
  * Copyright (C) 1999-2010 VLC authors and VideoLAN
- * $Id$
  *
  * Author: basOS G <noxelia 4t gmail , com>
  *
@@ -60,11 +59,10 @@ text_style_t *text_style_Create( int i_defaults )
     p_style->i_shadow_alpha = STYLE_ALPHA_OPAQUE;
     p_style->i_background_color = 0x000000;
     p_style->i_background_alpha = STYLE_ALPHA_OPAQUE;
-    p_style->i_karaoke_background_color = 0xffffff;
-    p_style->i_karaoke_background_alpha = STYLE_ALPHA_OPAQUE;
     p_style->i_outline_width = 1;
     p_style->i_shadow_width = 0;
     p_style->i_spacing = -1;
+    p_style->e_wrapinfo = STYLE_WRAP_DEFAULT;
 
     return p_style;
 }
@@ -118,8 +116,7 @@ void text_style_Merge( text_style_t *p_dst, const text_style_t *p_src, bool b_ov
         MERGE(i_shadow_alpha,       STYLE_HAS_SHADOW_ALPHA);
         MERGE(i_background_color,   STYLE_HAS_BACKGROUND_COLOR);
         MERGE(i_background_alpha,   STYLE_HAS_BACKGROUND_ALPHA);
-        MERGE(i_karaoke_background_color, STYLE_HAS_K_BACKGROUND_COLOR);
-        MERGE(i_karaoke_background_alpha, STYLE_HAS_K_BACKGROUND_ALPHA);
+        MERGE(e_wrapinfo,            STYLE_HAS_WRAP_INFO);
         p_dst->i_features |= p_src->i_features;
         p_dst->i_style_flags |= p_src->i_style_flags;
     }
@@ -154,6 +151,49 @@ void text_style_Delete( text_style_t *p_style )
     free( p_style );
 }
 
+void text_segment_ruby_ChainDelete( text_segment_ruby_t *p_ruby )
+{
+    while( p_ruby )
+    {
+        text_segment_ruby_t *p_next = p_ruby->p_next;
+        free( p_ruby->psz_base );
+        free( p_ruby->psz_rt );
+        free( p_ruby );
+        p_ruby = p_next;
+    }
+}
+
+text_segment_ruby_t *text_segment_ruby_New( const char *psz_base,
+                                            const char *psz_rt )
+{
+    text_segment_ruby_t *p_rb = malloc(sizeof(*p_rb));
+    if( p_rb )
+    {
+        p_rb->p_next = NULL;
+        p_rb->psz_base = strdup( psz_base );
+        p_rb->psz_rt = strdup( psz_rt );
+        if( !p_rb->psz_base || !p_rb->psz_rt )
+        {
+            text_segment_ruby_ChainDelete( p_rb );
+            return NULL;
+        }
+    }
+    return p_rb;
+}
+
+static text_segment_ruby_t *text_segment_ruby_Duplicate( const text_segment_ruby_t *p_src )
+{
+    text_segment_ruby_t *p_dup = NULL;
+    text_segment_ruby_t **pp_append = &p_dup;
+    for ( ; p_src ; p_src = p_src->p_next )
+    {
+        *pp_append = text_segment_ruby_New( p_src->psz_base, p_src->psz_rt );
+        if( *pp_append )
+            pp_append = &((*pp_append)->p_next);
+    }
+    return p_dup;
+}
+
 text_segment_t *text_segment_New( const char *psz_text )
 {
     text_segment_t* segment = calloc( 1, sizeof(*segment) );
@@ -182,12 +222,34 @@ text_segment_t *text_segment_NewInheritStyle( const text_style_t* p_style )
     return p_segment;
 }
 
+text_segment_t *text_segment_FromRuby( text_segment_ruby_t *p_ruby )
+{
+    text_segment_t *p_segment = text_segment_New( NULL );
+    if( p_segment )
+    {
+        p_segment->p_ruby = p_ruby;
+        size_t i_base = 1;
+        for( text_segment_ruby_t *p = p_ruby; p; p = p->p_next )
+            i_base += strlen( p->psz_base );
+        p_segment->psz_text = malloc( i_base );
+        /* Fallback for those not understanding p_ruby */
+        if( p_segment->psz_text )
+        {
+            *p_segment->psz_text = 0;
+            for( text_segment_ruby_t *p = p_ruby; p; p = p->p_next )
+                strcat( p_segment->psz_text, p->psz_base );
+        }
+    }
+    return p_segment;
+}
+
 void text_segment_Delete( text_segment_t* segment )
 {
     if ( segment != NULL )
     {
         free( segment->psz_text );
         text_style_Delete( segment->style );
+        text_segment_ruby_ChainDelete( segment->p_ruby );
         free( segment );
     }
 }
@@ -210,8 +272,12 @@ text_segment_t *text_segment_Copy( text_segment_t *p_src )
 
     while( p_src ) {
         text_segment_t *p_new = text_segment_New( p_src->psz_text );
-        if( p_new )
-            p_new->style = text_style_Duplicate( p_src->style );
+
+        if( unlikely( !p_new ) )
+            break;
+
+        p_new->style = text_style_Duplicate( p_src->style );
+        p_new->p_ruby = text_segment_ruby_Duplicate( p_src->p_ruby );
 
         if( p_dst == NULL )
         {
@@ -233,46 +299,60 @@ unsigned int vlc_html_color( const char *psz_value, bool* ok )
 {
     unsigned int color = 0;
     char* psz_end;
+    bool b_ret = false;
 
-    if ( ok != NULL )
-        *ok = false;
+    const char *psz_hex = (*psz_value == '#') ? psz_value + 1 : psz_value;
 
-    if( *psz_value == '#' )
+    if( psz_hex != psz_value ||
+        (*psz_hex >= '0' && *psz_hex <= '9') ||
+        (*psz_hex >= 'A' && *psz_hex <= 'F') )
     {
-        color = strtol( psz_value + 1, &psz_end, 16 );
-        if ( psz_end - ( psz_value + 1 ) <= 6 && *psz_end == 0 )
-        {
-            color |= 0xFF000000;
-        }
-        if ( ok != NULL && ( *psz_end == 0 || isspace( *psz_end ) ) )
-            *ok = true;
-    }
-    else
-    {
-        uint32_t i_value = strtol( psz_value, &psz_end, 16 );
+        uint32_t i_value = (uint32_t)strtoul( psz_hex, &psz_end, 16 );
         if( *psz_end == 0 || isspace( *psz_end ) )
         {
-            color = i_value;
-            // Assume RRGGBB has an alpha component of 0xFF
-            if ( psz_end - psz_value <= 6 )
-                color |= 0xFF000000;
-            if ( ok != NULL )
-                *ok = true;
-        }
-        else
-        {
-            for( int i = 0; p_html_colors[i].psz_name != NULL; i++ )
+            switch( psz_end - psz_hex )
             {
-                if( !strcasecmp( psz_value, p_html_colors[i].psz_name ) )
-                {
-                    // Assume opaque color since the table doesn't specify an alpha
-                    color = p_html_colors[i].i_value | 0xFF000000;
-                    if ( ok != NULL )
-                        *ok = true;
+                case 8:
+                    color = (i_value << 24) | (i_value >> 8);
+                    b_ret = true;
                     break;
-                }
+                case 6:
+                    color = i_value | 0xFF000000;
+                    b_ret = true;
+                    break;
+                default:
+                    break;
             }
         }
     }
+
+    if( !b_ret && psz_hex == psz_value &&
+        !strncmp( "rgb", psz_value, 3 ) )
+    {
+        unsigned r,g,b,a = 0xFF;
+        if( psz_value[3] == 'a' )
+            b_ret = (sscanf( psz_value, "rgba(%3u,%3u,%3u,%3u)", &r, &g, &b, &a ) == 4);
+        else
+            b_ret = (sscanf( psz_value, "rgb(%3u,%3u,%3u)", &r, &g, &b ) == 3);
+        color = (a << 24) | (r << 16) | (g << 8) | b;
+    }
+
+    if( !b_ret && psz_hex == psz_value )
+    {
+        for( int i = 0; p_html_colors[i].psz_name != NULL; i++ )
+        {
+            if( !strcasecmp( psz_value, p_html_colors[i].psz_name ) )
+            {
+                // Assume opaque color since the table doesn't specify an alpha
+                color = p_html_colors[i].i_value | 0xFF000000;
+                b_ret = true;
+                break;
+            }
+        }
+    }
+
+    if ( ok != NULL )
+        *ok = b_ret;
+
     return color;
 }

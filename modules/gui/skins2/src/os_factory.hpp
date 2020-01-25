@@ -2,7 +2,6 @@
  * os_factory.hpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
- * $Id$
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -51,7 +50,8 @@ public:
         kResizeNS,
         kResizeWE,
         kResizeNWSE,
-        kResizeNESW
+        kResizeNESW,
+        kNoCursor,
     };
 
     /**
@@ -121,7 +121,7 @@ public:
     virtual int getScreenHeight() const = 0;
 
     /// Get Monitor Information for a given Window
-    virtual void getMonitorInfo( const GenericWindow &rWindow,
+    virtual void getMonitorInfo( OSWindow *pWindow,
                                  int* x, int* y,
                                  int* width, int* height ) const = 0;
 

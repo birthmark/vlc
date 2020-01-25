@@ -2,7 +2,6 @@
  * vlc_extensions.h: Extensions (meta data, web information, ...)
  *****************************************************************************
  * Copyright (C) 2009-2010 VideoLAN and authors
- * $Id$
  *
  * Authors: Jean-Philippe André < jpeg # videolan.org >
  *
@@ -52,7 +51,7 @@ typedef struct extension_t {
 /** Extensions manager object */
 struct extensions_manager_t
 {
-    VLC_COMMON_MEMBERS
+    struct vlc_object_t obj;
 
     module_t *p_module;                /**< Extensions manager module */
     extensions_manager_sys_t *p_sys;   /**< Reserved for the module */
@@ -76,7 +75,7 @@ enum
     EXTENSION_TRIGGER_ONLY,   /**< arg1: extension_t*, arg2: bool* */
     EXTENSION_TRIGGER,        /**< arg1: extension_t* */
     EXTENSION_TRIGGER_MENU,   /**< arg1: extension_t*, int (uint16_t) */
-    EXTENSION_SET_INPUT,      /**< arg1: extension_t*, arg2 (input_thread_t*) */
+    EXTENSION_SET_INPUT,      /**< arg1: extension_t*, arg2 (input_item_t*) */
     EXTENSION_PLAYING_CHANGED, /**< arg1: extension_t*, arg2 int( playing status ) */
     EXTENSION_META_CHANGED,   /**< arg1: extension_t*, arg2 (input_item_t*) */
 };
@@ -150,11 +149,11 @@ static inline int extension_TriggerMenu( extensions_manager_t *p_mgr,
 }
 
 /** Trigger an entry of the extension menu */
+/* TODO: use player */
 static inline int extension_SetInput( extensions_manager_t *p_mgr,
-                                        extension_t *p_ext,
-                                        struct input_thread_t *p_input )
+                                      extension_t *p_ext, input_item_t *p_item )
 {
-    return extension_Control( p_mgr, EXTENSION_SET_INPUT, p_ext, p_input );
+    return extension_Control( p_mgr, EXTENSION_SET_INPUT, p_ext, p_item );
 }
 
 static inline int extension_PlayingChanged( extensions_manager_t *p_mgr,
@@ -277,7 +276,7 @@ struct extension_widget_t
     /* Drop-down & List widgets */
     struct extension_widget_value_t {
         int i_id;          ///< Identifier for the extension module
-                           // (weird behavior may occur if not unique)
+                           ///< (weird behavior may occur if not unique)
         char *psz_text;    ///< String value
         bool b_selected;   ///< True if this item is selected
         struct extension_widget_value_t *p_next; ///< Next value or NULL
@@ -297,7 +296,7 @@ struct extension_widget_t
 
     /* Spinning icon */
     int i_spin_loops;             ///< Number of loops to play (-1 = infinite,
-                                  // 0 = stop animation)
+                                  ///< 0 = stop animation)
 
     /* Orders */
     bool b_kill;                  ///< Destroy this widget
@@ -306,8 +305,8 @@ struct extension_widget_t
     /* Misc */
     void *p_sys;                  ///< Reserved for the extension manager
     void *p_sys_intf;             ///< Reserved for the UI, but:
-                                  // NULL means the UI has destroyed the widget
-                                  // or has not created it yet
+                                  ///< NULL means the UI has destroyed the widget
+                                  ///< or has not created it yet
     extension_dialog_t *p_dialog; ///< Parent dialog
 };
 

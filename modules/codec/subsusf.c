@@ -2,7 +2,6 @@
  * subsusf.c : USF subtitles decoder
  *****************************************************************************
  * Copyright (C) 2000-2006 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Bernie Purcell <bitmap@videolan.org>
  *
@@ -46,7 +45,7 @@ static void CloseDecoder  ( vlc_object_t * );
  "VLC partly implements this, but you can choose to disable all formatting.")
 
 vlc_module_begin ()
-    set_capability( "decoder", 40 )
+    set_capability( "spu decoder", 40 )
     set_shortname( N_("USFSubs"))
     set_description( N_("USF subtitles decoder") )
     set_callbacks( OpenDecoder, CloseDecoder )
@@ -86,7 +85,7 @@ typedef struct
     int             i_margin_percent_v;
 }  ssa_style_t;
 
-struct decoder_sys_t
+typedef struct
 {
     int                 i_original_height;
     int                 i_original_width;
@@ -97,10 +96,11 @@ struct decoder_sys_t
 
     image_attach_t      **pp_images;
     int                 i_images;
-};
+} decoder_sys_t;
 
-static subpicture_t *DecodeBlock   ( decoder_t *, block_t ** );
+static int           DecodeBlock   ( decoder_t *, block_t * );
 static char         *CreatePlainText( char * );
+static char         *StripTags( char *psz_subtitle );
 static int           ParseImageAttachments( decoder_t *p_dec );
 
 static subpicture_t        *ParseText     ( decoder_t *, block_t * );
@@ -126,8 +126,7 @@ static int OpenDecoder( vlc_object_t *p_this )
     if( ( p_dec->p_sys = p_sys = calloc(1, sizeof(decoder_sys_t)) ) == NULL )
         return VLC_ENOMEM;
 
-    p_dec->pf_decode_sub = DecodeBlock;
-    p_dec->fmt_out.i_cat = SPU_ES;
+    p_dec->pf_decode = DecodeBlock;
     p_dec->fmt_out.i_codec = 0;
 
     /* init of p_sys */
@@ -154,22 +153,19 @@ static int OpenDecoder( vlc_object_t *p_this )
  ****************************************************************************
  * This function must be fed with complete subtitles units.
  ****************************************************************************/
-static subpicture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
+static int DecodeBlock( decoder_t *p_dec, block_t *p_block )
 {
     subpicture_t *p_spu;
-    block_t *p_block;
 
-    if( !pp_block || *pp_block == NULL )
-        return NULL;
-
-    p_block = *pp_block;
+    if( p_block == NULL ) /* No Drain */
+        return VLCDEC_SUCCESS;
 
     p_spu = ParseText( p_dec, p_block );
 
     block_Release( p_block );
-    *pp_block = NULL;
-
-    return p_spu;
+    if( p_spu != NULL )
+        decoder_QueueSub( p_dec, p_spu );
+    return VLCDEC_SUCCESS;
 }
 
 /*****************************************************************************
@@ -225,7 +221,7 @@ static subpicture_t *ParseText( decoder_t *p_dec, block_t *p_block )
         return NULL;
 
     /* We cannot display a subpicture with no date */
-    if( p_block->i_pts <= VLC_TS_INVALID )
+    if( p_block->i_pts == VLC_TICK_INVALID )
     {
         msg_Warn( p_dec, "subtitle without a date" );
         return NULL;
@@ -267,7 +263,7 @@ static subpicture_t *ParseText( decoder_t *p_dec, block_t *p_block )
 
     p_spu->i_start = p_block->i_pts;
     p_spu->i_stop = p_block->i_pts + p_block->i_length;
-    p_spu->b_ephemer = (p_block->i_length == 0);
+    p_spu->b_ephemer = (p_block->i_length == VLC_TICK_INVALID);
     p_spu->b_absolute = false;
     p_spu->i_original_picture_width = p_sys->i_original_width;
     p_spu->i_original_picture_height = p_sys->i_original_height;
@@ -414,13 +410,11 @@ static void SetupPositions( subpicture_region_t *p_region, char *psz_subtitle )
 
 static subpicture_region_t *CreateTextRegion( decoder_t *p_dec,
                                               char *psz_subtitle,
-                                              int i_len,
                                               int i_sys_align )
 {
     decoder_sys_t        *p_sys = p_dec->p_sys;
     subpicture_region_t  *p_text_region;
     video_format_t        fmt;
-    VLC_UNUSED( i_len );
 
     /* Create a new subpicture region */
     video_format_Init( &fmt, VLC_CODEC_TEXT );
@@ -443,11 +437,16 @@ static subpicture_region_t *CreateTextRegion( decoder_t *p_dec,
             }
         }
 
+        /* Set default or user align/magin.
+         * Style overriden if no user value. */
+        p_text_region->i_x = i_sys_align > 0 ? 20 : 0;
+        p_text_region->i_y = 10;
+        p_text_region->i_align = SUBPICTURE_ALIGN_BOTTOM |
+                                 ((i_sys_align > 0) ? i_sys_align : 0);
+
         if( p_ssa_style )
         {
             msg_Dbg( p_dec, "style is: %s", p_ssa_style->psz_stylename );
-
-            p_text_region->i_align = p_ssa_style->i_align;
 
             /* TODO: Setup % based offsets properly, without adversely affecting
              *       everything else in vlc. Will address with separate patch,
@@ -456,15 +455,16 @@ static subpicture_region_t *CreateTextRegion( decoder_t *p_dec,
                      * p_ssa_style->i_margin_percent_h;
                      * p_ssa_style->i_margin_percent_v;
              */
-            p_text_region->i_x         = p_ssa_style->i_margin_h;
-            p_text_region->i_y         = p_ssa_style->i_margin_v;
+            if( i_sys_align == -1 )
+            {
+                p_text_region->i_align     = p_ssa_style->i_align;
+                p_text_region->i_x         = p_ssa_style->i_margin_h;
+                p_text_region->i_y         = p_ssa_style->i_margin_v;
+            }
             p_text_region->p_text = text_segment_NewInheritStyle( p_ssa_style->p_style );
         }
         else
         {
-            p_text_region->i_align = SUBPICTURE_ALIGN_BOTTOM | i_sys_align;
-            p_text_region->i_x = i_sys_align ? 20 : 0;
-            p_text_region->i_y = 10;
             p_text_region->p_text = text_segment_New( NULL );
         }
         /* Look for position arguments which may override the style-based
@@ -508,16 +508,14 @@ static int ParseImageAttachments( decoder_t *p_dec )
 
                 if( p_block != NULL )
                 {
-                    video_format_t     fmt_in;
+                    es_format_t        es_in;
                     video_format_t     fmt_out;
 
                     memcpy( p_block->p_buffer, p_attach->p_data, p_attach->i_data );
 
-                    memset( &fmt_in,  0, sizeof( video_format_t));
-                    memset( &fmt_out, 0, sizeof( video_format_t));
-
-                    fmt_in.i_chroma  = type;
-                    fmt_out.i_chroma = VLC_CODEC_YUVA;
+                    es_format_Init( &es_in, VIDEO_ES, type );
+                    es_in.video.i_chroma = type;
+                    video_format_Init( &fmt_out, VLC_CODEC_YUVA );
 
                     /* Find a suitable decoder module */
                     if( module_exists( "sdl_image" ) )
@@ -529,8 +527,10 @@ static int ParseImageAttachments( decoder_t *p_dec )
                         var_SetString( p_dec, "codec", "sdl_image" );
                     }
 
-                    p_pic = image_Read( p_image, p_block, &fmt_in, &fmt_out );
+                    p_pic = image_Read( p_image, p_block, &es_in, &fmt_out );
                     var_Destroy( p_dec, "codec" );
+                    es_format_Clean( &es_in );
+                    video_format_Clean( &fmt_out );
                 }
 
                 image_HandlerDelete( p_image );
@@ -633,12 +633,17 @@ static void ParseUSFHeaderTags( decoder_t *p_dec, xml_reader_t *p_xml_reader )
                         if( !strcasecmp( p_sys->pp_ssa_styles[i]->psz_stylename, "Default" ) )
                         {
                             ssa_style_t *p_default_style = p_sys->pp_ssa_styles[i];
+                            text_style_t *p_orig_text_style = p_ssa_style->p_style;
 
                             memcpy( p_ssa_style, p_default_style, sizeof( ssa_style_t ) );
+
+                            // reset data-members that are not to be overwritten
+                            p_ssa_style->p_style = p_orig_text_style;
+                            p_ssa_style->psz_stylename = NULL;
+
                             //FIXME: Make font_style a pointer. Actually we double copy some data here,
                             //   we use text_style_Copy to avoid copying psz_fontname, though .
                             text_style_Copy( p_ssa_style->p_style, p_default_style->p_style );
-                            p_ssa_style->psz_stylename = NULL;
                         }
                     }
 
@@ -744,17 +749,6 @@ static void ParseUSFHeaderTags( decoder_t *p_dec, xml_reader_t *p_xml_reader )
                         {
                             p_ssa_style->p_style->i_shadow_width = atoi( val );
                         }
-                        else if( !strcasecmp( "back-color", attr ) )
-                        {
-                            if( *val == '#' )
-                            {
-                                unsigned long col = strtol(val+1, NULL, 16);
-                                p_ssa_style->p_style->i_karaoke_background_color = (col & 0x00ffffff);
-                                p_ssa_style->p_style->i_karaoke_background_alpha = (col >> 24) & 0xff;
-                                p_ssa_style->p_style->i_features |= STYLE_HAS_K_BACKGROUND_COLOR
-                                                                  | STYLE_HAS_K_BACKGROUND_ALPHA;
-                            }
-                        }
                         else if( !strcasecmp( "spacing", attr ) )
                         {
                             p_ssa_style->p_style->i_spacing = atoi( val );
@@ -846,22 +840,37 @@ static subpicture_region_t *ParseUSFString( decoder_t *p_dec,
                 {
                     subpicture_region_t  *p_text_region;
 
+                    char *psz_flat = NULL;
+                    char *psz_knodes = strndup( &psz_subtitle[9], psz_end - &psz_subtitle[9] );
+                    if( psz_knodes )
+                    {
+                        /* remove timing <k> tags */
+                        psz_flat = CreatePlainText( psz_knodes );
+                        free( psz_knodes );
+                        if( psz_flat )
+                        {
+                            p_text_region = CreateTextRegion( p_dec,
+                                                              psz_flat,
+                                                              p_sys->i_align );
+                            if( p_text_region )
+                            {
+                                free( p_text_region->p_text->psz_text );
+                                p_text_region->p_text->psz_text = psz_flat;
+                                if( !p_region_first )
+                                {
+                                    p_region_first = p_region_upto = p_text_region;
+                                }
+                                else if( p_text_region )
+                                {
+                                    p_region_upto->p_next = p_text_region;
+                                    p_region_upto = p_region_upto->p_next;
+                                }
+                            }
+                            else free( psz_flat );
+                        }
+                    }
+
                     psz_end += strcspn( psz_end, ">" ) + 1;
-
-                    p_text_region = CreateTextRegion( p_dec,
-                                                      psz_subtitle,
-                                                      psz_end - psz_subtitle,
-                                                      p_sys->i_align );
-
-                    if( !p_region_first )
-                    {
-                        p_region_first = p_region_upto = p_text_region;
-                    }
-                    else if( p_text_region )
-                    {
-                        p_region_upto->p_next = p_text_region;
-                        p_region_upto = p_region_upto->p_next;
-                    }
                 }
             }
             else if(( !strncasecmp( psz_subtitle, "<image ", 7 )) ||
@@ -869,7 +878,7 @@ static subpicture_region_t *ParseUSFString( decoder_t *p_dec,
             {
                 subpicture_region_t *p_image_region = NULL;
 
-                char *psz_end = strcasestr( psz_subtitle, "</image>" );
+                psz_end = strcasestr( psz_subtitle, "</image>" );
                 char *psz_content = strchr( psz_subtitle, '>' );
                 int   i_transparent = -1;
 
@@ -922,14 +931,10 @@ static subpicture_region_t *ParseUSFString( decoder_t *p_dec,
             {
                 subpicture_region_t  *p_text_region;
 
-                if( psz_end )
-                    psz_end += strcspn( psz_end, ">" ) + 1;
-                else
-                    psz_end = psz_subtitle + strlen( psz_subtitle );
+                psz_end = psz_subtitle + strlen( psz_subtitle );
 
                 p_text_region = CreateTextRegion( p_dec,
                                                   psz_subtitle,
-                                                  psz_end - psz_subtitle,
                                                   p_sys->i_align );
 
                 if( p_text_region )

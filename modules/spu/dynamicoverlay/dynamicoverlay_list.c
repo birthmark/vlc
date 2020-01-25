@@ -2,7 +2,6 @@
  * dynamicoverlay_list.c : dynamic overlay list
  *****************************************************************************
  * Copyright (C) 2008-2009 VLC authors and VideoLAN
- * $Id$
  *
  * Author: Søren Bøg <avacore@videolan.org>
  *         Jean-Paul Saman <jpsaman@videolan.org>
@@ -27,7 +26,6 @@
 #endif
 
 #include <vlc_common.h>
-#include <vlc_memory.h>
 
 #include "dynamicoverlay.h"
 

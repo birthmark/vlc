@@ -2,23 +2,22 @@
  * dolby.c : simple decoder for dolby surround encoded streams
  *****************************************************************************
  * Copyright (C) 2005-2009 the VideoLAN team
- * $Id$
  *
  * Authors: Boris Dorès <babal@via.ecp.fr>
  *
  * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
+ * under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation; either version 2.1 of the License, or
+ * (at your option) any later version.
  *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc., 51
- * Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program; if not, write to the Free Software Foundation,
+ * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
 /*****************************************************************************
@@ -29,7 +28,6 @@
 # include "config.h"
 #endif
 
-#define VLC_MODULE_LICENSE VLC_LICENSE_GPL_2_PLUS
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_aout.h>
@@ -58,7 +56,7 @@ vlc_module_end ()
 /*****************************************************************************
  * Internal data structures
  *****************************************************************************/
-struct filter_sys_t
+typedef struct
 {
     int i_left;
     int i_center;
@@ -66,7 +64,7 @@ struct filter_sys_t
     int i_rear_left;
     int i_rear_center;
     int i_rear_right;
-};
+} filter_sys_t;
 
 /*****************************************************************************
  * Create: allocate headphone downmixer
@@ -80,10 +78,10 @@ static int Create( vlc_object_t *p_this )
 
     /* Validate audio filter format */
     if ( p_filter->fmt_in.audio.i_physical_channels != (AOUT_CHAN_LEFT|AOUT_CHAN_RIGHT)
-       || ! ( p_filter->fmt_in.audio.i_original_channels & AOUT_CHAN_DOLBYSTEREO )
-       || aout_FormatNbChannels( &p_filter->fmt_out.audio ) <= 2
-       || ( p_filter->fmt_in.audio.i_original_channels & ~AOUT_CHAN_DOLBYSTEREO )
-          != ( p_filter->fmt_out.audio.i_original_channels & ~AOUT_CHAN_DOLBYSTEREO ) )
+       || ! ( p_filter->fmt_in.audio.i_chan_mode & AOUT_CHANMODE_DOLBYSTEREO )
+       || p_filter->fmt_out.audio.i_channels <= 2
+       || ( p_filter->fmt_in.audio.i_chan_mode & ~AOUT_CHANMODE_DOLBYSTEREO )
+          != ( p_filter->fmt_out.audio.i_chan_mode & ~AOUT_CHANMODE_DOLBYSTEREO ) )
     {
         return VLC_EGENERIC;
     }

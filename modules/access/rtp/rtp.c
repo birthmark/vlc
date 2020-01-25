@@ -36,7 +36,7 @@
 
 #include "rtp.h"
 #ifdef HAVE_SRTP
-# include <srtp.h>
+# include "srtp.h"
 # include <gcrypt.h>
 # include <vlc_gcrypt.h>
 #endif
@@ -96,7 +96,7 @@ vlc_module_begin ()
     set_description (N_("Real-Time Protocol (RTP) input"))
     set_category (CAT_INPUT)
     set_subcategory (SUBCAT_INPUT_DEMUX)
-    set_capability ("access_demux", 0)
+    set_capability ("access", 0)
     set_callbacks (Open, Close)
 
     add_integer ("rtcp-port", 0, RTCP_PORT_TEXT,
@@ -162,16 +162,19 @@ static int Open (vlc_object_t *obj)
     demux_t *demux = (demux_t *)obj;
     int tp; /* transport protocol */
 
-    if (!strcmp (demux->psz_access, "dccp"))
+    if (demux->out == NULL)
+        return VLC_EGENERIC;
+
+    if (!strcasecmp(demux->psz_name, "dccp"))
         tp = IPPROTO_DCCP;
     else
-    if (!strcmp (demux->psz_access, "rtptcp"))
+    if (!strcasecmp(demux->psz_name, "rtptcp"))
         tp = IPPROTO_TCP;
     else
-    if (!strcmp (demux->psz_access, "rtp"))
+    if (!strcasecmp(demux->psz_name, "rtp"))
         tp = IPPROTO_UDP;
     else
-    if (!strcmp (demux->psz_access, "udplite"))
+    if (!strcasecmp(demux->psz_name, "udplite"))
         tp = IPPROTO_UDPLITE;
     else
         return VLC_EGENERIC;
@@ -260,8 +263,7 @@ static int Open (vlc_object_t *obj)
     p_sys->fd           = fd;
     p_sys->rtcp_fd      = rtcp_fd;
     p_sys->max_src      = var_CreateGetInteger (obj, "rtp-max-src");
-    p_sys->timeout      = var_CreateGetInteger (obj, "rtp-timeout")
-                        * CLOCK_FREQ;
+    p_sys->timeout      = vlc_tick_from_sec( var_CreateGetInteger (obj, "rtp-timeout") );
     p_sys->max_dropout  = var_CreateGetInteger (obj, "rtp-max-dropout");
     p_sys->max_misorder = var_CreateGetInteger (obj, "rtp-max-misorder");
     p_sys->thread_ready = false;
@@ -380,8 +382,8 @@ static int Control (demux_t *demux, int query, va_list args)
     {
         case DEMUX_GET_PTS_DELAY:
         {
-            int64_t *v = va_arg (args, int64_t *);
-            *v = INT64_C(1000) * var_InheritInteger (demux, "network-caching");
+            *va_arg (args, vlc_tick_t *) =
+                VLC_TICK_FROM_MS( var_InheritInteger (demux, "network-caching") );
             return VLC_SUCCESS;
         }
 
@@ -389,7 +391,7 @@ static int Control (demux_t *demux, int query, va_list args)
         case DEMUX_CAN_SEEK:
         case DEMUX_CAN_CONTROL_PACE:
         {
-            bool *v = (bool*)va_arg( args, bool * );
+            bool *v = va_arg( args, bool * );
             *v = false;
             return VLC_SUCCESS;
         }
@@ -410,8 +412,7 @@ static int Control (demux_t *demux, int query, va_list args)
         case DEMUX_GET_LENGTH:
         case DEMUX_GET_TIME:
         {
-            int64_t *v = va_arg (args, int64_t *);
-            *v = 0;
+            *va_arg (args, vlc_tick_t *) = 0;
             return VLC_SUCCESS;
         }
     }
@@ -442,8 +443,8 @@ void codec_decode (demux_t *demux, void *data, block_t *block)
 {
     if (data)
     {
-        block->i_dts = VLC_TS_INVALID; /* RTP does not specify this */
-        es_out_Control (demux->out, ES_OUT_SET_PCR, block->i_pts );
+        block->i_dts = VLC_TICK_INVALID; /* RTP does not specify this */
+        es_out_SetPCR(demux->out, block->i_pts);
         es_out_Send (demux->out, (es_out_id_t *)data, block);
     }
     else
@@ -472,6 +473,16 @@ static void stream_destroy (demux_t *demux, void *data)
     }
 }
 
+static void stream_header (demux_t *demux, void *data, block_t *block)
+{
+    VLC_UNUSED(demux);
+    VLC_UNUSED(data);
+    if(block->p_buffer[1] & 0x80) /* TS M-bit == discontinuity (RFC 2250, 2.1) */
+    {
+        block->i_flags |= BLOCK_FLAG_DISCONTINUITY;
+    }
+}
+
 /* Send a packet to a chained demuxer */
 static void stream_decode (demux_t *demux, void *data, block_t *block)
 {
@@ -480,11 +491,6 @@ static void stream_decode (demux_t *demux, void *data, block_t *block)
     else
         block_Release (block);
     (void)demux;
-}
-
-static void *demux_init (demux_t *demux)
-{
-    return stream_init (demux, demux->psz_demux);
 }
 
 /*
@@ -500,7 +506,6 @@ static void *pcmu_init (demux_t *demux)
 
     es_format_Init (&fmt, AUDIO_ES, VLC_CODEC_MULAW);
     fmt.audio.i_rate = 8000;
-    fmt.audio.i_original_channels =
     fmt.audio.i_physical_channels = AOUT_CHAN_CENTER;
     return codec_init (demux, &fmt);
 }
@@ -514,7 +519,6 @@ static void *gsm_init (demux_t *demux)
 
     es_format_Init (&fmt, AUDIO_ES, VLC_CODEC_GSM);
     fmt.audio.i_rate = 8000;
-    fmt.audio.i_original_channels =
     fmt.audio.i_physical_channels = AOUT_CHAN_CENTER;
     return codec_init (demux, &fmt);
 }
@@ -528,7 +532,6 @@ static void *pcma_init (demux_t *demux)
 
     es_format_Init (&fmt, AUDIO_ES, VLC_CODEC_ALAW);
     fmt.audio.i_rate = 8000;
-    fmt.audio.i_original_channels =
     fmt.audio.i_physical_channels = AOUT_CHAN_CENTER;
     return codec_init (demux, &fmt);
 }
@@ -542,7 +545,6 @@ static void *l16s_init (demux_t *demux)
 
     es_format_Init (&fmt, AUDIO_ES, VLC_CODEC_S16B);
     fmt.audio.i_rate = 44100;
-    fmt.audio.i_original_channels =
     fmt.audio.i_physical_channels = AOUT_CHANS_STEREO;
     return codec_init (demux, &fmt);
 }
@@ -553,7 +555,6 @@ static void *l16m_init (demux_t *demux)
 
     es_format_Init (&fmt, AUDIO_ES, VLC_CODEC_S16B);
     fmt.audio.i_rate = 44100;
-    fmt.audio.i_original_channels =
     fmt.audio.i_physical_channels = AOUT_CHAN_CENTER;
     return codec_init (demux, &fmt);
 }
@@ -567,7 +568,6 @@ static void *qcelp_init (demux_t *demux)
 
     es_format_Init (&fmt, AUDIO_ES, VLC_CODEC_QCELP);
     fmt.audio.i_rate = 8000;
-    fmt.audio.i_original_channels =
     fmt.audio.i_physical_channels = AOUT_CHAN_CENTER;
     return codec_init (demux, &fmt);
 }
@@ -580,7 +580,6 @@ static void *mpa_init (demux_t *demux)
     es_format_t fmt;
 
     es_format_Init (&fmt, AUDIO_ES, VLC_CODEC_MPGA);
-    fmt.audio.i_original_channels =
     fmt.audio.i_physical_channels = AOUT_CHANS_STEREO;
     fmt.b_packetized = false;
     return codec_init (demux, &fmt);
@@ -639,12 +638,7 @@ static void mpv_decode (demux_t *demux, void *data, block_t *block)
  */
 static void *ts_init (demux_t *demux)
 {
-    char const* name = demux->psz_demux;
-
-    if (*name == '\0' || !strcasecmp(name, "any"))
-        name = NULL;
-
-    return stream_init (demux, name ? name : "ts");
+    return stream_init (demux, "ts");
 }
 
 
@@ -657,6 +651,7 @@ void rtp_autodetect (demux_t *demux, rtp_session_t *session,
     rtp_pt_t pt = {
         .init = NULL,
         .destroy = codec_destroy,
+        .header = NULL,
         .decode = codec_decode,
         .frequency = 0,
         .number = ptype,
@@ -719,25 +714,12 @@ void rtp_autodetect (demux_t *demux, rtp_session_t *session,
         msg_Dbg (demux, "detected MPEG2 TS");
         pt.init = ts_init;
         pt.destroy = stream_destroy;
+        pt.header = stream_header;
         pt.decode = stream_decode;
         pt.frequency = 90000;
         break;
 
       default:
-        /*
-         * If the rtp payload type is unknown then check demux if it is specified
-         */
-        if (!strcmp(demux->psz_demux, "h264")
-         || !strcmp(demux->psz_demux, "ts"))
-        {
-            msg_Dbg (demux, "dynamic payload format %s specified by demux",
-                     demux->psz_demux);
-            pt.init = demux_init;
-            pt.destroy = stream_destroy;
-            pt.decode = stream_decode;
-            pt.frequency = 90000;
-            break;
-        }
         if (ptype >= 96)
         {
             char *dynamic = var_InheritString(demux, "rtp-dynamic-pt");

@@ -2,7 +2,6 @@
  * encoder.c: video and audio encoder using the libavcodec library
  *****************************************************************************
  * Copyright (C) 1999-2004 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Gildas Bazin <gbazin@videolan.org>
@@ -48,13 +47,11 @@
 #include "avcodec.h"
 #include "avcommon.h"
 
-#if LIBAVUTIL_VERSION_CHECK( 52,2,6,0,0 )
-# include <libavutil/channel_layout.h>
-#endif
+#include <libavutil/channel_layout.h>
 
-#define HURRY_UP_GUARD1 (450000)
-#define HURRY_UP_GUARD2 (300000)
-#define HURRY_UP_GUARD3 (100000)
+#define HURRY_UP_GUARD1 VLC_TICK_FROM_MS(450)
+#define HURRY_UP_GUARD2 VLC_TICK_FROM_MS(300)
+#define HURRY_UP_GUARD3 VLC_TICK_FROM_MS(100)
 
 #define MAX_FRAME_DELAY (FF_MAX_B_FRAMES + 2)
 
@@ -63,9 +60,6 @@
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-int  OpenEncoder ( vlc_object_t * );
-void CloseEncoder( vlc_object_t * );
-
 static block_t *EncodeVideo( encoder_t *, picture_t * );
 static block_t *EncodeAudio( encoder_t *, block_t * );
 
@@ -76,7 +70,7 @@ struct thread_context_t;
  *****************************************************************************/
 struct thread_context_t
 {
-    VLC_COMMON_MEMBERS
+    struct vlc_object_t obj;
 
     AVCodecContext  *p_context;
     int             (* pf_func)(AVCodecContext *c, void *arg);
@@ -91,7 +85,7 @@ struct thread_context_t
 /*****************************************************************************
  * encoder_sys_t : libavcodec encoder descriptor
  *****************************************************************************/
-struct encoder_sys_t
+typedef struct
 {
     /*
      * libavcodec properties
@@ -109,9 +103,9 @@ struct encoder_sys_t
     /*
      * Video properties
      */
-    mtime_t i_last_ref_pts;
-    mtime_t i_buggy_pts_detect;
-    mtime_t i_last_pts;
+    vlc_tick_t i_last_ref_pts;
+    vlc_tick_t i_buggy_pts_detect;
+    vlc_tick_t i_last_pts;
     bool    b_inited;
 
     /*
@@ -122,7 +116,7 @@ struct encoder_sys_t
     size_t i_samples_delay; //How much samples in delay buffer
     bool b_planar;
     bool b_variable;    //Encoder can be fed with any size frames not just frame_size
-    mtime_t i_pts;
+    vlc_tick_t i_pts;
     date_t  buffer_date;
 
     /* Multichannel (>2) channel reordering */
@@ -142,7 +136,6 @@ struct encoder_sys_t
     bool       b_hurry_up;
     bool       b_interlace, b_interlace_me;
     float      f_i_quant_factor;
-    int        i_noise_reduction;
     bool       b_mpeg4_matrix;
     bool       b_trellis;
     int        i_quality; /* for VBR */
@@ -150,7 +143,7 @@ struct encoder_sys_t
     int        i_aac_profile; /* AAC profile to use.*/
 
     AVFrame    *frame;
-};
+} encoder_sys_t;
 
 
 /* Taken from audio.c*/
@@ -236,7 +229,7 @@ static const int DEFAULT_ALIGN = 0;
 
 
 /*****************************************************************************
- * OpenEncoder: probe the encoder
+ * InitVideoEnc: probe the encoder
  *****************************************************************************/
 static void probe_video_frame_rate( encoder_t *p_enc, AVCodecContext *p_context, AVCodec *p_codec )
 {
@@ -277,134 +270,70 @@ static void probe_video_frame_rate( encoder_t *p_enc, AVCodecContext *p_context,
     msg_Dbg( p_enc, "Time base set to %d/%d", p_context->time_base.num, p_context->time_base.den );
 }
 
-static void set_video_color_settings( encoder_t *p_enc, AVCodecContext *p_context )
+static void add_av_option_int( encoder_t *p_enc, AVDictionary** pp_dict, const char* psz_name, int i_value )
 {
-    if( p_enc->fmt_in.video.b_color_range_full )
-        p_context->color_range = AVCOL_RANGE_JPEG;
-
-    switch( p_enc->fmt_in.video.space )
-    {
-        case COLOR_SPACE_BT709:
-            p_context->colorspace = AVCOL_SPC_BT709;
-            break;
-        case COLOR_SPACE_BT601:
-            p_context->colorspace = AVCOL_SPC_BT470BG;
-            break;
-        case COLOR_SPACE_BT2020:
-            p_context->colorspace = AVCOL_SPC_BT2020_CL;
-            break;
-        default:
-            p_context->colorspace = AVCOL_SPC_UNSPECIFIED;
-            break;
-    }
-
-    switch( p_enc->fmt_in.video.transfer )
-    {
-        case TRANSFER_FUNC_LINEAR:
-            p_context->color_trc = AVCOL_TRC_LINEAR;
-            break;
-        case TRANSFER_FUNC_SRGB:
-            p_context->color_trc = AVCOL_TRC_GAMMA22;
-            break;
-        case TRANSFER_FUNC_BT470_BG:
-            p_context->color_trc = AVCOL_TRC_GAMMA28;
-            break;
-        case TRANSFER_FUNC_BT470_M:
-            p_context->color_trc = AVCOL_TRC_GAMMA22;
-            break;
-        case TRANSFER_FUNC_BT709:
-            p_context->color_trc = AVCOL_TRC_BT709;
-            break;
-        case TRANSFER_FUNC_SMPTE_ST2084:
-            p_context->color_trc = AVCOL_TRC_SMPTEST2084;
-            break;
-        case TRANSFER_FUNC_SMPTE_240:
-            p_context->color_trc = AVCOL_TRC_SMPTE240M;
-            break;
-        default:
-            p_context->color_trc = AVCOL_TRC_UNSPECIFIED;
-            break;
-    }
-    switch( p_enc->fmt_in.video.primaries )
-    {
-        case COLOR_PRIMARIES_BT601_525:
-            p_context->color_primaries = AVCOL_PRI_SMPTE170M;
-            break;
-        case COLOR_PRIMARIES_BT601_625:
-            p_context->color_primaries = AVCOL_PRI_BT470BG;
-            break;
-        case COLOR_PRIMARIES_BT709:
-            p_context->color_primaries = AVCOL_PRI_BT709;
-            break;
-        case COLOR_PRIMARIES_BT2020:
-            p_context->color_primaries = AVCOL_PRI_BT2020;
-            break;
-        case COLOR_PRIMARIES_FCC1953:
-            p_context->color_primaries = AVCOL_PRI_BT470M;
-            break;
-        default:
-            p_context->color_primaries = AVCOL_PRI_UNSPECIFIED;
-            break;
-    }
+    char buff[32];
+    if ( snprintf( buff, sizeof(buff), "%d", i_value ) < 0 )
+        return;
+    if( av_dict_set( pp_dict, psz_name, buff, 0 ) < 0 )
+        msg_Warn( p_enc, "Failed to set encoder option %s", psz_name );
 }
 
-int OpenEncoder( vlc_object_t *p_this )
+static void add_av_option_float( encoder_t *p_enc, AVDictionary** pp_dict, const char* psz_name, float f_value )
+{
+    char buff[128];
+    if ( snprintf( buff, sizeof(buff), "%f", f_value ) < 0 )
+        return;
+    if( av_dict_set( pp_dict, psz_name, buff, 0 ) < 0 )
+        msg_Warn( p_enc, "Failed to set encoder option %s", psz_name );
+}
+
+int InitVideoEnc( vlc_object_t *p_this )
 {
     encoder_t *p_enc = (encoder_t *)p_this;
     encoder_sys_t *p_sys;
     AVCodecContext *p_context;
     AVCodec *p_codec = NULL;
     unsigned i_codec_id;
-    int i_cat;
     const char *psz_namecodec;
     float f_val;
     char *psz_val;
+
+    msg_Dbg( p_this, "using %s %s", AVPROVIDER(LIBAVCODEC), LIBAVCODEC_IDENT );
 
     /* Initialization must be done before avcodec_find_encoder() */
     vlc_init_avcodec(p_this);
 
     config_ChainParse( p_enc, ENC_CFG_PREFIX, ppsz_enc_options, p_enc->p_cfg );
 
-    if( p_enc->fmt_out.i_codec == VLC_CODEC_MP1V )
+    switch( p_enc->fmt_out.i_cat )
     {
-        i_cat = VIDEO_ES;
-        i_codec_id = AV_CODEC_ID_MPEG1VIDEO;
-        psz_namecodec = "MPEG-1 video";
-    }
-    else if( !GetFfmpegCodec( p_enc->fmt_out.i_codec, &i_cat, &i_codec_id,
-                             &psz_namecodec ) )
-    {
-        if( FindFfmpegChroma( p_enc->fmt_out.i_codec ) == AV_PIX_FMT_NONE )
-            return VLC_EGENERIC; /* handed chroma output */
+        case VIDEO_ES:
+            if( p_enc->fmt_out.i_codec == VLC_CODEC_MP1V )
+            {
+                i_codec_id = AV_CODEC_ID_MPEG1VIDEO;
+                psz_namecodec = "MPEG-1 video";
+                break;
+            }
+            if( GetFfmpegCodec( VIDEO_ES, p_enc->fmt_out.i_codec, &i_codec_id,
+                                &psz_namecodec ) )
+                break;
+            if( FindFfmpegChroma( p_enc->fmt_out.i_codec ) != AV_PIX_FMT_NONE )
+            {
+                i_codec_id = AV_CODEC_ID_RAWVIDEO;
+                psz_namecodec = "Raw video";
+                break;
+            }
+            return VLC_EGENERIC;
 
-        i_cat      = VIDEO_ES;
-        i_codec_id = AV_CODEC_ID_RAWVIDEO;
-        psz_namecodec = "Raw video";
-    }
-
-    if( i_cat == UNKNOWN_ES )
-        return VLC_EGENERIC;
-
-    if( p_enc->fmt_out.i_cat == VIDEO_ES && i_cat != VIDEO_ES )
-    {
-        msg_Err( p_enc, "\"%s\" is not a video encoder", psz_namecodec );
-        vlc_dialog_display_error( p_enc, _("Streaming / Transcoding failed"),
-            _("\"%s\" is no video encoder."), psz_namecodec );
-        return VLC_EGENERIC;
-    }
-
-    if( p_enc->fmt_out.i_cat == AUDIO_ES && i_cat != AUDIO_ES )
-    {
-        msg_Err( p_enc, "\"%s\" is not an audio encoder", psz_namecodec );
-        vlc_dialog_display_error( p_enc, _("Streaming / Transcoding failed"),
-            _("\"%s\" is no audio encoder."), psz_namecodec );
-        return VLC_EGENERIC;
-    }
-
-    if( p_enc->fmt_out.i_cat == SPU_ES )
-    {
-        /* We don't support subtitle encoding */
-        return VLC_EGENERIC;
+        case AUDIO_ES:
+            if( GetFfmpegCodec( AUDIO_ES, p_enc->fmt_out.i_codec, &i_codec_id,
+                                &psz_namecodec ) )
+                break;
+            /* fall through */
+        default:
+            /* We don't support subtitle encoding */
+            return VLC_EGENERIC;
     }
 
     char *psz_encoder = var_GetString( p_this, ENC_CFG_PREFIX "codec" );
@@ -412,12 +341,17 @@ int OpenEncoder( vlc_object_t *p_this )
     {
         p_codec = avcodec_find_encoder_by_name( psz_encoder );
         if( !p_codec )
+        {
             msg_Err( p_this, "Encoder `%s' not found", psz_encoder );
+            free( psz_encoder );
+            return VLC_EGENERIC;
+        }
         else if( p_codec->id != i_codec_id )
         {
             msg_Err( p_this, "Encoder `%s' can't handle %4.4s",
                     psz_encoder, (char*)&p_enc->fmt_out.i_codec );
-            p_codec = NULL;
+            free( psz_encoder );
+            return VLC_EGENERIC;
         }
     }
     free( psz_encoder );
@@ -430,6 +364,7 @@ int OpenEncoder( vlc_object_t *p_this )
 "*** Please check with your Libav/FFmpeg packager. ***\n"
 "*** This is NOT a VLC media player issue.   ***", psz_namecodec );
 
+#if !defined(_WIN32)
         vlc_dialog_display_error( p_enc, _("Streaming / Transcoding failed"), _(
 /* I have had enough of all these MPEG-3 transcoding bug reports.
  * Downstream packager, you had better not patch this out, or I will be really
@@ -442,6 +377,8 @@ int OpenEncoder( vlc_object_t *p_this )
 "This is not an error inside VLC media player.\n"
 "Do not contact the VideoLAN project about this issue.\n"),
             psz_namecodec );
+#endif
+
         return VLC_EGENERIC;
     }
 
@@ -477,16 +414,9 @@ int OpenEncoder( vlc_object_t *p_this )
     p_sys->b_pre_me = var_GetBool( p_enc, ENC_CFG_PREFIX "pre-me" );
     p_sys->b_hurry_up = var_GetBool( p_enc, ENC_CFG_PREFIX "hurry-up" );
 
-    if( p_sys->b_hurry_up )
-    {
-        /* hurry up mode needs noise reduction, even small */
-        p_sys->i_noise_reduction = 1;
-    }
-
     p_sys->i_rc_buffer_size = var_GetInteger( p_enc, ENC_CFG_PREFIX "rc-buffer-size" );
     p_sys->f_rc_buffer_aggressivity = var_GetFloat( p_enc, ENC_CFG_PREFIX "rc-buffer-aggressivity" );
     p_sys->f_i_quant_factor = var_GetFloat( p_enc, ENC_CFG_PREFIX "i-quant-factor" );
-    p_sys->i_noise_reduction = var_GetInteger( p_enc, ENC_CFG_PREFIX "noise-reduction" );
     p_sys->b_mpeg4_matrix = var_GetBool( p_enc, ENC_CFG_PREFIX "mpeg4-matrix" );
 
     f_val = var_GetFloat( p_enc, ENC_CFG_PREFIX "qscale" );
@@ -555,6 +485,7 @@ int OpenEncoder( vlc_object_t *p_this )
         }
     }
     free( psz_val );
+    AVDictionary *options = NULL;
 
     if( p_enc->fmt_in.i_cat == VIDEO_ES )
     {
@@ -569,11 +500,13 @@ int OpenEncoder( vlc_object_t *p_this )
 
         p_context->codec_type = AVMEDIA_TYPE_VIDEO;
 
+        p_context->coded_width = p_enc->fmt_in.video.i_width;
+        p_context->coded_height = p_enc->fmt_in.video.i_height;
         p_context->width = p_enc->fmt_in.video.i_visible_width;
         p_context->height = p_enc->fmt_in.video.i_visible_height;
 
         probe_video_frame_rate( p_enc, p_context, p_codec );
-        set_video_color_settings( p_enc, p_context );
+        set_video_color_settings( &p_enc->fmt_in.video, p_context );
 
         /* Defaults from ffmpeg.c */
         p_context->qblur = 0.5;
@@ -586,17 +519,16 @@ int OpenEncoder( vlc_object_t *p_this )
         p_context->lumi_masking = p_sys->f_lumi_masking;
         p_context->dark_masking = p_sys->f_dark_masking;
         p_context->p_masking = p_sys->f_p_masking;
-        p_context->border_masking = p_sys->f_border_masking;
+        add_av_option_float( p_enc, &options, "border_mask", p_sys->f_border_masking );
 
         if( p_sys->i_key_int > 0 )
             p_context->gop_size = p_sys->i_key_int;
         p_context->max_b_frames =
             VLC_CLIP( p_sys->i_b_frames, 0, FF_MAX_B_FRAMES );
-        p_context->b_frame_strategy = 0;
         if( !p_context->max_b_frames  &&
             (  p_enc->fmt_out.i_codec == VLC_CODEC_MPGV ||
                p_enc->fmt_out.i_codec == VLC_CODEC_MP2V ) )
-            p_context->flags |= CODEC_FLAG_LOW_DELAY;
+            p_context->flags |= AV_CODEC_FLAG_LOW_DELAY;
 
         av_reduce( &p_context->sample_aspect_ratio.num,
                    &p_context->sample_aspect_ratio.den,
@@ -615,12 +547,26 @@ int OpenEncoder( vlc_object_t *p_this )
 
         if( p_codec->pix_fmts )
         {
+            static const enum AVPixelFormat vlc_pix_fmts[] = {
+                AV_PIX_FMT_YUV420P,
+                AV_PIX_FMT_NV12,
+                AV_PIX_FMT_RGB24,
+            };
+            bool found = false;
             const enum PixelFormat *p = p_codec->pix_fmts;
-            for( ; *p != -1; p++ )
+            for( ; !found && *p != -1; p++ )
             {
-                if( *p == p_context->pix_fmt ) break;
+                for( size_t i = 0; i < ARRAY_SIZE(vlc_pix_fmts); ++i )
+                {
+                    if( *p == vlc_pix_fmts[i] )
+                    {
+                        found = true;
+                        p_context->pix_fmt = *p;
+                        break;
+                    }
+                }
             }
-            if( *p == -1 ) p_context->pix_fmt = p_codec->pix_fmts[0];
+            if (!found) p_context->pix_fmt = p_codec->pix_fmts[0];
             GetVlcChroma( &p_enc->fmt_in.video, p_context->pix_fmt );
             p_enc->fmt_in.i_codec = p_enc->fmt_in.video.i_chroma;
         }
@@ -629,17 +575,24 @@ int OpenEncoder( vlc_object_t *p_this )
         if ( p_sys->f_i_quant_factor != 0.f )
             p_context->i_quant_factor = p_sys->f_i_quant_factor;
 
-        p_context->noise_reduction = p_sys->i_noise_reduction;
+        int nr = var_GetInteger( p_enc, ENC_CFG_PREFIX "noise-reduction" );
+        add_av_option_int( p_enc, &options, "noise_reduction", nr );
 
         if ( p_sys->b_mpeg4_matrix )
         {
-            p_context->intra_matrix = mpeg4_default_intra_matrix;
-            p_context->inter_matrix = mpeg4_default_non_intra_matrix;
+            p_context->intra_matrix = av_malloc( sizeof(mpeg4_default_intra_matrix) );
+            if ( p_context->intra_matrix )
+                memcpy( p_context->intra_matrix, mpeg4_default_intra_matrix,
+                        sizeof(mpeg4_default_intra_matrix));
+            p_context->inter_matrix = av_malloc( sizeof(mpeg4_default_non_intra_matrix) );
+            if ( p_context->inter_matrix )
+                memcpy( p_context->inter_matrix, mpeg4_default_non_intra_matrix,
+                        sizeof(mpeg4_default_non_intra_matrix));
         }
 
         if ( p_sys->b_pre_me )
         {
-            p_context->pre_me = 1;
+            add_av_option_int( p_enc, &options, "mepre", 1 );
             p_context->me_pre_cmp = FF_CMP_CHROMA;
         }
 
@@ -654,16 +607,16 @@ int OpenEncoder( vlc_object_t *p_this )
             }
             else
             {
-                p_context->flags |= CODEC_FLAG_INTERLACED_DCT;
+                p_context->flags |= AV_CODEC_FLAG_INTERLACED_DCT;
                 if ( p_sys->b_interlace_me )
-                    p_context->flags |= CODEC_FLAG_INTERLACED_ME;
+                    p_context->flags |= AV_CODEC_FLAG_INTERLACED_ME;
             }
         }
 
         p_context->trellis = p_sys->b_trellis;
 
         if ( p_sys->i_qmin > 0 && p_sys->i_qmin == p_sys->i_qmax )
-            p_context->flags |= CODEC_FLAG_QSCALE;
+            p_context->flags |= AV_CODEC_FLAG_QSCALE;
         /* These codecs cause libavcodec to exit if thread_count is > 1.
            See libavcodec/mpegvideo_enc.c:MPV_encode_init and
            libavcodec/svq3.c , WMV2 calls MPV_encode_init also.
@@ -699,12 +652,14 @@ int OpenEncoder( vlc_object_t *p_this )
         if( p_sys->i_qmin > 0 )
         {
             p_context->qmin = p_sys->i_qmin;
-            p_context->mb_lmin = p_context->lmin = p_sys->i_qmin * FF_QP2LAMBDA;
+            p_context->mb_lmin = p_sys->i_qmin * FF_QP2LAMBDA;
+            add_av_option_int( p_enc, &options, "lmin", p_context->mb_lmin);
         }
         if( p_sys->i_qmax > 0 )
         {
             p_context->qmax = p_sys->i_qmax;
-            p_context->mb_lmax = p_context->lmax = p_sys->i_qmax * FF_QP2LAMBDA;
+            p_context->mb_lmax = p_sys->i_qmax * FF_QP2LAMBDA;
+            add_av_option_int( p_enc, &options, "lmax", p_context->mb_lmax);
         }
         p_context->max_qdiff = 3;
 
@@ -712,12 +667,12 @@ int OpenEncoder( vlc_object_t *p_this )
 
         if( p_sys->i_quality && !p_enc->fmt_out.i_bitrate )
         {
-            p_context->flags |= CODEC_FLAG_QSCALE;
+            p_context->flags |= AV_CODEC_FLAG_QSCALE;
             p_context->global_quality = p_sys->i_quality;
         }
         else
         {
-            p_context->rc_qsquish = 1.0;
+            av_dict_set(&options, "qsquish", "1.0", 0);
             /* Default to 1/2 second buffer for given bitrate unless defined otherwise*/
             if( !p_sys->i_rc_buffer_size )
             {
@@ -731,14 +686,11 @@ int OpenEncoder( vlc_object_t *p_this )
             /* This is from ffmpeg's ffmpeg.c : */
             p_context->rc_initial_buffer_occupancy
                 = p_sys->i_rc_buffer_size * 3/4;
-            p_context->rc_buffer_aggressivity = p_sys->f_rc_buffer_aggressivity;
+            add_av_option_float( p_enc, &options, "rc_buffer_aggressivity", p_sys->f_rc_buffer_aggressivity );
         }
     }
     else if( p_enc->fmt_in.i_cat == AUDIO_ES )
     {
-        /* work around bug in libmp3lame encoding */
-        if( i_codec_id == AV_CODEC_ID_MP3 && p_enc->fmt_out.audio.i_channels  > 2 )
-            p_enc->fmt_out.audio.i_channels = 2;
         p_context->codec_type  = AVMEDIA_TYPE_AUDIO;
         p_context->sample_fmt  = p_codec->sample_fmts ?
                                     p_codec->sample_fmts[0] :
@@ -782,11 +734,9 @@ int OpenEncoder( vlc_object_t *p_this )
 
         p_context->sample_rate = p_enc->fmt_out.audio.i_rate;
         date_Init( &p_sys->buffer_date, p_enc->fmt_out.audio.i_rate, 1 );
-        date_Set( &p_sys->buffer_date, AV_NOPTS_VALUE );
         p_context->time_base.num = 1;
         p_context->time_base.den = p_context->sample_rate;
         p_context->channels      = p_enc->fmt_out.audio.i_channels;
-#if LIBAVUTIL_VERSION_CHECK( 52, 2, 6, 0, 0)
         p_context->channel_layout = channel_mask[p_context->channels][1];
 
         /* Setup Channel ordering for multichannel audio
@@ -799,7 +749,8 @@ int OpenEncoder( vlc_object_t *p_this )
          * Copied from audio.c
          */
         const unsigned i_order_max = 8 * sizeof(p_context->channel_layout);
-        uint32_t pi_order_dst[AOUT_CHAN_MAX] = { };
+        uint32_t pi_order_dst[AOUT_CHAN_MAX] = { 0 };
+        uint32_t order_mask = 0;
         int i_channels_src = 0;
 
         if( p_context->channel_layout )
@@ -811,6 +762,7 @@ int OpenEncoder( vlc_object_t *p_this )
                 {
                     msg_Dbg( p_enc, "%d %"PRIx64" mapped to %"PRIx64"", i_channels_src, pi_channels_map[i][0], pi_channels_map[i][1]);
                     pi_order_dst[i_channels_src++] = pi_channels_map[i][1];
+                    order_mask |= pi_channels_map[i][1];
                 }
             }
         }
@@ -824,15 +776,16 @@ int OpenEncoder( vlc_object_t *p_this )
                 {
                     msg_Dbg( p_enc, "%d channel is %"PRIx64"", i_channels_src, pi_channels_map[i][1]);
                     pi_order_dst[i_channels_src++] = pi_channels_map[i][1];
+                    order_mask |= pi_channels_map[i][1];
                 }
             }
         }
         if( i_channels_src != p_context->channels )
             msg_Err( p_enc, "Channel layout not understood" );
 
-        p_sys->i_channels_to_reorder = aout_CheckChannelReorder( NULL, pi_order_dst,
-            channel_mask[p_context->channels][0], p_sys->pi_reorder_layout );
-#endif
+        p_sys->i_channels_to_reorder =
+            aout_CheckChannelReorder( NULL, pi_order_dst, order_mask,
+                                      p_sys->pi_reorder_layout );
 
         if ( p_enc->fmt_out.i_codec == VLC_CODEC_MP4A )
         {
@@ -868,19 +821,22 @@ int OpenEncoder( vlc_object_t *p_this )
             if( !var_GetInteger( p_enc, ENC_CFG_PREFIX "qmin" ) )
             {
                 p_context->qmin = 10;
-                p_context->mb_lmin = p_context->lmin = 10 * FF_QP2LAMBDA;
+                p_context->mb_lmin = 10 * FF_QP2LAMBDA;
+                add_av_option_int( p_enc, &options, "lmin", p_context->mb_lmin );
             }
 
             if( !var_GetInteger( p_enc, ENC_CFG_PREFIX "qmax" ) )
             {
                 p_context->qmax = 42;
-                p_context->mb_lmax = p_context->lmax = 42 * FF_QP2LAMBDA;
+                p_context->mb_lmax = 42 * FF_QP2LAMBDA;
+                add_av_option_int( p_enc, &options, "lmax", p_context->mb_lmax );
             }
 
         } else if( !var_GetInteger( p_enc, ENC_CFG_PREFIX "qmin" ) )
         {
                 p_context->qmin = 1;
-                p_context->mb_lmin = p_context->lmin = FF_QP2LAMBDA;
+                p_context->mb_lmin = FF_QP2LAMBDA;
+                add_av_option_int( p_enc, &options, "lmin", p_context->mb_lmin );
         }
 
 
@@ -904,7 +860,7 @@ int OpenEncoder( vlc_object_t *p_this )
     /* Make sure we get extradata filled by the encoder */
     p_context->extradata_size = 0;
     p_context->extradata = NULL;
-    p_context->flags |= CODEC_FLAG_GLOBAL_HEADER;
+    p_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
     if( p_enc->i_threads >= 1)
         p_context->thread_count = p_enc->i_threads;
@@ -913,9 +869,8 @@ int OpenEncoder( vlc_object_t *p_this )
 
     int ret;
     char *psz_opts = var_InheritString(p_enc, ENC_CFG_PREFIX "options");
-    AVDictionary *options = NULL;
     if (psz_opts) {
-        options = vlc_av_get_options(psz_opts);
+        vlc_av_get_options(psz_opts, &options);
         free(psz_opts);
     }
 
@@ -959,7 +914,14 @@ errmsg:
         if( p_context->channels > 2 )
         {
             p_context->channels = 2;
-            p_enc->fmt_in.audio.i_channels = 2; // FIXME
+            p_context->channel_layout = channel_mask[p_context->channels][1];
+
+            /* Change fmt_in in order to ask for a channels conversion */
+            p_enc->fmt_in.audio.i_channels =
+            p_enc->fmt_out.audio.i_channels = 2;
+            p_enc->fmt_in.audio.i_physical_channels =
+            p_enc->fmt_out.audio.i_physical_channels = AOUT_CHANS_STEREO;
+            p_sys->i_channels_to_reorder = 0;
             msg_Warn( p_enc, "stereo mode selected (codec limitation)" );
         }
 
@@ -974,10 +936,11 @@ errmsg:
 
             if ( i_frequency == 6 )
             {
-                msg_Err( p_enc, "MPEG audio doesn't support frequency=%d",
+                msg_Warn( p_enc, "MPEG audio doesn't support frequency=%d",
                         fmt->audio.i_rate );
-                av_dict_free(&options);
-                goto error;
+                /* Fallback to 44100 hz */
+                p_context->sample_rate = p_enc->fmt_in.audio.i_rate =
+                p_enc->fmt_out.audio.i_rate = 44100;
             }
 
             for ( i = 1; i < 14; i++ )
@@ -1042,7 +1005,7 @@ errmsg:
         }
     }
 
-    p_context->flags &= ~CODEC_FLAG_GLOBAL_HEADER;
+    p_context->flags &= ~AV_CODEC_FLAG_GLOBAL_HEADER;
 
     if( p_enc->fmt_in.i_cat == AUDIO_ES )
     {
@@ -1052,7 +1015,7 @@ errmsg:
         p_sys->i_sample_bytes = (p_enc->fmt_in.audio.i_bitspersample / 8);
         p_sys->i_frame_size = p_context->frame_size > 1 ?
                                     p_context->frame_size :
-                                    FF_MIN_BUFFER_SIZE;
+                                    AV_INPUT_BUFFER_MIN_SIZE;
         p_sys->i_buffer_out = av_samples_get_buffer_size(NULL,
                 p_sys->p_context->channels, p_sys->i_frame_size,
                 p_sys->p_context->sample_fmt, DEFAULT_ALIGN);
@@ -1111,22 +1074,33 @@ static void vlc_av_packet_Release(block_t *block)
     free(b);
 }
 
-static block_t *vlc_av_packet_Wrap(AVPacket *packet, mtime_t i_length, AVCodecContext *context )
+static const struct vlc_block_callbacks vlc_av_packet_cbs =
 {
+    vlc_av_packet_Release,
+};
+
+static block_t *vlc_av_packet_Wrap(AVPacket *packet, vlc_tick_t i_length, AVCodecContext *context )
+{
+    if ( packet->data == NULL &&
+         packet->flags == 0 &&
+         packet->pts == AV_NOPTS_VALUE &&
+         packet->dts == AV_NOPTS_VALUE )
+        return NULL; /* totally empty AVPacket */
+
     vlc_av_packet_t *b = malloc( sizeof( *b ) );
     if( unlikely(b == NULL) )
         return NULL;
 
     block_t *p_block = &b->self;
 
-    block_Init( p_block, packet->data, packet->size );
+    block_Init( p_block, &vlc_av_packet_cbs, packet->data, packet->size );
     p_block->i_nb_samples = 0;
-    p_block->pf_release = vlc_av_packet_Release;
+    p_block->cbs = &vlc_av_packet_cbs;
     b->packet = *packet;
 
     p_block->i_length = i_length;
-    p_block->i_pts = packet->pts;
-    p_block->i_dts = packet->dts;
+    p_block->i_pts = FROM_AV_TS(packet->pts);
+    p_block->i_dts = FROM_AV_TS(packet->dts);
     if( unlikely( packet->flags & AV_PKT_FLAG_CORRUPT ) )
         p_block->i_flags |= BLOCK_FLAG_CORRUPTED;
     if( packet->flags & AV_PKT_FLAG_KEY )
@@ -1139,9 +1113,9 @@ static block_t *vlc_av_packet_Wrap(AVPacket *packet, mtime_t i_length, AVCodecCo
 
 static void check_hurry_up( encoder_sys_t *p_sys, AVFrame *frame, encoder_t *p_enc )
 {
-    mtime_t current_date = mdate();
+    vlc_tick_t current_date = vlc_tick_now();
 
-    if ( current_date + HURRY_UP_GUARD3 > frame->pts )
+    if ( current_date + HURRY_UP_GUARD3 > FROM_AV_TS(frame->pts) )
     {
         p_sys->p_context->mb_decision = FF_MB_DECISION_SIMPLE;
         p_sys->p_context->trellis = 0;
@@ -1151,23 +1125,18 @@ static void check_hurry_up( encoder_sys_t *p_sys, AVFrame *frame, encoder_t *p_e
     {
         p_sys->p_context->mb_decision = p_sys->i_hq;
 
-        if ( current_date + HURRY_UP_GUARD2 > frame->pts )
+        if ( current_date + HURRY_UP_GUARD2 > FROM_AV_TS(frame->pts) )
         {
             p_sys->p_context->trellis = 0;
-            p_sys->p_context->noise_reduction = p_sys->i_noise_reduction
-                + (HURRY_UP_GUARD2 + current_date - frame->pts) / 500;
             msg_Dbg( p_enc, "hurry up mode 2" );
         }
         else
         {
             p_sys->p_context->trellis = p_sys->b_trellis;
-
-            p_sys->p_context->noise_reduction =
-               p_sys->i_noise_reduction;
         }
     }
 
-    if ( current_date + HURRY_UP_GUARD1 > frame->pts )
+    if ( current_date + HURRY_UP_GUARD1 > FROM_AV_TS(frame->pts) )
     {
         frame->pict_type = AV_PICTURE_TYPE_P;
         /* msg_Dbg( p_enc, "hurry up mode 1 %lld", current_date + HURRY_UP_GUARD1 - frame.pts ); */
@@ -1185,7 +1154,7 @@ static block_t *encode_avframe( encoder_t *p_enc, encoder_sys_t *p_sys, AVFrame 
     int ret = avcodec_send_frame( p_sys->p_context, frame );
     if( frame && ret != 0 && ret != AVERROR(EAGAIN) )
     {
-        msg_Warn( p_enc, "cannot send one frame to encoder");
+        msg_Warn( p_enc, "cannot send one frame to encoder %d", ret );
         return NULL;
     }
     ret = avcodec_receive_packet( p_sys->p_context, &av_pkt );
@@ -1238,7 +1207,7 @@ static block_t *EncodeVideo( encoder_t *p_enc, picture_t *p_pict )
         /* Set the pts of the frame being encoded
          * avcodec likes pts to be in time_base units
          * frame number */
-        if( likely( p_pict->date > VLC_TS_INVALID ) )
+        if( likely( p_pict->date != VLC_TICK_INVALID ) )
             frame->pts = p_pict->date * p_sys->p_context->time_base.den /
                           CLOCK_FREQ / p_sys->p_context->time_base.num;
         else
@@ -1247,15 +1216,15 @@ static block_t *EncodeVideo( encoder_t *p_enc, picture_t *p_pict )
         if ( p_sys->b_hurry_up && frame->pts != AV_NOPTS_VALUE )
             check_hurry_up( p_sys, frame, p_enc );
 
-        if ( ( frame->pts != AV_NOPTS_VALUE ) && ( frame->pts != VLC_TS_INVALID ) )
+        if ( ( frame->pts != AV_NOPTS_VALUE ) && ( frame->pts != VLC_TICK_INVALID ) )
         {
-            if ( p_sys->i_last_pts == frame->pts )
+            if ( p_sys->i_last_pts == FROM_AV_TS(frame->pts) )
             {
                 msg_Warn( p_enc, "almost fed libavcodec with two frames with "
                           "the same PTS (%"PRId64 ")", frame->pts );
                 return NULL;
             }
-            else if ( p_sys->i_last_pts > frame->pts )
+            else if ( p_sys->i_last_pts > FROM_AV_TS(frame->pts) )
             {
                 msg_Warn( p_enc, "almost fed libavcodec with a frame in the "
                          "past (current: %"PRId64 ", last: %"PRId64")",
@@ -1263,7 +1232,7 @@ static block_t *EncodeVideo( encoder_t *p_enc, picture_t *p_pict )
                 return NULL;
             }
             else
-                p_sys->i_last_pts = frame->pts;
+                p_sys->i_last_pts = FROM_AV_TS(frame->pts);
         }
 
         frame->quality = p_sys->i_quality;
@@ -1295,21 +1264,26 @@ static block_t *EncodeVideo( encoder_t *p_enc, picture_t *p_pict )
     return p_block;
 }
 
-static block_t *handle_delay_buffer( encoder_t *p_enc, encoder_sys_t *p_sys, int buffer_delay, block_t *p_aout_buf, int leftover_samples )
+static block_t *handle_delay_buffer( encoder_t *p_enc, encoder_sys_t *p_sys, unsigned int buffer_delay,
+                                     block_t *p_aout_buf, size_t leftover_samples )
 {
     block_t *p_block = NULL;
     //How much we need to copy from new packet
-    const int leftover = leftover_samples * p_sys->p_context->channels * p_sys->i_sample_bytes;
+    const size_t leftover = leftover_samples * p_sys->p_context->channels * p_sys->i_sample_bytes;
 
     av_frame_unref( p_sys->frame );
     p_sys->frame->format     = p_sys->p_context->sample_fmt;
     p_sys->frame->nb_samples = leftover_samples + p_sys->i_samples_delay;
 
-    p_sys->frame->pts        = date_Get( &p_sys->buffer_date ) * p_sys->p_context->time_base.den /
-                                CLOCK_FREQ / p_sys->p_context->time_base.num;
-
-    if( likely( p_sys->frame->pts != AV_NOPTS_VALUE) )
+    if( likely( date_Get( &p_sys->buffer_date ) != VLC_TICK_INVALID) )
+    {
+        /* Convert to AV timing */
+        p_sys->frame->pts = date_Get( &p_sys->buffer_date ) - VLC_TICK_0;
+        p_sys->frame->pts = p_sys->frame->pts * p_sys->p_context->time_base.den /
+                            CLOCK_FREQ / p_sys->p_context->time_base.num;
         date_Increment( &p_sys->buffer_date, p_sys->frame->nb_samples );
+    }
+    else p_sys->frame->pts = AV_NOPTS_VALUE;
 
     if( likely( p_aout_buf ) )
     {
@@ -1326,12 +1300,11 @@ static block_t *handle_delay_buffer( encoder_t *p_enc, encoder_sys_t *p_sys, int
 
         p_aout_buf->p_buffer     += leftover;
         p_aout_buf->i_buffer     -= leftover;
-        if( likely( p_sys->frame->pts != AV_NOPTS_VALUE) )
-            p_aout_buf->i_pts         = date_Get( &p_sys->buffer_date );
+        p_aout_buf->i_pts         = date_Get( &p_sys->buffer_date );
     }
 
     if(unlikely( ( (leftover + buffer_delay) < p_sys->i_buffer_out ) &&
-                 !(p_sys->p_codec->capabilities & CODEC_CAP_SMALL_LAST_FRAME )))
+                 !(p_sys->p_codec->capabilities & AV_CODEC_CAP_SMALL_LAST_FRAME )))
     {
         msg_Dbg( p_enc, "No small last frame support, padding");
         size_t padding_size = p_sys->i_buffer_out - (leftover+buffer_delay);
@@ -1374,7 +1347,7 @@ static block_t *EncodeAudio( encoder_t *p_enc, block_t *p_aout_buf )
     //Calculate how many bytes we would need from current buffer to fill frame
     size_t leftover_samples = __MAX(0,__MIN((ssize_t)i_samples_left, (ssize_t)(p_sys->i_frame_size - p_sys->i_samples_delay)));
 
-    if( p_aout_buf && ( p_aout_buf->i_pts > VLC_TS_INVALID ) )
+    if( p_aout_buf && ( p_aout_buf->i_pts != VLC_TICK_INVALID ) )
     {
         date_Set( &p_sys->buffer_date, p_aout_buf->i_pts );
         /* take back amount we have leftover from previous buffer*/
@@ -1430,8 +1403,14 @@ static block_t *EncodeAudio( encoder_t *p_enc, block_t *p_aout_buf )
         else
             p_sys->frame->nb_samples = p_sys->i_frame_size;
         p_sys->frame->format     = p_sys->p_context->sample_fmt;
-        p_sys->frame->pts        = date_Get( &p_sys->buffer_date ) * p_sys->p_context->time_base.den /
-                                    CLOCK_FREQ / p_sys->p_context->time_base.num;
+        if( likely(date_Get( &p_sys->buffer_date ) != VLC_TICK_INVALID) )
+        {
+            /* Convert to AV timing */
+            p_sys->frame->pts = date_Get( &p_sys->buffer_date ) - VLC_TICK_0;
+            p_sys->frame->pts = p_sys->frame->pts * p_sys->p_context->time_base.den /
+                                CLOCK_FREQ / p_sys->p_context->time_base.num;
+        }
+        else p_sys->frame->pts = AV_NOPTS_VALUE;
 
         const int in_bytes = p_sys->frame->nb_samples *
             p_sys->p_context->channels * p_sys->i_sample_bytes;
@@ -1460,7 +1439,7 @@ static block_t *EncodeAudio( encoder_t *p_enc, block_t *p_aout_buf )
         p_aout_buf->p_buffer     += in_bytes;
         p_aout_buf->i_buffer     -= in_bytes;
         p_aout_buf->i_nb_samples -= p_sys->frame->nb_samples;
-        if( likely( p_sys->frame->pts != AV_NOPTS_VALUE) )
+        if( likely(date_Get( &p_sys->buffer_date ) != VLC_TICK_INVALID) )
             date_Increment( &p_sys->buffer_date, p_sys->frame->nb_samples );
 
         p_block = encode_avframe( p_enc, p_sys, p_sys->frame );
@@ -1481,9 +1460,9 @@ static block_t *EncodeAudio( encoder_t *p_enc, block_t *p_aout_buf )
 }
 
 /*****************************************************************************
- * CloseEncoder: libavcodec encoder destruction
+ * EndVideoEnc: libavcodec encoder destruction
  *****************************************************************************/
-void CloseEncoder( vlc_object_t *p_this )
+void EndVideoEnc( vlc_object_t *p_this )
 {
     encoder_t *p_enc = (encoder_t *)p_this;
     encoder_sys_t *p_sys = p_enc->p_sys;

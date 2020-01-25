@@ -2,7 +2,6 @@
  * ctrl_resize.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
- * $Id$
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -174,7 +173,7 @@ void CtrlResize::CmdStillResize::execute()
 void CtrlResize::CmdResizeStill::execute()
 {
     // Set the cursor
-    m_pParent->changeCursor( m_pParent->m_direction );
+    m_pParent->changeCursor( WindowManager::kNone );
 
     m_pParent->releaseMouse();
 

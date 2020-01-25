@@ -2,7 +2,6 @@
  * mirror.c : Mirror video plugin for vlc
  *****************************************************************************
  * Copyright (C) 2009 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Branko Kokanovic <branko.kokanovic@gmail.com>
  *
@@ -30,10 +29,10 @@
 #endif
 
 #include <assert.h>
+#include <stdatomic.h>
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
-#include <vlc_atomic.h>
 #include <vlc_filter.h>
 #include <vlc_picture.h>
 #include "filter_picture.h"
@@ -62,14 +61,14 @@ static const char *const ppsz_filter_options[] = {
  * Module descriptor
  *****************************************************************************/
 #define ORIENTATION_TEXT N_("Mirror orientation")
-#define ORIENTATION_LONGTEXT N_("Defines orientation of the mirror splitting. \
-    Can be vertical or horizontal" )
+#define ORIENTATION_LONGTEXT N_("Defines orientation of the mirror splitting. " \
+    "Can be vertical or horizontal." )
 static const int pi_orientation_values[] = { 0, 1 };
 static const char *const ppsz_orientation_descriptions[] = {
   N_("Vertical"), N_("Horizontal") };
 
 #define DIRECTION_TEXT N_("Direction")
-#define DIRECTION_LONGTEXT N_("Direction of the mirroring" )
+#define DIRECTION_LONGTEXT N_("Direction of the mirroring." )
 static const int pi_direction_values[] = { 0, 1 };
 static const char *const ppsz_direction_descriptions[] = {
   N_("Left to right/Top to bottom"), N_("Right to left/Bottom to top") };
@@ -102,11 +101,11 @@ static int FilterCallback( vlc_object_t *, char const *,
 /*****************************************************************************
  * filter_sys_t: adjust filter method descriptor
  *****************************************************************************/
-struct filter_sys_t
+typedef struct
 {
     atomic_int i_split;
     atomic_int i_direction;
-};
+} filter_sys_t;
 
 /*****************************************************************************
  * Create: allocates Mirror video thread output method

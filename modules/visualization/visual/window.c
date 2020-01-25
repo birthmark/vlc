@@ -2,7 +2,6 @@
  * window.c : Implementation of FFT window routines
  *****************************************************************************
  * Copyright (C) 2014 Ronald Wright
- * $Id$
  *
  * Author: Ronald Wright <logiconcepts819@gmail.com>
  *
@@ -91,10 +90,12 @@ void window_get_param( vlc_object_t * p_aout, window_param * p_param )
     {
         if( !strcasecmp( psz_preset, window_list[i] ) )
         {
+            free( psz_preset );
             p_param->wind_type = i;
             return;
         }
     }
+    free( psz_preset );
 
 no_preset:
     msg_Warn( p_aout, "No matching window preset found; using rectangular "
@@ -126,7 +127,7 @@ bool window_init( int i_buffer_size, window_param * p_param,
         goto exit;
     }
 
-    pf_table = malloc( i_buffer_size * sizeof( *pf_table ) );
+    pf_table = vlc_alloc( i_buffer_size, sizeof( *pf_table ) );
     if( !pf_table )
     {
         /* Memory allocation failed */

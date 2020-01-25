@@ -2,7 +2,6 @@
  * cvdsub.c : CVD Subtitle decoder
  *****************************************************************************
  * Copyright (C) 2003, 2004 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Rocky Bernstein
  *          Gildas Bazin <gbazin@videolan.org>
@@ -37,6 +36,8 @@
 
 #include <vlc_bits.h>
 
+#include "../demux/mpeg/timestamps.h"
+
 #define DEBUG_CVDSUB 1
 
 /*****************************************************************************
@@ -48,7 +49,7 @@ static void DecoderClose  ( vlc_object_t * );
 
 vlc_module_begin ()
     set_description( N_("CVD subtitle decoder") )
-    set_capability( "decoder", 50 )
+    set_capability( "spu decoder", 50 )
     set_callbacks( DecoderOpen, DecoderClose )
 
     add_submodule ()
@@ -60,7 +61,7 @@ vlc_module_end ()
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static subpicture_t *Decode( decoder_t *, block_t ** );
+static int Decode( decoder_t *, block_t * );
 static block_t *Packetize  ( decoder_t *, block_t ** );
 static block_t *Reassemble ( decoder_t *, block_t * );
 static void ParseMetaInfo  ( decoder_t *, block_t * );
@@ -72,7 +73,7 @@ static void RenderImage( decoder_t *, block_t *, subpicture_region_t * );
 #define SUBTITLE_BLOCK_PARTIAL 1
 #define SUBTITLE_BLOCK_COMPLETE 2
 
-struct decoder_sys_t
+typedef struct
 {
   int      b_packetizer;
 
@@ -91,7 +92,7 @@ struct decoder_sys_t
   size_t metadata_offset;          /* offset to data describing the image */
   size_t metadata_length;          /* length of metadata */
 
-  mtime_t i_duration;   /* how long to display the image, 0 stands
+  vlc_tick_t i_duration;   /* how long to display the image, 0 stands
                            for "until next subtitle" */
 
   uint16_t i_x_start, i_y_start; /* position of top leftmost pixel of
@@ -100,12 +101,9 @@ struct decoder_sys_t
 
   uint8_t p_palette[4][4];       /* Palette of colors used in subtitle */
   uint8_t p_palette_highlight[4][4];
-};
+} decoder_sys_t;
 
-/*****************************************************************************
- * DecoderOpen: open/initialize the cvdsub decoder.
- *****************************************************************************/
-static int DecoderOpen( vlc_object_t *p_this )
+static int OpenCommon( vlc_object_t *p_this, bool b_packetizer )
 {
     decoder_t     *p_dec = (decoder_t*)p_this;
     decoder_sys_t *p_sys;
@@ -117,18 +115,30 @@ static int DecoderOpen( vlc_object_t *p_this )
     if( !p_sys )
         return VLC_ENOMEM;
 
-    p_sys->b_packetizer  = false;
+    p_sys->b_packetizer  = b_packetizer;
 
     p_sys->i_state = SUBTITLE_BLOCK_EMPTY;
     p_sys->p_spu   = NULL;
 
-    p_dec->pf_decode_sub = Decode;
-    p_dec->pf_packetize  = Packetize;
-
-    p_dec->fmt_out.i_cat = SPU_ES;
-    p_dec->fmt_out.i_codec = VLC_CODEC_YUVP;
+    if( b_packetizer )
+    {
+        p_dec->pf_packetize    = Packetize;
+        p_dec->fmt_out.i_codec = VLC_CODEC_CVD;
+    }
+    else
+    {
+        p_dec->pf_decode       = Decode;
+        p_dec->fmt_out.i_codec = VLC_CODEC_YUVP;
+    }
 
     return VLC_SUCCESS;
+}
+/*****************************************************************************
+ * DecoderOpen: open/initialize the cvdsub decoder.
+ *****************************************************************************/
+static int DecoderOpen( vlc_object_t *p_this )
+{
+    return OpenCommon( p_this, false );
 }
 
 /*****************************************************************************
@@ -136,13 +146,7 @@ static int DecoderOpen( vlc_object_t *p_this )
  *****************************************************************************/
 static int PacketizerOpen( vlc_object_t *p_this )
 {
-    decoder_t *p_dec = (decoder_t*)p_this;
-
-    if( DecoderOpen( p_this ) != VLC_SUCCESS ) return VLC_EGENERIC;
-
-    p_dec->p_sys->b_packetizer = true;
-
-    return VLC_SUCCESS;
+    return OpenCommon( p_this, true );
 }
 
 /*****************************************************************************
@@ -160,25 +164,28 @@ void DecoderClose( vlc_object_t *p_this )
 /*****************************************************************************
  * Decode:
  *****************************************************************************/
-static subpicture_t *Decode( decoder_t *p_dec, block_t **pp_block )
+static int Decode( decoder_t *p_dec, block_t *p_block )
 {
-    block_t *p_block, *p_spu;
+    block_t *p_data;
 
-    if( pp_block == NULL || *pp_block == NULL ) return NULL;
-
-    p_block = *pp_block;
-    *pp_block = NULL;
+    if( p_block == NULL ) /* No Drain */
+        return VLCDEC_SUCCESS;
 
     if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
     {
         block_Release( p_block );
-        return NULL;
+        return VLCDEC_SUCCESS;
     }
 
-    if( !(p_spu = Reassemble( p_dec, p_block )) ) return NULL;
+    if( !(p_data = Reassemble( p_dec, p_block )) )
+        return VLCDEC_SUCCESS;
 
     /* Parse and decode */
-    return DecodePacket( p_dec, p_spu );
+    subpicture_t *p_spu = DecodePacket( p_dec, p_data );
+    block_Release( p_data );
+    if( p_spu != NULL )
+        decoder_QueueSub( p_dec, p_spu );
+    return VLCDEC_SUCCESS;
 }
 
 /*****************************************************************************
@@ -196,7 +203,7 @@ static block_t *Packetize( decoder_t *p_dec, block_t **pp_block )
     if( !(p_spu = Reassemble( p_dec, p_block )) ) return NULL;
 
     p_spu->i_dts = p_spu->i_pts;
-    p_spu->i_length = 0;
+    p_spu->i_length = VLC_TICK_INVALID;
 
     return p_spu;
 }
@@ -233,7 +240,7 @@ static block_t *Reassemble( decoder_t *p_dec, block_t *p_block )
      * to detect the first packet in a subtitle.  The first packet
      * seems to have a valid PTS while later packets for the same
      * image don't. */
-    if( p_sys->i_state == SUBTITLE_BLOCK_EMPTY && p_block->i_pts <= VLC_TS_INVALID )
+    if( p_sys->i_state == SUBTITLE_BLOCK_EMPTY && p_block->i_pts == VLC_TICK_INVALID )
     {
         msg_Warn( p_dec, "first packet expected but no PTS present");
         return NULL;
@@ -346,19 +353,19 @@ static void ParseMetaInfo( decoder_t *p_dec, block_t *p_spu  )
         switch( p[0] )
         {
         case 0x04: /* subtitle duration in 1/90000ths of a second */
-            p_sys->i_duration = (p[1]<<16) + (p[2]<<8) + p[3];
+            p_sys->i_duration = FROM_SCALE_NZ( (p[1]<<16) + (p[2]<<8) + p[3] );
 
 #ifdef DEBUG_CVDSUB
-            msg_Dbg( p_dec, "subtitle display duration %lu secs",
-                     (long unsigned int)(p_sys->i_duration / 90000) );
+            msg_Dbg( p_dec, "subtitle display duration %"PRIu64" ms",
+                     MS_FROM_VLC_TICK(p_sys->i_duration) );
 #endif
-            p_sys->i_duration *= 100 / 9;
             break;
 
         case 0x0c: /* unknown */
 #ifdef DEBUG_CVDSUB
-            msg_Dbg( p_dec, "subtitle command unknown 0x%0x 0x%0x 0x%0x 0x%0x",
-                     (int)p[0], (int)p[1], (int)p[2], (int)p[3] );
+            msg_Dbg( p_dec, "subtitle command unknown "
+                     "0x%02"PRIx8" 0x%02"PRIx8" 0x%02"PRIx8" 0x%02"PRIx8,
+                     p[0], p[1], p[2], p[3] );
 #endif
             break;
 
@@ -366,7 +373,7 @@ static void ParseMetaInfo( decoder_t *p_dec, block_t *p_spu  )
             ExtractXY(p_sys->i_x_start, p_sys->i_y_start);
 
 #ifdef DEBUG_CVDSUB
-            msg_Dbg( p_dec, "start position (%d,%d)",
+            msg_Dbg( p_dec, "start position (%"PRIu16",%"PRIu16")",
                      p_sys->i_x_start, p_sys->i_y_start );
 #endif
             break;
@@ -380,7 +387,7 @@ static void ParseMetaInfo( decoder_t *p_dec, block_t *p_spu  )
             p_sys->i_height = lasty - p_sys->i_y_start + 1;
 
 #ifdef DEBUG_CVDSUB
-            msg_Dbg( p_dec, "end position (%d,%d), w x h: %dx%d",
+            msg_Dbg( p_dec, "end position (%d,%d), w x h: %"PRIu16"x%"PRIu16,
                      lastx, lasty, p_sys->i_width, p_sys->i_height );
 #endif
             break;
@@ -395,8 +402,9 @@ static void ParseMetaInfo( decoder_t *p_dec, block_t *p_spu  )
 
 #ifdef DEBUG_CVDSUB
             /* Primary Palette */
-            msg_Dbg( p_dec, "primary palette %d (y,u,v): (0x%0x,0x%0x,0x%0x)",
-                     (int)v, (int)p[1], (int)p[2], (int)p[3] );
+            msg_Dbg( p_dec, "primary palette %"PRIu8" (y,u,v): "
+                     "(0x%02"PRIx8",0x%02"PRIx8",0x%02"PRIx8")",
+                     v, p[1], p[2], p[3] );
 #endif
 
             p_sys->p_palette[v][0] = p[1]; /* Y */
@@ -413,8 +421,9 @@ static void ParseMetaInfo( decoder_t *p_dec, block_t *p_spu  )
             uint8_t v = p[0] - 0x2c;
 
 #ifdef DEBUG_CVDSUB
-            msg_Dbg( p_dec,"highlight palette %d (y,u,v): (0x%0x,0x%0x,0x%0x)",
-                     (int)v, (int)p[1], (int)p[2], (int)p[3] );
+            msg_Dbg( p_dec,"highlight palette %"PRIu8" (y,u,v): "
+                     "(0x%02"PRIx8",0x%02"PRIx8",0x%02"PRIx8")",
+                     v, p[1], p[2], p[3] );
 #endif
 
             /* Highlight Palette */
@@ -433,9 +442,9 @@ static void ParseMetaInfo( decoder_t *p_dec, block_t *p_spu  )
 
 #ifdef DEBUG_CVDSUB
             msg_Dbg( p_dec, "transparency for primary palette 0..3: "
-                     "0x%0x 0x%0x 0x%0x 0x%0x",
-                     (int)p_sys->p_palette[0][3], (int)p_sys->p_palette[1][3],
-                     (int)p_sys->p_palette[2][3], (int)p_sys->p_palette[3][3]);
+                     "0x%02"PRIx8" 0x%02"PRIx8" 0x%02"PRIx8" 0x%02"PRIx8,
+                     p_sys->p_palette[0][3], p_sys->p_palette[1][3],
+                     p_sys->p_palette[2][3], p_sys->p_palette[3][3]);
 #endif
             break;
 
@@ -448,11 +457,11 @@ static void ParseMetaInfo( decoder_t *p_dec, block_t *p_spu  )
 
 #ifdef DEBUG_CVDSUB
             msg_Dbg( p_dec, "transparency for highlight palette 0..3: "
-                     "0x%0x 0x%0x 0x%0x 0x%0x",
-                     (int)p_sys->p_palette_highlight[0][3],
-                     (int)p_sys->p_palette_highlight[1][3],
-                     (int)p_sys->p_palette_highlight[2][3],
-                     (int)p_sys->p_palette_highlight[3][3] );
+                     "0x%02"PRIx8" 0x%02"PRIx8" 0x%02"PRIx8" 0x%02"PRIx8,
+                     p_sys->p_palette_highlight[0][3],
+                     p_sys->p_palette_highlight[1][3],
+                     p_sys->p_palette_highlight[2][3],
+                     p_sys->p_palette_highlight[3][3] );
 #endif
             break;
 
@@ -481,7 +490,8 @@ static void ParseMetaInfo( decoder_t *p_dec, block_t *p_spu  )
         default:
 #ifdef DEBUG_CVDSUB
             msg_Warn( p_dec, "unknown sequence in control header "
-                      "0x%0x 0x%0x 0x%0x 0x%0x", p[0], p[1], p[2], p[3]);
+                      "0x%02"PRIx8" 0x%02"PRIx8" 0x%02"PRIx8" 0x%02"PRIx8,
+                      p[0], p[1], p[2], p[3]);
 #endif
         }
     }
@@ -528,7 +538,6 @@ static subpicture_t *DecodePacket( decoder_t *p_dec, block_t *p_data )
     }
 
     p_region = subpicture_region_New( &fmt );
-    video_format_Clean( &fmt );
     if( !p_region )
     {
         msg_Err( p_dec, "cannot allocate SPU region" );

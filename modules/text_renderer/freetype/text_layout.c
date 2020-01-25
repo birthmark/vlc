@@ -2,7 +2,6 @@
  * text_layout.c : Text shaping and layout
  *****************************************************************************
  * Copyright (C) 2015 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Salah-Eddin Shaban <salshaaban@gmail.com>
  *          Laurent Aimar <fenrir@videolan.org>
@@ -65,6 +64,8 @@
 #include "freetype.h"
 #include "text_layout.h"
 #include "platform_fonts.h"
+
+#include <stdlib.h>
 
 /* Win32 */
 #ifdef _WIN32
@@ -137,10 +138,10 @@ typedef struct paragraph_t
     uni_char_t          *p_code_points;    /**< Unicode code points */
     int                 *pi_glyph_indices; /**< Glyph index values within the run's font face */
     text_style_t       **pp_styles;
+    ruby_block_t      **pp_ruby;
     FT_Face             *pp_faces;         /**< Used to determine run boundaries when performing font fallback */
     int                 *pi_run_ids;       /**< The run to which each glyph belongs */
     glyph_bitmaps_t     *p_glyph_bitmaps;
-    uint8_t             *pi_karaoke_bar;
     int                  i_size;
     run_desc_t          *p_runs;
     int                  i_runs_count;
@@ -152,6 +153,9 @@ typedef struct paragraph_t
 
 #ifdef HAVE_FRIBIDI
     FriBidiCharType     *p_types;
+#if FRIBIDI_MAJOR_VERSION >= 1
+    FriBidiBracketType  *p_btypes;
+#endif
     FriBidiLevel        *p_levels;
     FriBidiStrIndex     *pi_reordered_indices;
     FriBidiParType       paragraph_type;
@@ -170,6 +174,9 @@ static void FreeLine( line_desc_t *p_line )
         if( ch->p_shadow )
             FT_Done_Glyph( (FT_Glyph)ch->p_shadow );
     }
+
+//    if( p_line->p_ruby )
+//        FreeLine( p_line->p_ruby );
 
     free( p_line->p_character );
     free( p_line );
@@ -194,15 +201,13 @@ line_desc_t *NewLine( int i_count )
 
     p_line->p_next = NULL;
     p_line->i_width = 0;
+    p_line->i_height = 0;
     p_line->i_base_line = 0;
     p_line->i_character_count = 0;
     p_line->i_first_visible_char_index = -1;
     p_line->i_last_visible_char_index = -2;
 
-    p_line->bbox.xMin = INT_MAX;
-    p_line->bbox.yMin = INT_MAX;
-    p_line->bbox.xMax = INT_MIN;
-    p_line->bbox.yMax = INT_MIN;
+    BBoxInit( &p_line->bbox );
 
     p_line->p_character = calloc( i_count, sizeof(*p_line->p_character) );
     if( !p_line->p_character )
@@ -211,6 +216,67 @@ line_desc_t *NewLine( int i_count )
         return NULL;
     }
     return p_line;
+}
+
+static void ShiftGlyph( FT_BitmapGlyph g, int x, int y )
+{
+    if( g )
+    {
+        g->left += x;
+        g->top += y;
+    }
+}
+
+static void ShiftChar( line_character_t *c, int x, int y )
+{
+    ShiftGlyph( c->p_glyph, x, y );
+    ShiftGlyph( c->p_shadow, x, y );
+    ShiftGlyph( c->p_outline, x, y );
+    c->bbox.yMin += y;
+    c->bbox.yMax += y;
+    c->bbox.xMin += x;
+    c->bbox.xMax += x;
+}
+
+static void ShiftLine( line_desc_t *p_line, int x, int y )
+{
+    for( int i=0; i<p_line->i_character_count; i++ )
+        ShiftChar( &p_line->p_character[i], x, y );
+    p_line->i_base_line += y;
+    p_line->bbox.yMin += y;
+    p_line->bbox.yMax += y;
+    p_line->bbox.xMin += x;
+    p_line->bbox.xMax += x;
+}
+
+static void MoveLineTo( line_desc_t *p_line, int x, int y )
+{
+    ShiftLine( p_line, x - p_line->bbox.xMin,
+                       y - p_line->bbox.yMax );
+}
+
+static void IndentCharsFrom( line_desc_t *p_line, int i_start, int i_count, int w, int h )
+{
+    for( int i=0; i<i_count; i++ )
+    {
+        line_character_t *p_ch = &p_line->p_character[i_start + i];
+        ShiftChar( p_ch, w, h );
+        BBoxEnlarge( &p_line->bbox, &p_ch->bbox );
+    }
+}
+
+static int RubyBaseAdvance( const line_desc_t *p_line, int i_start, int *pi_count )
+{
+    int i_total = 0;
+    *pi_count = 0;
+    for( int i = i_start; i < p_line->i_character_count; i++ )
+    {
+        if( p_line->p_character[i].p_ruby != p_line->p_character[i_start].p_ruby )
+            break;
+        (*pi_count)++;
+        i_total += (p_line->p_character[i].bbox.xMax - p_line->p_character[i].bbox.xMin);
+    }
+    return i_total;
 }
 
 static void FixGlyph( FT_Glyph glyph, FT_BBox *p_bbox,
@@ -232,19 +298,11 @@ static void FixGlyph( FT_Glyph glyph, FT_BBox *p_bbox,
     }
 }
 
-static void BBoxEnlarge( FT_BBox *p_max, const FT_BBox *p )
-{
-    p_max->xMin = __MIN(p_max->xMin, p->xMin);
-    p_max->yMin = __MIN(p_max->yMin, p->yMin);
-    p_max->xMax = __MAX(p_max->xMax, p->xMax);
-    p_max->yMax = __MAX(p_max->yMax, p->yMax);
-}
-
 static paragraph_t *NewParagraph( filter_t *p_filter,
                                   int i_size,
                                   const uni_char_t *p_code_points,
                                   text_style_t **pp_styles,
-                                  uint32_t *pi_k_dates,
+                                  ruby_block_t **pp_ruby,
                                   int i_runs_size )
 {
     paragraph_t *p_paragraph = calloc( 1, sizeof( paragraph_t ) );
@@ -253,19 +311,19 @@ static paragraph_t *NewParagraph( filter_t *p_filter,
 
     p_paragraph->i_size = i_size;
     p_paragraph->p_code_points =
-            malloc( i_size * sizeof( *p_paragraph->p_code_points ) );
+            vlc_alloc( i_size, sizeof( *p_paragraph->p_code_points ) );
     p_paragraph->pi_glyph_indices =
-            malloc( i_size * sizeof( *p_paragraph->pi_glyph_indices ) );
+            vlc_alloc( i_size, sizeof( *p_paragraph->pi_glyph_indices ) );
     p_paragraph->pp_styles =
-            malloc( i_size * sizeof( *p_paragraph->pp_styles ) );
+            vlc_alloc( i_size, sizeof( *p_paragraph->pp_styles ) );
     p_paragraph->pp_faces =
             calloc( i_size, sizeof( *p_paragraph->pp_faces ) );
     p_paragraph->pi_run_ids =
             calloc( i_size, sizeof( *p_paragraph->pi_run_ids ) );
     p_paragraph->p_glyph_bitmaps =
             calloc( i_size, sizeof( *p_paragraph->p_glyph_bitmaps ) );
-    p_paragraph->pi_karaoke_bar =
-            calloc( i_size, sizeof( *p_paragraph->pi_karaoke_bar ) );
+    if( pp_ruby )
+        p_paragraph->pp_ruby = calloc( i_size, sizeof( *p_paragraph->pp_ruby ) );
 
     p_paragraph->p_runs = calloc( i_runs_size, sizeof( run_desc_t ) );
     p_paragraph->i_runs_size = i_runs_size;
@@ -274,7 +332,7 @@ static paragraph_t *NewParagraph( filter_t *p_filter,
     if( !p_paragraph->p_code_points || !p_paragraph->pi_glyph_indices
      || !p_paragraph->pp_styles || !p_paragraph->pp_faces
      || !p_paragraph->pi_run_ids|| !p_paragraph->p_glyph_bitmaps
-     || !p_paragraph->pi_karaoke_bar || !p_paragraph->p_runs )
+     || !p_paragraph->p_runs )
         goto error;
 
     if( p_code_points )
@@ -283,30 +341,30 @@ static paragraph_t *NewParagraph( filter_t *p_filter,
     if( pp_styles )
         memcpy( p_paragraph->pp_styles, pp_styles,
                 i_size * sizeof( *pp_styles ) );
-    if( pi_k_dates )
-    {
-        int64_t i_elapsed  = var_GetInteger( p_filter, "spu-elapsed" ) / 1000;
-        for( int i = 0; i < i_size; ++i )
-        {
-            p_paragraph->pi_karaoke_bar[ i ] = pi_k_dates[ i ] >= i_elapsed;
-        }
-    }
+    if( p_paragraph->pp_ruby )
+        memcpy( p_paragraph->pp_ruby, pp_ruby, i_size * sizeof( *pp_ruby ) );
 
 #ifdef HAVE_HARFBUZZ
-    p_paragraph->p_scripts = malloc( i_size * sizeof( *p_paragraph->p_scripts ) );
+    p_paragraph->p_scripts = vlc_alloc( i_size, sizeof( *p_paragraph->p_scripts ) );
     if( !p_paragraph->p_scripts )
         goto error;
 #endif
 
 #ifdef HAVE_FRIBIDI
-    p_paragraph->p_levels = malloc( i_size * sizeof( *p_paragraph->p_levels ) );
-    p_paragraph->p_types = malloc( i_size * sizeof( *p_paragraph->p_types ) );
+    p_paragraph->p_levels = vlc_alloc( i_size, sizeof( *p_paragraph->p_levels ) );
+    p_paragraph->p_types = vlc_alloc( i_size, sizeof( *p_paragraph->p_types ) );
+#if FRIBIDI_MAJOR_VERSION >= 1
+    p_paragraph->p_btypes = vlc_alloc( i_size, sizeof( *p_paragraph->p_btypes ) );
+#endif
     p_paragraph->pi_reordered_indices =
-            malloc( i_size * sizeof( *p_paragraph->pi_reordered_indices ) );
+            vlc_alloc( i_size, sizeof( *p_paragraph->pi_reordered_indices ) );
 
     if( !p_paragraph->p_levels || !p_paragraph->p_types
      || !p_paragraph->pi_reordered_indices )
         goto error;
+
+    for( int i=0; i<i_size; i++ )
+        p_paragraph->pi_reordered_indices[i] = i;
 
     int i_direction = var_InheritInteger( p_filter, "freetype-text-direction" );
     if( i_direction == 0 )
@@ -323,10 +381,10 @@ error:
     if( p_paragraph->p_code_points ) free( p_paragraph->p_code_points );
     if( p_paragraph->pi_glyph_indices ) free( p_paragraph->pi_glyph_indices );
     if( p_paragraph->pp_styles ) free( p_paragraph->pp_styles );
+    if( p_paragraph->pp_ruby ) free( p_paragraph->pp_ruby );
     if( p_paragraph->pp_faces ) free( p_paragraph->pp_faces );
     if( p_paragraph->pi_run_ids ) free( p_paragraph->pi_run_ids );
     if( p_paragraph->p_glyph_bitmaps ) free( p_paragraph->p_glyph_bitmaps );
-    if (p_paragraph->pi_karaoke_bar ) free( p_paragraph->pi_karaoke_bar );
     if( p_paragraph->p_runs ) free( p_paragraph->p_runs );
 #ifdef HAVE_HARFBUZZ
     if( p_paragraph->p_scripts ) free( p_paragraph->p_scripts );
@@ -334,6 +392,9 @@ error:
 #ifdef HAVE_FRIBIDI
     if( p_paragraph->p_levels ) free( p_paragraph->p_levels );
     if( p_paragraph->p_types ) free( p_paragraph->p_types );
+#if FRIBIDI_MAJOR_VERSION >= 1
+    if( p_paragraph->p_btypes ) free( p_paragraph->p_btypes );
+#endif
     if( p_paragraph->pi_reordered_indices )
         free( p_paragraph->pi_reordered_indices );
 #endif
@@ -346,9 +407,9 @@ static void FreeParagraph( paragraph_t *p_paragraph )
     free( p_paragraph->p_runs );
     free( p_paragraph->pi_glyph_indices );
     free( p_paragraph->p_glyph_bitmaps );
-    free( p_paragraph->pi_karaoke_bar );
     free( p_paragraph->pi_run_ids );
     free( p_paragraph->pp_faces );
+    free( p_paragraph->pp_ruby );
     free( p_paragraph->pp_styles );
     free( p_paragraph->p_code_points );
 
@@ -359,6 +420,9 @@ static void FreeParagraph( paragraph_t *p_paragraph )
 #ifdef HAVE_FRIBIDI
     free( p_paragraph->pi_reordered_indices );
     free( p_paragraph->p_types );
+#if FRIBIDI_MAJOR_VERSION >= 1
+    free( p_paragraph->p_btypes );
+#endif
     free( p_paragraph->p_levels );
 #endif
 
@@ -371,16 +435,30 @@ static int AnalyzeParagraph( paragraph_t *p_paragraph )
     fribidi_get_bidi_types(  p_paragraph->p_code_points,
                              p_paragraph->i_size,
                              p_paragraph->p_types );
+#if FRIBIDI_MAJOR_VERSION >= 1
+    fribidi_get_bracket_types( p_paragraph->p_code_points,
+                               p_paragraph->i_size,
+                               p_paragraph->p_types,
+                               p_paragraph->p_btypes );
+    fribidi_get_par_embedding_levels_ex( p_paragraph->p_types,
+                                      p_paragraph->p_btypes,
+                                      p_paragraph->i_size,
+                                      &p_paragraph->paragraph_type,
+                                      p_paragraph->p_levels );
+#else
     fribidi_get_par_embedding_levels( p_paragraph->p_types,
                                       p_paragraph->i_size,
                                       &p_paragraph->paragraph_type,
                                       p_paragraph->p_levels );
+#endif
 
 #ifdef HAVE_HARFBUZZ
-    hb_unicode_funcs_t *p_funcs = hb_unicode_funcs_get_default();
+    hb_unicode_funcs_t *p_funcs =
+        hb_unicode_funcs_create( hb_unicode_funcs_get_default() );
     for( int i = 0; i < p_paragraph->i_size; ++i )
         p_paragraph->p_scripts[ i ] =
             hb_unicode_script( p_funcs, p_paragraph->p_code_points[ i ] );
+    hb_unicode_funcs_destroy( p_funcs );
 
     hb_script_t i_last_script;
     int i_last_script_index = -1;
@@ -498,6 +576,7 @@ static int AddRunWithFallback( filter_t *p_filter, paragraph_t *p_paragraph,
     /* Maximum number of faces to try for each run */
     #define MAX_FACES 5
     FT_Face pp_faces[ MAX_FACES ] = {0};
+    FT_Face p_face = NULL;
 
     pp_faces[ 0 ] = SelectAndLoadFace( p_filter, p_style, 0 );
 
@@ -505,7 +584,27 @@ static int AddRunWithFallback( filter_t *p_filter, paragraph_t *p_paragraph,
     {
         int i_index = 0;
         int i_glyph_index = 0;
-        FT_Face p_face = NULL;
+
+#ifdef HAVE_FRIBIDI
+        /*
+         * For white space, punctuation and neutral characters, try to use
+         * the font of the previous character, if any. See #20466.
+         */
+        if( p_face &&
+            ( p_paragraph->p_types[ i ] == FRIBIDI_TYPE_WS
+           || p_paragraph->p_types[ i ] == FRIBIDI_TYPE_CS
+           || p_paragraph->p_types[ i ] == FRIBIDI_TYPE_ON ) )
+        {
+            i_glyph_index = FT_Get_Char_Index( p_face,
+                                               p_paragraph->p_code_points[ i ] );
+            if( i_glyph_index )
+            {
+                p_paragraph->pp_faces[ i ] = p_face;
+                continue;
+            }
+        }
+#endif
+
         do {
             p_face = pp_faces[ i_index ];
             if( !p_face )
@@ -517,31 +616,7 @@ static int AddRunWithFallback( filter_t *p_filter, paragraph_t *p_paragraph,
             i_glyph_index = FT_Get_Char_Index( p_face,
                                                p_paragraph->p_code_points[ i ] );
             if( i_glyph_index )
-            {
                 p_paragraph->pp_faces[ i ] = p_face;
-
-                /*
-                 * Move p_face to the beginning of the array. Otherwise strikethrough
-                 * lines can appear segmented, being rendered at a certain height
-                 * through spaces and at a different height through words.
-                 * Skip this step for the specified special characters. See #15840.
-                 */
-                if( i_index > 0 )
-                {
-                    uni_char_t codepoint = p_paragraph->p_code_points[ i ];
-                    if( codepoint != 0x0009 && codepoint != 0x00A0
-                     && codepoint != 0x1680 && codepoint != 0x061C
-                     && codepoint != 0x202F && codepoint != 0x205F
-                     && codepoint != 0x3000 && codepoint != 0xFEFF
-                     && !( codepoint >= 0x2000 && codepoint <= 0x200F )
-                     && !( codepoint >= 0x202A && codepoint <= 0x202E )
-                     && !( codepoint >= 0x2060 && codepoint <= 0x2069 ) )
-                    {
-                        pp_faces[ i_index ] = pp_faces[ 0 ];
-                        pp_faces[ 0 ] = p_face;
-                    }
-                }
-            }
 
         } while( i_glyph_index == 0 && ++i_index < MAX_FACES );
     }
@@ -740,13 +815,20 @@ static int ShapeParagraphHarfBuzz( filter_t *p_filter,
         i_total_glyphs += p_run->i_glyph_count;
     }
 
-    p_new_paragraph = NewParagraph( p_filter, i_total_glyphs, 0, 0, 0,
+    p_new_paragraph = NewParagraph( p_filter, i_total_glyphs,
+                                    NULL, NULL, NULL,
                                     p_paragraph->i_runs_size );
     if( !p_new_paragraph )
     {
         i_ret = VLC_ENOMEM;
         goto error;
     }
+    if( p_paragraph->pp_ruby )
+    {
+        p_new_paragraph->pp_ruby = calloc(p_new_paragraph->i_size,
+                                          sizeof(ruby_block_t *));
+    }
+
     p_new_paragraph->paragraph_type = p_paragraph->paragraph_type;
 
     int i_index = 0;
@@ -780,8 +862,9 @@ static int ShapeParagraphHarfBuzz( filter_t *p_filter,
                 p_paragraph->p_levels[ i_source_index ];
             p_new_paragraph->pp_styles[ i_index ] =
                 p_paragraph->pp_styles[ i_source_index ];
-            p_new_paragraph->pi_karaoke_bar[ i_index ] =
-                p_paragraph->pi_karaoke_bar[ i_source_index ];
+            if( p_new_paragraph->pp_ruby )
+                p_new_paragraph->pp_ruby[ i_index ] =
+                    p_paragraph->pp_ruby[ i_source_index ];
             p_new_paragraph->p_glyph_bitmaps[ i_index ].i_x_offset =
                 p_positions[ i_run_index ].x_offset;
             p_new_paragraph->p_glyph_bitmaps[ i_index ].i_y_offset =
@@ -843,7 +926,7 @@ static int ShapeParagraphFriBidi( filter_t *p_filter, paragraph_t *p_paragraph )
     }
 
     FriBidiJoiningType *p_joining_types =
-            malloc( p_paragraph->i_size * sizeof( *p_joining_types ) );
+            vlc_alloc( p_paragraph->i_size, sizeof( *p_joining_types ) );
     if( !p_joining_types )
         return VLC_ENOMEM;
 
@@ -920,7 +1003,7 @@ static int ZeroNsmAdvance( paragraph_t *p_paragraph )
  */
 static int LoadGlyphs( filter_t *p_filter, paragraph_t *p_paragraph,
                        bool b_use_glyph_indices, bool b_overwrite_advance,
-                       int *pi_max_advance_x )
+                       unsigned *pi_max_advance_x )
 {
     if( p_paragraph->i_size <= 0 || p_paragraph->i_runs_count <= 0 )
     {
@@ -942,7 +1025,8 @@ static int LoadGlyphs( filter_t *p_filter, paragraph_t *p_paragraph,
         FT_Face p_face = 0;
         if( !p_run->p_face )
         {
-            p_face = SelectAndLoadFace( p_filter, p_style, 0 );
+            p_face = SelectAndLoadFace( p_filter, p_style,
+                                        p_paragraph->p_code_points[p_run->i_start_offset] );
             if( !p_face )
             {
                 /* Uses the default font and style */
@@ -1034,11 +1118,11 @@ static int LoadGlyphs( filter_t *p_filter, paragraph_t *p_paragraph,
 
 #undef SKIP_GLYPH
 
-            if( p_filter->p_sys->p_stroker && (p_style->i_style_flags & STYLE_OUTLINE) )
+            if( p_sys->p_stroker && (p_style->i_style_flags & STYLE_OUTLINE) )
             {
                 p_bitmaps->p_outline = p_bitmaps->p_glyph;
                 if( FT_Glyph_StrokeBorder( &p_bitmaps->p_outline,
-                                           p_filter->p_sys->p_stroker, 0, 0 ) )
+                                           p_sys->p_stroker, 0, 0 ) )
                     p_bitmaps->p_outline = 0;
             }
 
@@ -1051,38 +1135,34 @@ static int LoadGlyphs( filter_t *p_filter, paragraph_t *p_paragraph,
                 p_bitmaps->i_x_advance = p_face->glyph->advance.x;
                 p_bitmaps->i_y_advance = p_face->glyph->advance.y;
             }
-        }
 
-        int i_max_run_advance_x = FT_FLOOR( FT_MulFix( p_face->max_advance_width, p_face->size->metrics.x_scale ) );
-        if( i_max_run_advance_x > *pi_max_advance_x )
-            *pi_max_advance_x = i_max_run_advance_x;
+            unsigned i_x_advance = FT_FLOOR( abs( p_bitmaps->i_x_advance ) );
+            if( i_x_advance > *pi_max_advance_x )
+                *pi_max_advance_x = i_x_advance;
+        }
     }
     return VLC_SUCCESS;
 }
 
 static int LayoutLine( filter_t *p_filter,
                        paragraph_t *p_paragraph,
-                       int i_start_offset, int i_end_offset,
-                       line_desc_t **pp_line, bool b_grid )
+                       int i_first_char, int i_last_char,
+                       bool b_grid,
+                       line_desc_t **pp_line )
 {
     if( p_paragraph->i_size <= 0 || p_paragraph->i_runs_count <= 0
-     || i_start_offset >= i_end_offset
-     || i_start_offset < 0 || i_start_offset >= p_paragraph->i_size
-     || i_end_offset <= 0  || i_end_offset > p_paragraph->i_size )
+     || i_first_char < 0 || i_last_char < 0
+     || i_first_char > i_last_char
+     || i_last_char >= p_paragraph->i_size )
     {
         msg_Err( p_filter,
                  "LayoutLine() invalid parameters. "
                  "Paragraph size: %d. Runs count: %d. "
-                 "Start offset: %d. End offset: %d",
+                 "Start char: %d. End char: %d",
                  p_paragraph->i_size, p_paragraph->i_runs_count,
-                 i_start_offset, i_end_offset );
+                 i_first_char, i_last_char );
         return VLC_EGENERIC;
     }
-
-    line_desc_t *p_line = NewLine( i_end_offset - i_start_offset );
-
-    if( !p_line )
-        return VLC_ENOMEM;
 
     filter_sys_t *p_sys = p_filter->p_sys;
     int i_last_run = -1;
@@ -1090,7 +1170,6 @@ static int LayoutLine( filter_t *p_filter,
     const text_style_t *p_style = 0;
     FT_Face p_face = 0;
     FT_Vector pen = { .x = 0, .y = 0 };
-    int i_line_index = 0;
 
     int i_font_size = 0;
     int i_font_width = 0;
@@ -1099,31 +1178,40 @@ static int LayoutLine( filter_t *p_filter,
     int i_ul_thickness = 0;
 
 #ifdef HAVE_FRIBIDI
-    fribidi_reorder_line( 0, p_paragraph->p_types + i_start_offset,
-                          i_end_offset - i_start_offset,
+    bool b_reordered = ( 0 !=
+        fribidi_reorder_line( 0, &p_paragraph->p_types[i_first_char],
+                          1 + i_last_char - i_first_char,
                           0, p_paragraph->paragraph_type,
-                          p_paragraph->p_levels + i_start_offset,
-                          0, p_paragraph->pi_reordered_indices + i_start_offset );
+                          &p_paragraph->p_levels[i_first_char],
+                          0, &p_paragraph->pi_reordered_indices[i_first_char] ) );
 #endif
 
-    for( int i = i_start_offset; i < i_end_offset; ++i, ++i_line_index )
+    line_desc_t *p_line = NewLine( 1 + i_last_char - i_first_char );
+    if( !p_line )
+        return VLC_ENOMEM;
+
+    for( int i = i_first_char; i <= i_last_char; ++i )
     {
         int i_paragraph_index;
 #ifdef HAVE_FRIBIDI
-        i_paragraph_index = p_paragraph->pi_reordered_indices[ i ];
-#else
-        i_paragraph_index = i;
+        if( b_reordered )
+            i_paragraph_index = p_paragraph->pi_reordered_indices[ i ];
+        else
 #endif
+        i_paragraph_index = i;
 
-        line_character_t *p_ch = p_line->p_character + i_line_index;
+        line_character_t *p_ch = &p_line->p_character[p_line->i_character_count];
         p_ch->p_style = p_paragraph->pp_styles[ i_paragraph_index ];
+
+        if( p_paragraph->pp_ruby )
+            p_ch->p_ruby = p_paragraph->pp_ruby[ i ];
 
         glyph_bitmaps_t *p_bitmaps =
                 p_paragraph->p_glyph_bitmaps + i_paragraph_index;
 
         if( !p_bitmaps->p_glyph )
         {
-            --i_line_index;
+            BBoxInit( &p_ch->bbox );
             continue;
         }
 
@@ -1169,7 +1257,6 @@ static int LayoutLine( filter_t *p_filter,
                     FT_Done_Glyph( p_bitmaps->p_outline );
                 if( p_bitmaps->p_shadow )
                     FT_Done_Glyph( p_bitmaps->p_shadow );
-                --i_line_index;
                 continue;
             }
             else
@@ -1246,16 +1333,18 @@ static int LayoutLine( filter_t *p_filter,
         p_ch->p_glyph = ( FT_BitmapGlyph ) p_bitmaps->p_glyph;
         p_ch->p_outline = ( FT_BitmapGlyph ) p_bitmaps->p_outline;
         p_ch->p_shadow = ( FT_BitmapGlyph ) p_bitmaps->p_shadow;
-        p_ch->b_in_karaoke = (p_paragraph->pi_karaoke_bar[ i_paragraph_index ] != 0);
 
         p_ch->i_line_thickness = i_line_thickness;
         p_ch->i_line_offset = i_line_offset;
 
-        BBoxEnlarge( &p_line->bbox, &p_bitmaps->glyph_bbox );
+        /* Compute bounding box for all glyphs */
+        p_ch->bbox = p_bitmaps->glyph_bbox;
         if( p_bitmaps->p_outline )
-            BBoxEnlarge( &p_line->bbox, &p_bitmaps->outline_bbox );
+            BBoxEnlarge( &p_ch->bbox, &p_bitmaps->outline_bbox );
         if( p_bitmaps->p_shadow )
-            BBoxEnlarge( &p_line->bbox, &p_bitmaps->shadow_bbox );
+            BBoxEnlarge( &p_ch->bbox, &p_bitmaps->shadow_bbox );
+
+        BBoxEnlarge( &p_line->bbox, &p_ch->bbox );
 
         pen.x += p_bitmaps->i_x_advance;
         pen.y += p_bitmaps->i_y_advance;
@@ -1271,8 +1360,48 @@ static int LayoutLine( filter_t *p_filter,
         if( p_ch->p_glyph->bitmap.rows )
         {
             if( p_line->i_first_visible_char_index < 0 )
-                p_line->i_first_visible_char_index = i_line_index;
-            p_line->i_last_visible_char_index = i_line_index;
+                p_line->i_first_visible_char_index = p_line->i_character_count;
+            p_line->i_last_visible_char_index = p_line->i_character_count;
+        }
+
+        p_line->i_character_count++;
+    }
+
+    /* Second pass for ruby layout */
+    if( p_paragraph->pp_ruby )
+    {
+        const int i_ruby_baseline = p_line->bbox.yMax;
+        const ruby_block_t *p_prevruby = NULL;
+        for( int i = 0; i < p_line->i_character_count; ++i )
+        {
+            line_character_t *p_ch = &p_line->p_character[i];
+            if( p_ch->p_ruby == p_prevruby || !p_ch->p_glyph )
+                continue;
+            p_prevruby = p_ch->p_ruby;
+            if( !p_ch->p_ruby )
+                continue;
+            line_desc_t *p_rubyline = p_ch->p_ruby->p_laid;
+            if( !p_rubyline )
+                continue;
+
+            int i_rubyadvance = (p_rubyline->bbox.xMax - p_rubyline->bbox.xMin);
+            int i_rubyheight = (p_rubyline->bbox.yMax - p_rubyline->bbox.yMin);
+            MoveLineTo( p_rubyline, p_ch->bbox.xMin, i_ruby_baseline + i_rubyheight );
+            BBoxEnlarge( &p_line->bbox, &p_rubyline->bbox );
+
+            int i_count;
+            int i_baseadvance = RubyBaseAdvance( p_line, i, &i_count );
+            if( i_baseadvance < i_rubyadvance )
+            {
+                IndentCharsFrom( p_line, i, i_count, (i_rubyadvance - i_baseadvance) / 2, 0 );
+                IndentCharsFrom( p_line, i + i_count, p_line->i_character_count - (i + i_count),
+                                 (i_rubyadvance - i_baseadvance + 1), 0 );
+            }
+            else if( i_baseadvance > i_rubyadvance + 1 )
+            {
+                ShiftLine( p_rubyline, (i_baseadvance - i_rubyadvance) / 2, 0 );
+                BBoxEnlarge( &p_line->bbox, &p_rubyline->bbox ); /* shouldn't be needed */
+            }
         }
     }
 
@@ -1282,8 +1411,6 @@ static int LayoutLine( filter_t *p_filter,
         p_line->i_height = i_font_max_advance_y;
     else
         p_line->i_height = __MAX( 0, p_line->bbox.yMax - p_line->bbox.yMin );
-
-    p_line->i_character_count = i_line_index;
 
     if( i_ul_thickness > 0 )
     {
@@ -1302,9 +1429,27 @@ static int LayoutLine( filter_t *p_filter,
     return VLC_SUCCESS;
 }
 
+static inline void ReleaseGlyphBitMaps(glyph_bitmaps_t *p_bitmaps)
+{
+    if( p_bitmaps->p_glyph )
+        FT_Done_Glyph( p_bitmaps->p_glyph );
+    if( p_bitmaps->p_outline )
+        FT_Done_Glyph( p_bitmaps->p_outline );
+}
+
+static inline bool IsWhitespaceAt( paragraph_t *p_paragraph, size_t i )
+{
+    return ( p_paragraph->p_code_points[ i ] == ' '
+#ifdef HAVE_FRIBIDI
+            || p_paragraph->p_types[ i ] == FRIBIDI_TYPE_WS
+#endif
+    );
+}
+
 static int LayoutParagraph( filter_t *p_filter, paragraph_t *p_paragraph,
-                            int i_max_pixel_width, line_desc_t **pp_lines,
-                            bool b_grid )
+                            unsigned i_max_width, unsigned i_max_advance_x,
+                            bool b_grid, bool b_balance,
+                            line_desc_t **pp_lines )
 {
     if( p_paragraph->i_size <= 0 || p_paragraph->i_runs_count <= 0 )
     {
@@ -1314,26 +1459,49 @@ static int LayoutParagraph( filter_t *p_filter, paragraph_t *p_paragraph,
         return VLC_EGENERIC;
     }
 
+    /*
+     * Check max line width to allow for outline and shadow glyphs,
+     * and any extra width caused by visual reordering
+     */
+    if( i_max_width <= i_max_advance_x )
+    {
+        msg_Err( p_filter, "LayoutParagraph(): Invalid max width" );
+        return VLC_EGENERIC;
+    }
+
+    i_max_width <<= 6;
+    i_max_advance_x <<= 6;
+
     int i_line_start = 0;
     FT_Pos i_width = 0;
-    FT_Pos i_max_width = i_max_pixel_width << 6;
-    FT_Pos i_preferred_width = 0;
+    FT_Pos i_preferred_width = i_max_width;
     FT_Pos i_total_width = 0;
     FT_Pos i_last_space_width = 0;
     int i_last_space = -1;
-    line_desc_t *p_first_line = 0;
+    line_desc_t *p_first_line = NULL;
     line_desc_t **pp_line = &p_first_line;
 
     for( int i = 0; i < p_paragraph->i_size; ++i )
     {
-#ifdef HAVE_FRIBIDI
-        p_paragraph->pi_reordered_indices[ i ] = i;
-#endif
-        i_total_width += p_paragraph->p_glyph_bitmaps[ i ].i_x_advance;
+        if( !IsWhitespaceAt( p_paragraph, i ) || i != i_last_space + 1 )
+            i_total_width += p_paragraph->p_glyph_bitmaps[ i ].i_x_advance;
+        else
+            i_last_space = i;
+    }
+    i_last_space = -1;
+
+    if( i_total_width == 0 )
+    {
+        for( int i=0; i < p_paragraph->i_size; ++i )
+            ReleaseGlyphBitMaps( &p_paragraph->p_glyph_bitmaps[ i ] );
+        return VLC_SUCCESS;
     }
 
-    int i_line_count = i_total_width / i_max_width + 1;
-    i_preferred_width = i_total_width / i_line_count;
+    if( b_balance )
+    {
+        int i_line_count = i_total_width / (i_max_width - i_max_advance_x) + 1;
+        i_preferred_width = i_total_width / i_line_count;
+    }
 
     for( int i = 0; i <= p_paragraph->i_size; ++i )
     {
@@ -1341,17 +1509,29 @@ static int LayoutParagraph( filter_t *p_filter, paragraph_t *p_paragraph,
         {
             if( i_line_start < i )
                 if( LayoutLine( p_filter, p_paragraph,
-                                i_line_start, i, pp_line, b_grid ) )
+                                i_line_start, i - 1, b_grid, pp_line ) )
                     goto error;
 
             break;
         }
 
-        if( p_paragraph->p_code_points[ i ] == ' '
-#ifdef HAVE_FRIBIDI
-            || p_paragraph->p_types[ i ] == FRIBIDI_TYPE_WS
-#endif
-          )
+        if( p_paragraph->pp_ruby &&
+            p_paragraph->pp_ruby[i] &&
+            p_paragraph->pp_ruby[i]->p_laid )
+        {
+            /* Just forward as non breakable */
+            const ruby_block_t *p_rubyseq = p_paragraph->pp_ruby[i];
+            int i_advance = 0;
+            int i_advanceruby = p_rubyseq->p_laid->i_width;
+            while( i + 1 < p_paragraph->i_size &&
+                   p_rubyseq == p_paragraph->pp_ruby[i + 1] )
+                i_advance += p_paragraph->p_glyph_bitmaps[ i++ ].i_x_advance;
+            /* Just forward as non breakable */
+            i_width += (i_advance < i_advanceruby) ? i_advanceruby : i_advance;
+            continue;
+        }
+
+        if( IsWhitespaceAt( p_paragraph, i ) )
         {
             if( i_line_start == i )
             {
@@ -1360,18 +1540,13 @@ static int LayoutParagraph( filter_t *p_filter, paragraph_t *p_paragraph,
                  * At this point p_shadow points to either p_glyph or p_outline,
                  * so we should not free it explicitly.
                  */
-                if( p_paragraph->p_glyph_bitmaps[ i ].p_glyph )
-                    FT_Done_Glyph( p_paragraph->p_glyph_bitmaps[ i ].p_glyph );
-                if( p_paragraph->p_glyph_bitmaps[ i ].p_outline )
-                    FT_Done_Glyph( p_paragraph->p_glyph_bitmaps[ i ].p_outline );
-
+                ReleaseGlyphBitMaps( &p_paragraph->p_glyph_bitmaps[ i ] );
                 i_line_start = i + 1;
                 continue;
             }
 
             if( i_last_space == i - 1 )
             {
-                p_paragraph->p_glyph_bitmaps[ i - 1 ].i_x_advance = 0;
                 i_last_space = i;
                 continue;
             }
@@ -1380,34 +1555,62 @@ static int LayoutParagraph( filter_t *p_filter, paragraph_t *p_paragraph,
             i_last_space_width = i_width;
         }
 
-        i_width += p_paragraph->p_glyph_bitmaps[ i ].i_x_advance;
+        const run_desc_t *p_run = &p_paragraph->p_runs[p_paragraph->pi_run_ids[i]];
+        const int i_advance_x = p_paragraph->p_glyph_bitmaps[ i ].i_x_advance;
 
-        if( i_last_space_width >= i_preferred_width
-         || i_width >= i_max_width )
+        if( ( i_last_space_width + i_advance_x > i_preferred_width &&
+              p_run->p_style->e_wrapinfo == STYLE_WRAP_DEFAULT )
+            || i_width + i_advance_x > i_max_width )
         {
             if( i_line_start == i )
             {
-                msg_Err( p_filter,
-                         "LayoutParagraph(): Width of single glyph exceeds maximum" );
-                goto error;
+                /* If wrapping, algorithm would not end shifting lines down.
+                 *  Not wrapping, that can't be rendered anymore. */
+                msg_Dbg( p_filter, "LayoutParagraph(): First glyph width in line exceeds maximum, skipping" );
+                for( ; i < p_paragraph->i_size; ++i )
+                    ReleaseGlyphBitMaps( &p_paragraph->p_glyph_bitmaps[ i ] );
+                return VLC_SUCCESS;
             }
 
-            int i_end_offset;
-            if( i_last_space > i_line_start )
-                i_end_offset = i_last_space;
+            int i_newline_start;
+            if( i_last_space > i_line_start && p_run->p_style->e_wrapinfo == STYLE_WRAP_DEFAULT )
+                i_newline_start = i_last_space; /* we break line on last space */
             else
-                i_end_offset = i;
+                i_newline_start = i; /* we break line on last char */
 
             if( LayoutLine( p_filter, p_paragraph, i_line_start,
-                            i_end_offset, pp_line, b_grid ) )
+                            i_newline_start - 1, b_grid, pp_line ) )
                 goto error;
 
+            /* Handle early end of renderable content;
+               We're over size and we can't break space */
+            if( p_run->p_style->e_wrapinfo == STYLE_WRAP_NONE )
+            {
+                for( ; i < p_paragraph->i_size; ++i )
+                    ReleaseGlyphBitMaps( &p_paragraph->p_glyph_bitmaps[ i ] );
+                break;
+            }
+
             pp_line = &( *pp_line )->p_next;
-            i_line_start = i_end_offset;
-            i = i_line_start - 1;
-            i_width = 0;
+
+            /* If we created a line up to previous space, we only keep the difference for
+               our current width since that split */
+            if( i_newline_start == i_last_space )
+            {
+                i_width = i_width - i_last_space_width;
+                if( i_newline_start + 1 < p_paragraph->i_size )
+                    i_line_start = i_newline_start + 1;
+                else
+                    i_line_start = i_newline_start; // == i
+            }
+            else
+            {
+                i_width = 0;
+                i_line_start = i_newline_start;
+            }
             i_last_space_width = 0;
         }
+        i_width += i_advance_x;
     }
 
     *pp_lines = p_first_line;
@@ -1415,33 +1618,134 @@ static int LayoutParagraph( filter_t *p_filter, paragraph_t *p_paragraph,
 
 error:
     for( int i = i_line_start; i < p_paragraph->i_size; ++i )
-    {
-        if( p_paragraph->p_glyph_bitmaps[ i ].p_glyph )
-            FT_Done_Glyph( p_paragraph->p_glyph_bitmaps[ i ].p_glyph );
-        if( p_paragraph->p_glyph_bitmaps[ i ].p_outline )
-            FT_Done_Glyph( p_paragraph->p_glyph_bitmaps[ i ].p_outline );
-    }
+        ReleaseGlyphBitMaps( &p_paragraph->p_glyph_bitmaps[ i ] );
     if( p_first_line )
         FreeLines( p_first_line );
     return VLC_EGENERIC;
 }
 
-int LayoutText( filter_t *p_filter, line_desc_t **pp_lines,
-                FT_BBox *p_bbox, int *pi_max_face_height,
+static paragraph_t * BuildParagraph( filter_t *p_filter,
+                                     int i_size,
+                                     const uni_char_t *p_uchars,
+                                     text_style_t **pp_styles,
+                                     ruby_block_t **pp_ruby,
+                                     int i_runs_size,
+                                     unsigned *pi_max_advance_x )
+{
+    paragraph_t *p_paragraph = NewParagraph( p_filter, i_size,
+                                p_uchars,
+                                pp_styles,
+                                pp_ruby,
+                                i_runs_size );
+    if( !p_paragraph )
+        return NULL;
 
-                const uni_char_t *psz_text, text_style_t **pp_styles,
-                uint32_t *pi_k_dates, int i_len, bool b_grid )
+#ifdef HAVE_FRIBIDI
+    if( AnalyzeParagraph( p_paragraph ) )
+        goto error;
+#endif
+
+    if( ItemizeParagraph( p_filter, p_paragraph ) )
+        goto error;
+
+#if defined HAVE_HARFBUZZ
+    if( ShapeParagraphHarfBuzz( p_filter, &p_paragraph ) )
+        goto error;
+
+    if( LoadGlyphs( p_filter, p_paragraph, true, false, pi_max_advance_x ) )
+        goto error;
+
+#elif defined HAVE_FRIBIDI
+    if( ShapeParagraphFriBidi( p_filter, p_paragraph ) )
+        goto error;
+    if( LoadGlyphs( p_filter, p_paragraph, false, true, pi_max_advance_x ) )
+        goto error;
+    if( RemoveZeroWidthCharacters( p_paragraph ) )
+        goto error;
+    if( ZeroNsmAdvance( p_paragraph ) )
+        goto error;
+#else
+    if( LoadGlyphs( p_filter, p_paragraph, false, true, pi_max_advance_x ) )
+        goto error;
+#endif
+
+    return p_paragraph;
+
+error:
+    if( p_paragraph )
+        FreeParagraph( p_paragraph );
+
+    return NULL;
+}
+
+static int LayoutRubyText( filter_t *p_filter,
+                           const uni_char_t *p_uchars,
+                           int i_uchars,
+                           text_style_t *p_style,
+                           line_desc_t **pp_line )
+{
+    unsigned int i_max_advance_x;
+
+    text_style_t **pp_styles = malloc(sizeof(*pp_styles) * i_uchars);
+    for(int i=0;i<i_uchars;i++)
+        pp_styles[i] = p_style;
+
+    paragraph_t *p_paragraph = BuildParagraph( p_filter, i_uchars,
+                                               p_uchars, pp_styles,
+                                               NULL, 1,
+                                               &i_max_advance_x );
+    if( !p_paragraph )
+    {
+        free( pp_styles );
+        return VLC_EGENERIC;
+    }
+
+    if( LayoutLine( p_filter, p_paragraph,
+                    0, i_uchars - 1,
+                    false, pp_line ) )
+    {
+        free( pp_styles );
+        FreeParagraph( p_paragraph );
+        return VLC_EGENERIC;
+    }
+
+    FreeParagraph( p_paragraph );
+    free( pp_styles );
+
+    return VLC_SUCCESS;
+}
+
+int LayoutTextBlock( filter_t *p_filter,
+                     const layout_text_block_t *p_textblock,
+                     line_desc_t **pp_lines, FT_BBox *p_bbox,
+                     int *pi_max_face_height )
 {
     line_desc_t *p_first_line = 0;
     line_desc_t **pp_line = &p_first_line;
-    paragraph_t *p_paragraph = 0;
-    int i_paragraph_start = 0;
-    int i_max_height = 0;
-    int i_max_advance_x = 0;
+    size_t i_paragraph_start = 0;
+    unsigned i_total_height = 0;
+    unsigned i_max_advance_x = 0;
+    int i_max_face_height = 0;
 
-    for( int i = 0; i <= i_len; ++i )
+    /* Prepare ruby content */
+    if( p_textblock->pp_ruby )
     {
-        if( i == i_len || psz_text[ i ] == '\n' )
+        ruby_block_t *p_prev = NULL;
+        for( size_t i=0; i<p_textblock->i_count; i++ )
+        {
+            if( p_textblock->pp_ruby[i] == p_prev )
+                continue;
+            p_prev = p_textblock->pp_ruby[i];
+            if( p_prev )
+                LayoutRubyText( p_filter, p_prev->p_uchars, p_prev->i_count,
+                                p_prev->p_style, &p_prev->p_laid );
+        }
+    }
+    /* !Prepare ruby content */
+
+    for( size_t i = 0; i <= p_textblock->i_count; ++i )
+    {
+        if( i == p_textblock->i_count || p_textblock->p_uchars[ i ] == '\n' )
         {
             if( i_paragraph_start == i )
             {
@@ -1449,80 +1753,64 @@ int LayoutText( filter_t *p_filter, line_desc_t **pp_lines,
                 continue;
             }
 
-            p_paragraph = NewParagraph( p_filter, i - i_paragraph_start,
-                                        psz_text + i_paragraph_start,
-                                        pp_styles + i_paragraph_start,
-                                        pi_k_dates ?
-                                        pi_k_dates + i_paragraph_start : 0,
-                                        20 );
+            paragraph_t *p_paragraph =
+                    BuildParagraph( p_filter,
+                                    i - i_paragraph_start,
+                                    &p_textblock->p_uchars[i_paragraph_start],
+                                    &p_textblock->pp_styles[i_paragraph_start],
+                                    p_textblock->pp_ruby ?
+                                    &p_textblock->pp_ruby[i_paragraph_start] : NULL,
+                                    20, &i_max_advance_x );
             if( !p_paragraph )
             {
                 if( p_first_line ) FreeLines( p_first_line );
                 return VLC_ENOMEM;
             }
 
-#ifdef HAVE_FRIBIDI
-            if( AnalyzeParagraph( p_paragraph ) )
-                goto error;
-#endif
-
-            if( ItemizeParagraph( p_filter, p_paragraph ) )
-                goto error;
-
-#if defined HAVE_HARFBUZZ
-            if( ShapeParagraphHarfBuzz( p_filter, &p_paragraph ) )
-                goto error;
-
-            if( LoadGlyphs( p_filter, p_paragraph, true, false, &i_max_advance_x ) )
-                goto error;
-
-#elif defined HAVE_FRIBIDI
-            if( ShapeParagraphFriBidi( p_filter, p_paragraph ) )
-                goto error;
-            if( LoadGlyphs( p_filter, p_paragraph, false, true, &i_max_advance_x ) )
-                goto error;
-            if( RemoveZeroWidthCharacters( p_paragraph ) )
-                goto error;
-            if( ZeroNsmAdvance( p_paragraph ) )
-                goto error;
-#else
-            if( LoadGlyphs( p_filter, p_paragraph, false, true, &i_max_advance_x ) )
-                goto error;
-#endif
-
-            /*
-             * Set max line width to allow for outline and shadow glyphs,
-             * and any extra width caused by visual reordering
-             */
-            int i_max_width = ( int ) p_filter->fmt_out.video.i_visible_width - i_max_advance_x;
-
-            if( i_max_width <= 0 )
+            if( LayoutParagraph( p_filter, p_paragraph,
+                                 p_textblock->i_max_width,
+                                 i_max_advance_x,
+                                 p_textblock->b_grid, p_textblock->b_balanced,
+                                 pp_line ) )
             {
-                msg_Err( p_filter, "LayoutText(): Invalid max width" );
-                goto error;
+                FreeParagraph( p_paragraph );
+                if( p_first_line ) FreeLines( p_first_line );
+                return VLC_EGENERIC;
             }
 
-            if( LayoutParagraph( p_filter, p_paragraph,
-                                 i_max_width, pp_line, b_grid ) )
-                goto error;
-
             FreeParagraph( p_paragraph );
-            p_paragraph = 0;
 
-            for( ; *pp_line; pp_line = &( *pp_line )->p_next )
-                i_max_height = __MAX( i_max_height, ( *pp_line )->i_height );
-
+            for( ; *pp_line; pp_line = &(*pp_line)->p_next )
+            {
+                /* only cut at max i_max_height + 1 line due to
+                 * approximate font sizing vs region size */
+                if( p_textblock->i_max_height > 0 && i_total_height > p_textblock->i_max_height )
+                {
+                    i_total_height = p_textblock->i_max_height + 1;
+                    line_desc_t *p_todelete = *pp_line;
+                    while( p_todelete ) /* Drop extra lines */
+                    {
+                        line_desc_t *p_next = p_todelete->p_next;
+                        FreeLine( p_todelete );
+                        p_todelete = p_next;
+                    }
+                    *pp_line = NULL;
+                    i = p_textblock->i_count + 1; /* force no more paragraphs */
+                    break; /* ! no p_next ! */
+                }
+                else if( (*pp_line)->i_height > i_max_face_height )
+                {
+                    i_max_face_height = (*pp_line)->i_height;
+                }
+                i_total_height += (*pp_line)->i_height;
+            }
             i_paragraph_start = i + 1;
         }
     }
 
     int i_base_line = 0;
-    FT_BBox bbox = {
-        .xMin = INT_MAX,
-        .yMin = INT_MAX,
-        .xMax = INT_MIN,
-        .yMax = INT_MIN
-    };
+    FT_BBox bbox;
+    BBoxInit( &bbox );
 
     for( line_desc_t *p_line = p_first_line; p_line; p_line = p_line->p_next )
     {
@@ -1531,17 +1819,12 @@ int LayoutText( filter_t *p_filter, line_desc_t **pp_lines,
         p_line->bbox.yMax -= i_base_line;
         BBoxEnlarge( &bbox, &p_line->bbox );
 
-        i_base_line += i_max_height;
+        i_base_line += i_max_face_height;
     }
 
+    *pi_max_face_height = i_max_face_height;
     *pp_lines = p_first_line;
     *p_bbox = bbox;
-    *pi_max_face_height = i_max_height;
     return VLC_SUCCESS;
-
-error:
-    if( p_first_line ) FreeLines( p_first_line );
-    if( p_paragraph ) FreeParagraph( p_paragraph );
-    return VLC_EGENERIC;
 }
 

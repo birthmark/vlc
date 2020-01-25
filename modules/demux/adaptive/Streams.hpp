@@ -22,7 +22,7 @@
 
 #include <vlc_common.h>
 #include "StreamFormat.hpp"
-#include "ChunksSource.hpp"
+#include "AbstractSource.hpp"
 #include "SegmentTracker.hpp"
 
 #include "plumbing/CommandsQueue.hpp"
@@ -49,9 +49,10 @@ namespace adaptive
     using namespace http;
     using namespace playlist;
 
-    class AbstractStream : public ChunksSource,
+    class AbstractStream : public AbstractSource,
                            public ExtraFMTInfoInterface,
-                           public SegmentTrackerListenerInterface
+                           public SegmentTrackerListenerInterface,
+                           public DemuxerFactoryInterface
     {
     public:
         AbstractStream(demux_t *);
@@ -60,15 +61,14 @@ namespace adaptive
 
         void setLanguage(const std::string &);
         void setDescription(const std::string &);
-        mtime_t getPCR() const;
-        mtime_t getMinAheadTime() const;
-        mtime_t getFirstDTS() const;
+        vlc_tick_t getPCR() const;
+        vlc_tick_t getMinAheadTime() const;
+        vlc_tick_t getFirstDTS() const;
         int esCount() const;
         bool isSelected() const;
-        bool canActivate() const;
-        virtual bool reactivate(mtime_t);
-        void setDisabled(bool);
+        virtual bool reactivate(vlc_tick_t);
         bool isDisabled() const;
+        bool isValid() const;
         typedef enum {
             status_eof = 0, /* prioritized */
             status_discontinuity,
@@ -82,25 +82,31 @@ namespace adaptive
             buffering_ongoing,
             buffering_lessthanmin,
         } buffering_status;
-        buffering_status bufferize(mtime_t, unsigned, unsigned);
+        buffering_status bufferize(vlc_tick_t, vlc_tick_t, vlc_tick_t);
         buffering_status getLastBufferStatus() const;
-        mtime_t getDemuxedAmount() const;
-        status dequeue(mtime_t, mtime_t *);
-        bool drain();
-        virtual bool setPosition(mtime_t, bool);
-        mtime_t getPlaybackTime() const;
+        vlc_tick_t getDemuxedAmount() const;
+        status dequeue(vlc_tick_t, vlc_tick_t *);
+        bool decodersDrained();
+        virtual bool setPosition(vlc_tick_t, bool);
+        bool getMediaPlaybackTimes(vlc_tick_t *, vlc_tick_t *, vlc_tick_t *,
+                                   vlc_tick_t *, vlc_tick_t *) const;
         void runUpdates();
 
+        /* Used by demuxers fake streams */
+        virtual std::string getContentType(); /* impl */
         virtual block_t *readNextBlock(); /* impl */
 
+        /**/
         virtual void fillExtraFMTInfo( es_format_t * ) const; /* impl */
         virtual void trackerEvent(const SegmentTrackerEvent &); /* impl */
 
     protected:
         bool seekAble() const;
-        virtual void setTimeOffset(mtime_t);
+        void setDisabled(bool);
         virtual block_t *checkBlock(block_t *, bool) = 0;
-        virtual AbstractDemuxer * createDemux(const StreamFormat &) = 0;
+        AbstractDemuxer * createDemux(const StreamFormat &);
+        virtual AbstractDemuxer * newDemux(vlc_object_t *, const StreamFormat &,
+                                           es_out_t *, AbstractSourceStream *) const; /* impl */
         virtual bool startDemux();
         virtual bool restartDemux();
 
@@ -109,6 +115,7 @@ namespace adaptive
         bool discontinuity;
         bool needrestart;
         bool inrestart;
+        bool demuxfirstchunk;
 
         demux_t *p_realdemux;
         StreamFormat format;
@@ -121,17 +128,20 @@ namespace adaptive
         std::string language;
         std::string description;
 
-        CommandsQueue *commandsqueue;
         AbstractDemuxer *demuxer;
         AbstractSourceStream *demuxersource;
+        FakeESOut::LockedFakeEsOut fakeEsOut();
+        FakeESOut::LockedFakeEsOut fakeEsOut() const;
         FakeESOut *fakeesout; /* to intercept/proxy what is sent from demuxstream */
-        vlc_mutex_t lock; /* lock for everything accessed by dequeuing */
+        mutable vlc_mutex_t lock; /* lock for everything accessed by dequeuing */
 
     private:
-        buffering_status doBufferize(mtime_t, unsigned, unsigned);
+        void declaredCodecs();
+        buffering_status doBufferize(vlc_tick_t, vlc_tick_t, vlc_tick_t);
         buffering_status last_buffer_status;
-        bool dead;
+        bool valid;
         bool disabled;
+        unsigned notfound_sequence;
     };
 
     class AbstractStreamFactory

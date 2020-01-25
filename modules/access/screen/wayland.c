@@ -41,7 +41,7 @@
 #include <vlc_fs.h>
 #include <vlc_plugin.h>
 
-struct demux_sys_t
+typedef struct
 {
     struct wl_display *display;
     struct wl_output *output;
@@ -59,10 +59,10 @@ struct demux_sys_t
     int32_t height; /*< Actual height */
 
     bool done;
-    mtime_t start;
+    vlc_tick_t start;
 
     vlc_thread_t thread;
-};
+} demux_sys_t;
 
 static bool DisplayError(vlc_object_t *obj, struct wl_display *display)
 {
@@ -253,8 +253,8 @@ static void *Thread(void *data)
         {
             block_t *block = Shoot(demux);
 
-            block->i_pts = block->i_dts = mdate();
-            es_out_Control(demux->out, ES_OUT_SET_PCR, block->i_pts);
+            block->i_pts = block->i_dts = vlc_tick_now();
+            es_out_SetPCR(demux->out, block->i_pts);
             es_out_Send(demux->out, sys->es, block);
         }
 
@@ -285,11 +285,11 @@ static int Control(demux_t *demux, int query, va_list args)
             break;
 
         case DEMUX_GET_LENGTH:
-            *va_arg(args, int64_t *) = 0;
+            *va_arg(args, vlc_tick_t *) = 0;
             break;
 
         case DEMUX_GET_TIME:
-            *va_arg(args, int64_t *) = mdate() - sys->start;
+            *va_arg(args, vlc_tick_t *) = vlc_tick_now() - sys->start;
             break;
 
         case DEMUX_GET_FPS:
@@ -303,8 +303,8 @@ static int Control(demux_t *demux, int query, va_list args)
         //    break;
 
         case DEMUX_GET_PTS_DELAY:
-            *va_arg(args, int64_t *) = INT64_C(1000)
-                * var_InheritInteger(demux, "live-caching");
+            *va_arg(args, vlc_tick_t *) = VLC_TICK_FROM_MS(
+                var_InheritInteger(demux, "live-caching") );
             break;
 
         case DEMUX_CAN_CONTROL_PACE:
@@ -358,6 +358,9 @@ static const struct wl_registry_listener registry_cbs =
 static int Open(vlc_object_t *obj)
 {
     demux_t *demux = (demux_t *)obj;
+    if (demux->out == NULL)
+        return VLC_EGENERIC;
+
     demux_sys_t *sys = malloc(sizeof (*sys));
     if (unlikely(sys == NULL))
         return VLC_ENOMEM;
@@ -413,7 +416,7 @@ static int Open(vlc_object_t *obj)
         goto error;
 
     /* Initializes demux */
-    sys->start = mdate();
+    sys->start = vlc_tick_now();
 
     if (vlc_clone(&sys->thread, Thread, demux, VLC_THREAD_PRIORITY_INPUT))
         goto error;
@@ -474,7 +477,7 @@ vlc_module_begin ()
     set_description (N_("Screen capture (with Wayland)"))
     set_category (CAT_INPUT)
     set_subcategory (SUBCAT_INPUT_ACCESS)
-    set_capability ("access_demux", 0)
+    set_capability ("access", 0)
     set_callbacks (Open, Close)
 
     /* XXX: VLC core does not support multiple configuration items with the

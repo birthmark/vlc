@@ -40,16 +40,16 @@ static void Close(vlc_object_t *);
 vlc_module_begin ()
     set_description(N_("SCTE-18 decoder"))
     set_shortname(N_("SCTE-18"))
-    set_capability( "decoder", 51)
+    set_capability( "spu decoder", 51)
     set_category(CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_SCODEC)
     set_callbacks(Open, Close)
 vlc_module_end ()
 
-struct decoder_sys_t
+typedef struct
 {
     atsc_a65_handle_t *p_handle;
-};
+} decoder_sys_t;
 
 //#define GPS_UTC_EPOCH_OFFSET 315964800
 //#define GPS_CUR_UTC_LEAP_OFFSET  16 /* 1 Jul 2015 */
@@ -169,29 +169,30 @@ error:
     return NULL;
 }
 
-static subpicture_t *Decode( decoder_t *p_dec, block_t **pp_block )
+static int Decode( decoder_t *p_dec, block_t *p_block )
 {
-    if ( pp_block == NULL || *pp_block == NULL )
-        return NULL;
-    block_t *p_block = *pp_block; *pp_block = NULL;
-    subpicture_t  *p_spu = NULL;
+    if ( p_block == NULL ) /* No Drain */
+        return VLCDEC_SUCCESS;
+    subpicture_t *p_spu = NULL;
 
     if (p_block->i_flags & (BLOCK_FLAG_CORRUPTED))
         goto exit;
 
-    scte18_cea_t *p_cea = scte18_cea_Decode( p_dec->p_sys->p_handle, p_block );
+    decoder_sys_t *p_sys = p_dec->p_sys;
+
+    scte18_cea_t *p_cea = scte18_cea_Decode( p_sys->p_handle, p_block );
     if( p_cea )
     {
         p_spu = decoder_NewSubpictureText( p_dec );
         if( p_spu )
         {
-            subpicture_updater_sys_t *p_spu_sys = p_spu->updater.p_sys;
+            subtext_updater_sys_t *p_spu_sys = p_spu->updater.p_sys;
 
             p_spu->i_start = p_block->i_pts;
             if( p_cea->alert_message_time_remaining )
-                p_spu->i_stop = p_spu->i_start + CLOCK_FREQ * p_cea->alert_message_time_remaining;
+                p_spu->i_stop = p_spu->i_start + vlc_tick_from_sec( p_cea->alert_message_time_remaining );
             else
-                p_spu->i_stop = VLC_TS_INVALID;
+                p_spu->i_stop = VLC_TICK_INVALID;
 
             p_spu->b_ephemer  = true;
             p_spu->b_absolute = false;
@@ -206,6 +207,7 @@ static subpicture_t *Decode( decoder_t *p_dec, block_t **pp_block )
             p_spu_sys->p_default_style->i_features |= STYLE_HAS_FONT_COLOR;
 
             p_spu_sys->region.p_segments = text_segment_New( p_cea->psz_alert_text );
+            decoder_QueueSub( p_dec, p_spu );
         }
         msg_Info( p_dec, "Received %s", p_cea->psz_alert_text );
         scte18_cea_Free( p_cea );
@@ -213,7 +215,7 @@ static subpicture_t *Decode( decoder_t *p_dec, block_t **pp_block )
 
 exit:
     block_Release( p_block );
-    return p_spu;
+    return VLCDEC_SUCCESS;
 }
 
 static int Open( vlc_object_t *object )
@@ -235,8 +237,8 @@ static int Open( vlc_object_t *object )
     }
 
     dec->p_sys = p_sys;
-    dec->pf_decode_sub = Decode;
-    es_format_Init( &dec->fmt_out, SPU_ES, 0 );
+    dec->pf_decode = Decode;
+    dec->fmt_out.i_codec = 0;
 
     return VLC_SUCCESS;
 }

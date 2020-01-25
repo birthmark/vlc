@@ -2,7 +2,6 @@
  * darwinvlc.m: OS X specific main executable for VLC media player
  *****************************************************************************
  * Copyright (C) 2013-2015 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Felix Paul Kühne <fkuehne at videolan dot org>
  *          David Fuhrmann <dfuhrmann at videolan dot org>
@@ -27,6 +26,9 @@
 #endif
 
 #include <vlc/vlc.h>
+#include <vlc_common.h>
+#include <vlc_charset.h>
+
 #include <stdlib.h>
 #include <locale.h>
 #include <signal.h>
@@ -34,6 +36,10 @@
 
 #import <CoreFoundation/CoreFoundation.h>
 #import <Cocoa/Cocoa.h>
+
+#ifdef HAVE_BREAKPAD
+#import <Breakpad/Breakpad.h>
+#endif
 
 
 /**
@@ -75,6 +81,36 @@ static void vlc_terminate(void *data)
     });
 }
 
+#ifdef HAVE_BREAKPAD
+BreakpadRef initBreakpad()
+{
+    BreakpadRef bp = nil;
+
+    /* Create caches directory in case it does not exist */
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    NSString *cachePath = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *bundleName = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleIdentifier"];
+    NSString *cacheAppPath = [cachePath stringByAppendingPathComponent:bundleName];
+    if (![fileManager fileExistsAtPath:cacheAppPath]) {
+        [fileManager createDirectoryAtPath:cacheAppPath withIntermediateDirectories:NO attributes:nil error:nil];
+    }
+
+    /* Get Info.plist config */
+    NSMutableDictionary *breakpad_config = [[[NSBundle mainBundle] infoDictionary] mutableCopy];
+
+    /* Use in-process reporting */
+    [breakpad_config setObject:[NSNumber numberWithBool:YES]
+                        forKey:@BREAKPAD_IN_PROCESS];
+
+    /* Set dump location */
+    [breakpad_config setObject:cacheAppPath
+                        forKey:@BREAKPAD_DUMP_DIRECTORY];
+
+    bp = BreakpadCreate(breakpad_config);
+    return bp;
+}
+#endif
+
 /*****************************************************************************
  * main: parse command line, start interface and spawn threads.
  *****************************************************************************/
@@ -96,6 +132,7 @@ int main(int i_argc, const char *ppsz_argv[])
 #ifdef TOP_BUILDDIR
     setenv("VLC_PLUGIN_PATH", TOP_BUILDDIR"/modules", 1);
     setenv("VLC_DATA_PATH", TOP_SRCDIR"/share", 1);
+    setenv("VLC_LIB_PATH", TOP_BUILDDIR"/modules", 1);
 #endif
 
 #ifndef ALLOW_RUN_AS_ROOT
@@ -210,24 +247,20 @@ int main(int i_argc, const char *ppsz_argv[])
         language = (CFStringRef)CFPreferencesCopyAppValue(CFSTR("language"),
                                                           kCFPreferencesCurrentApplication);
         if (language) {
-            CFIndex length = CFStringGetLength(language) + 1;
-            if (length > 0) {
-                CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8);
-                lang = (char *)malloc(maxSize);
-                CFStringGetCString(language, lang, maxSize - 1, kCFStringEncodingUTF8);
-            }
+            lang = FromCFString(language, kCFStringEncodingUTF8);
             if (strncmp( lang, "auto", 4 )) {
                 char tmp[11];
                 snprintf(tmp, 11, "LANG=%s", lang);
                 putenv(tmp);
             }
+            free(lang);
             CFRelease(language);
         }
     }
 
     ppsz_argv++; i_argc--; /* skip executable path */
 
-    /* When VLC.app is run by double clicking in Mac OS X, the 2nd arg
+    /* When VLC.app is run by double clicking in Mac OS X < 10.9, the 2nd arg
      * is the PSN - process serial number (a unique PID-ish thingie)
      * still ok for real Darwin & when run from command line
      * for example -psn_0_9306113 */
@@ -250,15 +283,21 @@ int main(int i_argc, const char *ppsz_argv[])
 
     libvlc_add_intf(vlc, "hotkeys,none");
 
-    if (libvlc_add_intf(vlc, NULL))
+    if (libvlc_add_intf(vlc, NULL)) {
+        fprintf(stderr, "VLC cannot start any interface. Exiting.\n");
         goto out;
-    libvlc_playlist_play(vlc, -1, 0, NULL);
+    }
+    libvlc_playlist_play(vlc);
 
     /*
      * Run the main loop. If the mac interface is not initialized, only the CoreFoundation
      * runloop is used. Otherwise, [NSApp run] needs to be called, which setups more stuff
      * before actually starting the loop.
      */
+#ifdef HAVE_BREAKPAD
+    BreakpadRef breakpad;
+    breakpad = initBreakpad();
+#endif
     @autoreleasepool {
         if(NSApp == nil) {
             CFRunLoopRun();
@@ -276,6 +315,10 @@ out:
     dispatch_release(sigChldSource);
 
     libvlc_release(vlc);
+
+#ifdef HAVE_BREAKPAD
+    BreakpadRelease(breakpad);
+#endif
 
     return ret;
 }

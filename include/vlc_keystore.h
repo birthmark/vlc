@@ -37,6 +37,7 @@ libvlc_InternalKeystoreClean(libvlc_int_t *p_libvlc);
 
 /**
  * @defgroup keystore Keystore and credential API
+ * @ingroup os
  * @{
  * @file
  * This file declares vlc keystore API
@@ -117,7 +118,7 @@ vlc_keystore_store(vlc_keystore *p_keystore,
 
 /**
  * Find all entries that match a set of key/values
- * 
+ *
  * @param ppsz_values set of key/values, see vlc_keystore_key, any values can
  * be NULL
  * @param pp_entries list of found entries. To be released with
@@ -293,7 +294,7 @@ vlc_keystore_release_entry(vlc_keystore_entry *p_entry)
 typedef struct vlc_keystore_sys vlc_keystore_sys;
 struct vlc_keystore
 {
-    VLC_COMMON_MEMBERS
+    struct vlc_object_t obj;
     module_t            *p_module;
     vlc_keystore_sys    *p_sys;
 

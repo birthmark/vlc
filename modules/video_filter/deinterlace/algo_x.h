@@ -2,7 +2,6 @@
  * algo_x.h : "X" algorithm for vlc deinterlacer
  *****************************************************************************
  * Copyright (C) 2000-2011 VLC authors and VideoLAN
- * $Id$
  *
  * Author: Laurent Aimar <fenrir@videolan.org>
  *
@@ -50,6 +49,6 @@ struct picture_t;
  * @param[out] p_outpic Output frame. Must be allocated by caller.
  * @see Deinterlace()
  */
-void RenderX( picture_t *p_outpic, picture_t *p_pic );
+int RenderX( filter_t *, picture_t *p_outpic, picture_t *p_pic );
 
 #endif

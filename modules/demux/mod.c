@@ -2,7 +2,6 @@
  * mod.c: MOD file demuxer (using libmodplug)
  *****************************************************************************
  * Copyright (C) 2004-2009 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  * Konstanty Bialkowski <konstanty@ieee.org>
@@ -57,7 +56,7 @@ static void Close  ( vlc_object_t * );
 #define REVERB_LEVEL_LONGTEXT N_( "Reverberation level (from 0 " \
                 "to 100, default value is 0)." )
 #define REVERB_DELAY_LONGTEXT N_("Reverberation delay, in ms." \
-                " Usual values are from to 40 to 200ms." )
+                " Usual values are from 40 to 200ms." )
 #define MEGABASS_LONGTEXT N_( "Enable megabass mode" )
 #define MEGABASS_LEVEL_LONGTEXT N_("Megabass mode level (from 0 to 100, " \
                 "default value is 0)." )
@@ -109,18 +108,18 @@ vlc_module_end ()
  *****************************************************************************/
 static vlc_mutex_t libmodplug_lock = VLC_STATIC_MUTEX;
 
-struct demux_sys_t
+typedef struct
 {
     es_format_t  fmt;
     es_out_id_t *es;
 
     date_t      pts;
-    int64_t     i_length;
+    vlc_tick_t  i_length;
 
     int         i_data;
     uint8_t     *p_data;
     ModPlugFile *f;
-};
+} demux_sys_t;
 
 static int Demux  ( demux_t *p_demux );
 static int Control( demux_t *p_demux, int i_query, va_list args );
@@ -143,7 +142,7 @@ static int Open( vlc_object_t *p_this )
     /* We accept file based on extension match */
     if( !p_demux->obj.force )
     {
-        const char *psz_ext = p_demux->psz_file ? strrchr( p_demux->psz_file, '.' )
+        const char *psz_ext = p_demux->psz_filepath ? strrchr( p_demux->psz_filepath, '.' )
                                                 : NULL;
         if( psz_ext )
             psz_ext++;
@@ -159,24 +158,21 @@ static int Open( vlc_object_t *p_this )
     if( i_size <= 0 || i_size >= MOD_MAX_FILE_SIZE )
         return VLC_EGENERIC;
 
-    /* Fill p_demux field */
-    p_demux->pf_demux = Demux;
-    p_demux->pf_control = Control;
-    p_demux->p_sys = p_sys = malloc( sizeof( *p_sys ) );
+    p_sys = vlc_obj_malloc( p_this, sizeof (*p_sys) );
     if( !p_sys )
         return VLC_ENOMEM;
 
     msg_Dbg( p_demux, "loading complete file (could be long)" );
     p_sys->i_data = i_size;
-    p_sys->p_data = malloc( p_sys->i_data );
-    if( p_sys->p_data )
-        p_sys->i_data = vlc_stream_Read( p_demux->s, p_sys->p_data,
-                                         p_sys->i_data );
-    if( p_sys->i_data <= 0 || !p_sys->p_data )
+    p_sys->p_data = vlc_obj_malloc( p_this, p_sys->i_data );
+    if( unlikely(p_sys->p_data == NULL) )
+        return VLC_ENOMEM;
+
+    p_sys->i_data = vlc_stream_Read( p_demux->s, p_sys->p_data,
+                                     p_sys->i_data );
+    if( p_sys->i_data <= 0 )
     {
         msg_Err( p_demux, "failed to read the complete file" );
-        free( p_sys->p_data );
-        free( p_sys );
         return VLC_EGENERIC;
     }
 
@@ -215,21 +211,17 @@ static int Open( vlc_object_t *p_this )
     if( !p_sys->f )
     {
         msg_Err( p_demux, "failed to understand the file" );
-        /* we try to seek to recover for other plugin */
-        vlc_stream_Seek( p_demux->s, 0 );
-        free( p_sys->p_data );
-        free( p_sys );
         return VLC_EGENERIC;
     }
 
     /* init time */
     date_Init( &p_sys->pts, settings.mFrequency, 1 );
-    date_Set( &p_sys->pts, 0 );
-    p_sys->i_length = ModPlug_GetLength( p_sys->f ) * INT64_C(1000);
+    date_Set( &p_sys->pts, VLC_TICK_0 );
+    p_sys->i_length = VLC_TICK_FROM_MS( ModPlug_GetLength( p_sys->f ) );
 
     msg_Dbg( p_demux, "MOD loaded name=%s length=%"PRId64"ms",
              ModPlug_GetName( p_sys->f ),
-             p_sys->i_length );
+             MS_FROM_VLC_TICK( p_sys->i_length ) );
 
 #ifdef WORDS_BIGENDIAN
     es_format_Init( &p_sys->fmt, AUDIO_ES, VLC_FOURCC( 't', 'w', 'o', 's' ) );
@@ -240,7 +232,13 @@ static int Open( vlc_object_t *p_this )
     p_sys->fmt.audio.i_channels = settings.mChannels;
     p_sys->fmt.audio.i_bitspersample = settings.mBits;
     p_sys->es = es_out_Add( p_demux->out, &p_sys->fmt );
+    if( unlikely(p_sys->es == NULL) )
+        return VLC_ENOMEM;
 
+    /* Fill p_demux field */
+    p_demux->pf_demux = Demux;
+    p_demux->pf_control = Control;
+    p_demux->p_sys = p_sys;
     return VLC_SUCCESS;
 }
 
@@ -253,10 +251,7 @@ static void Close( vlc_object_t *p_this )
     demux_sys_t *p_sys = p_demux->p_sys;
 
     ModPlug_Unload( p_sys->f );
-    free( p_sys->p_data );
-    free( p_sys );
 }
-
 
 /*****************************************************************************
  * Demux:
@@ -270,28 +265,23 @@ static int Demux( demux_t *p_demux )
 
     p_frame = block_Alloc( p_sys->fmt.audio.i_rate / 10 * i_bk );
     if( !p_frame )
-        return -1;
+        return VLC_DEMUXER_EGENERIC;
 
     const int i_read = ModPlug_Read( p_sys->f, p_frame->p_buffer, p_frame->i_buffer );
     if( i_read <= 0 )
     {
         /* EOF */
         block_Release( p_frame );
-        return 0;
+        return VLC_DEMUXER_EOF;
     }
     p_frame->i_buffer = i_read;
     p_frame->i_dts =
-    p_frame->i_pts = VLC_TS_0 + date_Get( &p_sys->pts );
+    p_frame->i_pts = date_Get( &p_sys->pts );
 
-    /* Set PCR */
-    es_out_Control( p_demux->out, ES_OUT_SET_PCR, p_frame->i_pts );
-
-    /* Send data */
+    es_out_SetPCR( p_demux->out, p_frame->i_pts );
     es_out_Send( p_demux->out, p_sys->es, p_frame );
-
     date_Increment( &p_sys->pts, i_read / i_bk );
-
-    return 1;
+    return VLC_DEMUXER_SUCCESS;
 }
 
 /*****************************************************************************
@@ -301,7 +291,8 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
 {
     demux_sys_t *p_sys = p_demux->p_sys;
     double f, *pf;
-    int64_t i64, *pi64;
+    vlc_tick_t i64;
+    vlc_tick_t *pi64;
 
     switch( i_query )
     {
@@ -310,10 +301,10 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
         return VLC_SUCCESS;
 
     case DEMUX_GET_POSITION:
-        pf = (double*) va_arg( args, double* );
+        pf = va_arg( args, double* );
         if( p_sys->i_length > 0 )
         {
-            double current = date_Get( &p_sys->pts );
+            double current = date_Get( &p_sys->pts ) - VLC_TICK_0;
             double length = p_sys->i_length;
             *pf = current / length;
             return VLC_SUCCESS;
@@ -321,35 +312,34 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
         return VLC_EGENERIC;
 
     case DEMUX_SET_POSITION:
-        f = (double) va_arg( args, double );
+        f = va_arg( args, double );
 
         i64 = f * p_sys->i_length;
         if( i64 >= 0 && i64 <= p_sys->i_length )
         {
-            ModPlug_Seek( p_sys->f, i64 / 1000 );
-            date_Set( &p_sys->pts, i64 );
+            ModPlug_Seek( p_sys->f, MS_FROM_VLC_TICK(i64) );
+            date_Set( &p_sys->pts, VLC_TICK_0 + i64 );
 
             return VLC_SUCCESS;
         }
         return VLC_EGENERIC;
 
     case DEMUX_GET_TIME:
-        pi64 = (int64_t*)va_arg( args, int64_t * );
-        *pi64 = date_Get( &p_sys->pts );
+        *va_arg( args, vlc_tick_t * ) = date_Get( &p_sys->pts );
         return VLC_SUCCESS;
 
     case DEMUX_GET_LENGTH:
-        pi64 = (int64_t*)va_arg( args, int64_t * );
+        pi64 = va_arg( args, vlc_tick_t * );
         *pi64 = p_sys->i_length;
         return VLC_SUCCESS;
 
     case DEMUX_SET_TIME:
-        i64 = (int64_t)va_arg( args, int64_t );
+        i64 = va_arg( args, vlc_tick_t );
 
-        if( i64 >= 0 && i64 <= p_sys->i_length )
+        if( likely(i64 >= 0) && i64 <= p_sys->i_length )
         {
-            ModPlug_Seek( p_sys->f, i64 / 1000 );
-            date_Set( &p_sys->pts, i64 );
+            ModPlug_Seek( p_sys->f, MS_FROM_VLC_TICK( i64 ) );
+            date_Set( &p_sys->pts, VLC_TICK_0 + i64 );
 
             return VLC_SUCCESS;
         }
@@ -357,13 +347,13 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
 
     case DEMUX_HAS_UNSUPPORTED_META:
     {
-        bool *pb_bool = (bool*)va_arg( args, bool* );
+        bool *pb_bool = va_arg( args, bool* );
         *pb_bool = false; /* FIXME I am not sure of this one */
         return VLC_SUCCESS;
     }
     case DEMUX_GET_META:
     {
-        vlc_meta_t *p_meta = (vlc_meta_t *)va_arg( args, vlc_meta_t* );
+        vlc_meta_t *p_meta = va_arg( args, vlc_meta_t * );
         unsigned i_num_samples = ModPlug_NumSamples( p_sys->f ),
                  i_num_instruments = ModPlug_NumInstruments( p_sys->f );
         unsigned i_num_patterns = ModPlug_NumPatterns( p_sys->f ),
@@ -430,8 +420,17 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
     }
 
     case DEMUX_GET_FPS: /* meaningless */
+        return VLC_EGENERIC;
+
+    case DEMUX_CAN_PAUSE:
+    case DEMUX_CAN_CONTROL_PACE:
+    case DEMUX_GET_PTS_DELAY:
+    case DEMUX_SET_PAUSE_STATE:
+        return demux_vaControlHelper( p_demux->s, 0, -1, 0, 1, i_query, args );
+
     default:
         return VLC_EGENERIC;
+
     }
 }
 
@@ -576,7 +575,7 @@ static int Validate( demux_t *p_demux, const char *psz_ext )
             const uint8_t *p_sample = &p_peek[20 + i*30];
 
             /* Check correct null padding */
-            const uint8_t *p = memchr( &p_sample[0], '\0', 22 );
+            p = memchr( &p_sample[0], '\0', 22 );
             if( p )
             {
                 for( ; p < &p_sample[22]; p++ )

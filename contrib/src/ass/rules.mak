@@ -1,5 +1,5 @@
 # ASS
-ASS_VERSION := 0.13.4
+ASS_VERSION := 0.14.0
 ASS_URL := https://github.com/libass/libass/releases/download/$(ASS_VERSION)/libass-$(ASS_VERSION).tar.gz
 
 PKGS += ass
@@ -14,18 +14,19 @@ ifeq ($(ANDROID_ABI), x86)
 WITH_ASS_ASM = 0
 endif
 else
-ifdef HAVE_TIZEN
-WITH_FONTCONFIG = 0
-WITH_HARFBUZZ = 0
-else
 ifdef HAVE_DARWIN_OS
 WITH_FONTCONFIG = 0
 WITH_HARFBUZZ = 1
 else
-ifdef HAVE_WINSTORE
+ifdef HAVE_WIN32
 WITH_FONTCONFIG = 0
 WITH_HARFBUZZ = 1
 WITH_DWRITE = 1
+else
+ifdef HAVE_NACL
+WITH_FONTCONFIG = 1
+WITH_HARFBUZZ = 1
+WITH_ASS_ASM = 0
 else
 WITH_FONTCONFIG = 1
 WITH_HARFBUZZ = 1
@@ -42,8 +43,10 @@ $(TARBALLS)/libass-$(ASS_VERSION).tar.gz:
 libass: libass-$(ASS_VERSION).tar.gz .sum-ass
 	$(UNPACK)
 	$(APPLY) $(SRC)/ass/ass-macosx.patch
+	$(APPLY) $(SRC)/ass/coretext-errorhandling.patch
 ifdef HAVE_WIN32
 	$(APPLY) $(SRC)/ass/use-topendir.patch
+	$(APPLY) $(SRC)/ass/libass-no-tchar.patch
 ifdef HAVE_WINSTORE
 	$(APPLY) $(SRC)/ass/dwrite.patch
 endif
@@ -51,7 +54,7 @@ endif
 	$(UPDATE_AUTOCONFIG)
 	$(MOVE)
 
-DEPS_ass = freetype2 $(DEPS_freetype2) fribidi
+DEPS_ass = freetype2 $(DEPS_freetype2) fribidi iconv $(DEPS_iconv)
 
 ifneq ($(WITH_FONTCONFIG), 0)
 DEPS_ass += fontconfig $(DEPS_fontconfig)

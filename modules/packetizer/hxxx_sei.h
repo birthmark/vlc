@@ -25,7 +25,10 @@ enum hxxx_sei_type_e
 {
     HXXX_SEI_PIC_TIMING = 1,
     HXXX_SEI_USER_DATA_REGISTERED_ITU_T_T35 = 4,
-    HXXX_SEI_RECOVERY_POINT = 6
+    HXXX_SEI_RECOVERY_POINT = 6,
+    HXXX_SEI_FRAME_PACKING_ARRANGEMENT = 45,
+    HXXX_SEI_MASTERING_DISPLAY_COLOUR_VOLUME = 137, /* SMPTE ST 2086 */
+    HXXX_SEI_CONTENT_LIGHT_LEVEL = 144,
 };
 
 enum hxxx_sei_t35_type_e
@@ -53,8 +56,39 @@ typedef struct
         } itu_t35;
         struct
         {
+            enum
+            {
+                FRAME_PACKING_CANCEL = -1,
+                FRAME_PACKING_INTERLEAVED_CHECKERBOARD = 0,
+                FRAME_PACKING_INTERLEAVED_COLUMN,
+                FRAME_PACKING_INTERLEAVED_ROW,
+                FRAME_PACKING_SIDE_BY_SIDE,
+                FRAME_PACKING_TOP_BOTTOM,
+                FRAME_PACKING_TEMPORAL,
+                FRAME_PACKING_NONE_2D,
+                FRAME_PACKING_TILED,
+            } type;
+            bool b_flipped;
+            bool b_left_first;
+            bool b_fields;
+            bool b_frame0;
+        } frame_packing;
+        struct
+        {
             int i_frames;
         } recovery;
+        struct
+        {
+            uint16_t primaries[3*2]; /* G,B,R / x,y */
+            uint16_t white_point[2]; /* x,y */
+            uint32_t max_luminance;
+            uint32_t min_luminance;
+        } colour_volume; /* SMPTE ST 2086 */
+        struct
+        {
+            uint16_t MaxCLL;
+            uint16_t MaxFALL;
+        } content_light_lvl; /* CTA-861.3 */
     };
 } hxxx_sei_data_t;
 

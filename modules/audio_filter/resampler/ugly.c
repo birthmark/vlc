@@ -2,7 +2,6 @@
  * ugly.c : zero-order hold "ugly" resampler
  *****************************************************************************
  * Copyright (C) 2002, 2006 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Samuel Hocevar <sam@zoy.org>
  *
@@ -50,11 +49,11 @@ vlc_module_begin ()
     set_capability( "audio converter", 2 )
     set_category( CAT_AUDIO )
     set_subcategory( SUBCAT_AUDIO_RESAMPLER )
-    set_callbacks( Create, NULL )
+    set_callback( Create )
 
     add_submodule()
     set_capability( "audio resampler", 2 )
-    set_callbacks( CreateResampler, NULL )
+    set_callback( CreateResampler )
 vlc_module_end ()
 
 /*****************************************************************************
@@ -74,10 +73,7 @@ static int CreateResampler( vlc_object_t *p_this )
     filter_t * p_filter = (filter_t *)p_this;
 
     if( p_filter->fmt_in.audio.i_format != p_filter->fmt_out.audio.i_format
-     || p_filter->fmt_in.audio.i_physical_channels
-                                 != p_filter->fmt_out.audio.i_physical_channels
-     || p_filter->fmt_in.audio.i_original_channels
-                                 != p_filter->fmt_out.audio.i_original_channels
+     || p_filter->fmt_in.audio.i_channels != p_filter->fmt_out.audio.i_channels
      || !AOUT_FMT_LINEAR( &p_filter->fmt_in.audio ) )
         return VLC_EGENERIC;
 
@@ -114,8 +110,7 @@ static block_t *DoWork( filter_t * p_filter, block_t * p_in_buf )
     p_out_buf->i_nb_samples = i_out_nb;
     p_out_buf->i_buffer = i_out_nb * framesize;
     p_out_buf->i_pts = p_in_buf->i_pts;
-    p_out_buf->i_length = p_out_buf->i_nb_samples *
-        1000000 / p_filter->fmt_out.audio.i_rate;
+    p_out_buf->i_length = vlc_tick_from_samples(p_out_buf->i_nb_samples, p_filter->fmt_out.audio.i_rate);
 
     while( i_out_nb )
     {

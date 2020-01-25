@@ -53,8 +53,9 @@ typedef struct vlc_gl_sys_t
 #endif
 #if defined (USE_PLATFORM_WAYLAND)
     struct wl_egl_window *window;
-    unsigned width, height;
 #endif
+    PFNEGLCREATEIMAGEKHRPROC    eglCreateImageKHR;
+    PFNEGLDESTROYIMAGEKHRPROC   eglDestroyImageKHR;
 } vlc_gl_sys_t;
 
 static int MakeCurrent (vlc_gl_t *gl)
@@ -80,11 +81,7 @@ static void Resize (vlc_gl_t *gl, unsigned width, unsigned height)
 {
     vlc_gl_sys_t *sys = gl->sys;
 
-    wl_egl_window_resize(sys->window, width, height,
-                         (sys->width - width) / 2,
-                         (sys->height - height) / 2);
-    sys->width = width;
-    sys->height = height;
+    wl_egl_window_resize(sys->window, width, height, 0, 0);
 }
 #else
 # define Resize (NULL)
@@ -103,33 +100,39 @@ static void *GetSymbol(vlc_gl_t *gl, const char *procname)
     return (void *)eglGetProcAddress (procname);
 }
 
-static bool CheckToken(const char *haystack, const char *needle)
+static const char *QueryString(vlc_gl_t *gl, int32_t name)
 {
-    size_t len = strlen(needle);
+    vlc_gl_sys_t *sys = gl->sys;
 
-    while (haystack != NULL)
-    {
-        while (*haystack == ' ')
-            haystack++;
-        if (!strncmp(haystack, needle, len)
-         && (memchr(" ", haystack[len], 2) != NULL))
-            return true;
+    return eglQueryString(sys->display, name);
+}
 
-        haystack = strchr(haystack, ' ');
-    }
-    return false;
+static void *CreateImageKHR(vlc_gl_t *gl, unsigned target, void *buffer,
+                            const int32_t *attrib_list)
+{
+    vlc_gl_sys_t *sys = gl->sys;
+
+    return sys->eglCreateImageKHR(sys->display, NULL, target, buffer,
+                                  attrib_list);
+}
+
+static bool DestroyImageKHR(vlc_gl_t *gl, void *image)
+{
+    vlc_gl_sys_t *sys = gl->sys;
+
+    return sys->eglDestroyImageKHR(sys->display, image);
 }
 
 static bool CheckAPI (EGLDisplay dpy, const char *api)
 {
     const char *apis = eglQueryString (dpy, EGL_CLIENT_APIS);
-    return CheckToken(apis, api);
+    return vlc_gl_StrHasToken(apis, api);
 }
 
 static bool CheckClientExt(const char *name)
 {
     const char *exts = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
-    return CheckToken(exts, name);
+    return vlc_gl_StrHasToken(exts, name);
 }
 
 struct gl_api
@@ -172,13 +175,14 @@ static EGLSurface CreateWindowSurface(EGLDisplay dpy, EGLConfig config,
     return eglCreateWindowSurface(dpy, config, *native, attrs);
 }
 
-static void Close (vlc_object_t *obj)
+static void Close(vlc_gl_t *gl)
 {
-    vlc_gl_t *gl = (vlc_gl_t *)obj;
     vlc_gl_sys_t *sys = gl->sys;
 
     if (sys->display != EGL_NO_DISPLAY)
     {
+        if (sys->context != EGL_NO_CONTEXT)
+            eglDestroyContext(sys->display, sys->context);
         if (sys->surface != EGL_NO_SURFACE)
             eglDestroySurface(sys->display, sys->surface);
         eglTerminate(sys->display);
@@ -201,9 +205,10 @@ static void Close (vlc_object_t *obj)
 /**
  * Probe EGL display availability
  */
-static int Open (vlc_object_t *obj, const struct gl_api *api)
+static int Open(vlc_gl_t *gl, const struct gl_api *api,
+                unsigned width, unsigned height)
 {
-    vlc_gl_t *gl = (vlc_gl_t *)obj;
+    vlc_object_t *obj = VLC_OBJECT(gl);
     vlc_gl_sys_t *sys = malloc(sizeof (*sys));
     if (unlikely(sys == NULL))
         return VLC_ENOMEM;
@@ -211,6 +216,9 @@ static int Open (vlc_object_t *obj, const struct gl_api *api)
     gl->sys = sys;
     sys->display = EGL_NO_DISPLAY;
     sys->surface = EGL_NO_SURFACE;
+    sys->context = EGL_NO_CONTEXT;
+    sys->eglCreateImageKHR = NULL;
+    sys->eglDestroyImageKHR = NULL;
 
     vout_window_t *wnd = gl->surface;
     EGLSurface (*createSurface)(EGLDisplay, EGLConfig, void *, const EGLint *)
@@ -254,6 +262,7 @@ static int Open (vlc_object_t *obj, const struct gl_api *api)
             sys->display = eglGetDisplay(sys->x11);
 # endif
     }
+    (void) width; (void) height;
 
 #elif defined (USE_PLATFORM_WAYLAND)
     sys->window = NULL;
@@ -265,8 +274,7 @@ static int Open (vlc_object_t *obj, const struct gl_api *api)
     if (!CheckClientExt("EGL_EXT_platform_wayland"))
         goto error;
 
-    /* Resize() should be called with the proper size before Swap() */
-    window = wl_egl_window_create(wnd->handle.wl, 1, 1);
+    window = wl_egl_window_create(wnd->handle.wl, width, height);
     if (window == NULL)
         goto error;
     sys->window = window;
@@ -286,6 +294,7 @@ static int Open (vlc_object_t *obj, const struct gl_api *api)
   && !defined (__CYGWIN__) && !defined (__SCITECH_SNAP__)
     sys->display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
 # endif
+    (void) width; (void) height;
 
 #elif defined (USE_PLATFORM_ANDROID)
     if (wnd->type != VOUT_WINDOW_TYPE_ANDROID_NATIVE)
@@ -296,10 +305,11 @@ static int Open (vlc_object_t *obj, const struct gl_api *api)
                                         AWindow_Video);
     if (anw == NULL)
         goto error;
-    window = &anw,
+    window = &anw;
 # if defined (__ANDROID__) || defined (ANDROID)
     sys->display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
 # endif
+    (void) width; (void) height;
 
 #endif
 
@@ -366,34 +376,46 @@ static int Open (vlc_object_t *obj, const struct gl_api *api)
     sys->context = ctx;
 
     /* Initialize OpenGL callbacks */
+    gl->ext = VLC_GL_EXT_EGL;
     gl->makeCurrent = MakeCurrent;
     gl->releaseCurrent = ReleaseCurrent;
     gl->resize = Resize;
     gl->swap = SwapBuffers;
     gl->getProcAddress = GetSymbol;
+    gl->destroy = Close;
+    gl->egl.queryString = QueryString;
+
+    sys->eglCreateImageKHR = (void *)eglGetProcAddress("eglCreateImageKHR");
+    sys->eglDestroyImageKHR = (void *)eglGetProcAddress("eglDestroyImageKHR");
+    if (sys->eglCreateImageKHR != NULL && sys->eglDestroyImageKHR != NULL)
+    {
+        gl->egl.createImageKHR = CreateImageKHR;
+        gl->egl.destroyImageKHR = DestroyImageKHR;
+    }
+
     return VLC_SUCCESS;
 
 error:
-    Close (obj);
+    Close(gl);
     return VLC_EGENERIC;
 }
 
-static int OpenGLES2 (vlc_object_t *obj)
+static int OpenGLES2(vlc_gl_t *gl, unsigned width, unsigned height)
 {
     static const struct gl_api api = {
         "OpenGL_ES", EGL_OPENGL_ES_API, 3, EGL_OPENGL_ES2_BIT,
         { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE },
     };
-    return Open (obj, &api);
+    return Open(gl, &api, width, height);
 }
 
-static int OpenGL (vlc_object_t *obj)
+static int OpenGL(vlc_gl_t *gl, unsigned width, unsigned height)
 {
     static const struct gl_api api = {
         "OpenGL", EGL_OPENGL_API, 4, EGL_OPENGL_BIT,
         { EGL_NONE },
     };
-    return Open (obj, &api);
+    return Open(gl, &api, width, height);
 }
 
 vlc_module_begin ()
@@ -402,12 +424,12 @@ vlc_module_begin ()
     set_category (CAT_VIDEO)
     set_subcategory (SUBCAT_VIDEO_VOUT)
     set_capability ("opengl", 50)
-    set_callbacks (OpenGL, Close)
+    set_callback(OpenGL)
     add_shortcut ("egl")
 
     add_submodule ()
     set_capability ("opengl es2", 50)
-    set_callbacks (OpenGLES2, Close)
+    set_callback(OpenGLES2)
     add_shortcut ("egl")
 
 vlc_module_end ()

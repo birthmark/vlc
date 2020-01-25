@@ -2,7 +2,6 @@
  * vlc_vlm.h: VLM core structures
  *****************************************************************************
  * Copyright (C) 2000, 2001 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Simon Latapie <garf@videolan.org>
  *          Laurent Aimar <fenrir@videolan.org>
@@ -29,6 +28,7 @@
 
 /**
  * \defgroup server VLM
+ * \ingroup interface
  * VLC stream manager
  *
  * VLM is the server core in vlc that allows streaming of multiple media streams
@@ -76,7 +76,7 @@ typedef struct
     int64_t     i_length;   /*< vlm media instance vlm media item length */
     double      d_position; /*< vlm media instance position in stream */
     bool        b_paused;   /*< vlm media instance is paused */
-    int         i_rate;     // normal is INPUT_RATE_DEFAULT
+    float       f_rate;     // normal is 1.0f
 } vlm_media_instance_t;
 
 #if 0
@@ -104,13 +104,23 @@ enum vlm_event_type_e
     VLM_EVENT_MEDIA_INSTANCE_STATE,
 };
 
+typedef enum vlm_state_e
+{
+    VLM_INIT_S = 0,
+    VLM_OPENING_S,
+    VLM_PLAYING_S,
+    VLM_PAUSE_S,
+    VLM_END_S,
+    VLM_ERROR_S,
+} vlm_state_e;
+
 typedef struct
 {
     int            i_type;            /* a vlm_event_type_e value */
     int64_t        id;                /* Media ID */
     const char    *psz_name;          /* Media name */
     const char    *psz_instance_name; /* Instance name or NULL */
-    input_state_e  input_state;       /* Input instance event type */
+    vlm_state_e    input_state;       /* Input instance event type */
 } vlm_event_t;
 
 /** VLM control query */
@@ -183,8 +193,7 @@ struct vlm_message_t
 extern "C" {
 #endif
 
-VLC_API vlm_t * vlm_New( vlc_object_t * );
-#define vlm_New( a ) vlm_New( VLC_OBJECT(a) )
+VLC_API vlm_t * vlm_New( libvlc_int_t *, const char *path );
 VLC_API void vlm_Delete( vlm_t * );
 VLC_API int vlm_ExecuteCommand( vlm_t *, const char *, vlm_message_t ** );
 VLC_API int vlm_Control( vlm_t *p_vlm, int i_query, ... );
@@ -325,7 +334,7 @@ static inline void vlm_media_instance_Init( vlm_media_instance_t *p_instance )
     p_instance->i_length = 0;
     p_instance->d_position = 0.0;
     p_instance->b_paused = false;
-    p_instance->i_rate = INPUT_RATE_DEFAULT;
+    p_instance->f_rate = 1.0f;
 }
 
 /**

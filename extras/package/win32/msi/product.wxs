@@ -36,7 +36,8 @@
             InstallPrivileges='elevated'
             InstallScope='perMachine'
             InstallerVersion='200'
-            Compressed='yes' />
+            Compressed='yes'
+            Platform="$(var.Platform)" />
 
         <Condition Message="This application is only supported on Windows XP or higher.">
             <![CDATA[Installed OR (VersionNT >= 501)]]>
@@ -71,6 +72,17 @@
 
         <Media Id='1' Cabinet='product.cab' EmbedCab='yes' CompressionLevel="high" />
 
+        <CustomAction Id="Overwrite_WixSetDefaultPerMachineFolder" Property="WixPerMachineFolder"
+            Value="[$(var.PlatformProgramFilesFolder)][ApplicationFolderName]" Execute="immediate" />
+        <InstallUISequence>
+            <Custom Action="Overwrite_WixSetDefaultPerMachineFolder" After="WixSetDefaultPerMachineFolder" />
+        </InstallUISequence>
+        <InstallExecuteSequence>
+            <Custom Action="Overwrite_WixSetDefaultPerMachineFolder" After="WixSetDefaultPerMachineFolder" />
+        </InstallExecuteSequence>
+
+        <SetProperty Id="ARPINSTALLLOCATION" Value="[APPLICATIONFOLDER]" After="CostFinalize" />
+
         <Directory Id='TARGETDIR' Name='SourceDir'>
             <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
                 <Directory Id='VideoLANFolder' Name='$(var.Manufacturer)'>
@@ -84,7 +96,6 @@
 
                         <Component Id='CompVLC' Guid='$(var.CompVLCexe)' Win64="$(var.Win64)">
                             <File Id='vlc.exe' Name='vlc.exe' KeyPath='yes' Vital='yes' DiskId='1' />
-                            <File Id='vlc.exe.manifest' Name='vlc.exe.manifest' DiskId='1' />
 
                             <Shortcut Id="DesktopShortcut"
                                 Directory="DesktopFolder"
@@ -124,17 +135,10 @@
 
                         <Component Id='CompLibvlc' Guid='50d7e1e1-4512-4020-9f7b-5dc8484574f3' Win64="$(var.Win64)">
                             <File Id='libvlc.dll' Name='libvlc.dll' KeyPath='yes' Vital='yes' DiskId='1' />
-                            <File Id='libvlc.dll.manifest' Name='libvlc.dll.manifest' DiskId='1' />
-                        </Component>
-
-                        <Component Id='CompNpvlc' Guid='e7d6b54c-c4ea-4280-90f5-c6ae80073d25' Win64="$(var.Win64)">
-                            <File Id='npvlc.dll' Name='npvlc.dll' KeyPath='yes' DiskId='1' />
-                            <File Id='npvlc.dll.manifest' Name='npvlc.dll.manifest' DiskId='1' />
                         </Component>
 
                         <Component Id='CompAxvlc' Guid='cabe28b1-5586-4ac3-815b-4f3a834c0d54' Win64="$(var.Win64)">
                             <File Id='axvlc.dll' Name='axvlc.dll' KeyPath='yes' DiskId='1' />
-                            <File Id='axvlc.dll.manifest' Name='axvlc.dll.manifest' DiskId='1' />
                         </Component>
 
                         <Component Id='CompCacheGen' Guid='e1b4a499-e223-4c18-9de0-258f12b8dcfa' Win64="$(var.Win64)">
@@ -268,11 +272,11 @@
                               On="uninstall" />
                 <!-- Application shortcuts -->
                 <Shortcut Id="VLCShortcut" Name="$(var.ProductName)" Target="[APPLICATIONFOLDER]vlc.exe" />
-                <Shortcut Id="SkinShortcut" Name="$(var.ProductName) skinned" Target="[APPLICATIONFOLDER]vlc.exe" Arguments="-Iskins" />
+                <!--<Shortcut Id="SkinShortcut" Name="$(var.ProductName) skinned" Target="[APPLICATIONFOLDER]vlc.exe" Arguments="-Iskins" />-->
                 <Shortcut Id="VLCCleanShortcut" Name="Reset $(var.ProductName) preferences and cache files" Target="[APPLICATIONFOLDER]vlc.exe" Arguments="--reset-config --reset-plugins-cache vlc://quit" />
                 <Shortcut Id="NEWSShortcut" Name="Release Notes" Target="[APPLICATIONFOLDER]NEWS.txt" />
-                <util:InternetShortcut Id="WebsiteShortcut" Name="VideoLAN website" Target="http://www.videolan.org/"/>
-                <util:InternetShortcut Id="DocumentationShortcut" Name="Documentation" Target="http://www.videolan.org/doc/"/>
+                <util:InternetShortcut Id="WebsiteShortcut" Name="VideoLAN website" Target="https://www.videolan.org/"/>
+                <util:InternetShortcut Id="DocumentationShortcut" Name="Documentation" Target="https://www.videolan.org/doc/"/>
                 <!-- RegistryValue which serves as KeyPath -->
                 <RegistryValue Root="HKCU"
                                Key="Software\VideoLAN\VLC"
@@ -288,7 +292,6 @@
             <ComponentRef Id='CompVLC' />
             <ComponentRef Id='CompLibvlccore' />
             <ComponentRef Id='CompLibvlc' />
-            <ComponentRef Id='CompNpvlc' />
             <ComponentRef Id='CompCacheGen' />
             <ComponentRef Id='CompIcon' />
             <ComponentRef Id='CompTXT' />
@@ -298,15 +301,12 @@
             <ComponentGroupRef Id='CompPluginsGroup' />
             <ComponentGroupRef Id='CompLocaleGroup' />
             <ComponentGroupRef Id='CompLuaGroup' />
-            <ComponentGroupRef Id='CompSkinsGroup' />
+            <!--<ComponentGroupRef Id='CompSkinsGroup' />-->
 
             <Feature Id='WEBPLUGINS' Title='Web plugins' Level='1' AllowAdvertise="no">
                 <Feature Id='ACTIVEX' Title='ActiveX plugin' Level='1' AllowAdvertise="no">
                     <ComponentRef Id='CompAxvlc' />
                     <ComponentGroupRef Id='CompAxvlcGroup' />
-                </Feature>
-                <Feature Id='MOZILLA' Title='Mozilla plugin' Level='1' AllowAdvertise="no">
-                    <ComponentRef Id='CompNpvlc' />
                 </Feature>
             </Feature>
             <Feature Id='FILEASSOCIATION' Title='File associations' Level='1' AllowAdvertise="no">

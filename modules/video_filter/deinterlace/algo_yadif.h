@@ -2,7 +2,6 @@
  * algo_yadif.h : Wrapper for FFmpeg's Yadif algorithm
  *****************************************************************************
  * Copyright (C) 2000-2011 the VideoLAN team
- * $Id$
  *
  * Author: Laurent Aimar <fenrir@videolan.org>
  *         Juha Jeronen  <juha.jeronen@jyu.fi> (soft field repeat hack)
@@ -85,5 +84,10 @@ struct picture_t;
  */
 int RenderYadif( filter_t *p_filter, picture_t *p_dst, picture_t *p_src,
                  int i_order, int i_field );
+
+/**
+ * Same as RenderYadif() but with no temporal references
+ */
+int RenderYadifSingle( filter_t *p_filter, picture_t *p_dst, picture_t *p_src );
 
 #endif

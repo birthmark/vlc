@@ -1,17 +1,23 @@
 # GCRYPT
-GCRYPT_VERSION := 1.7.3
-GCRYPT_URL := ftp://ftp.gnupg.org/gcrypt/libgcrypt/libgcrypt-$(GCRYPT_VERSION).tar.bz2
+GCRYPT_VERSION := 1.7.10
+GCRYPT_URL := http://www.gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-$(GCRYPT_VERSION).tar.bz2
 
 PKGS += gcrypt
+ifeq ($(call need_pkg,"libgcrypt"),)
+PKGS_FOUND += gcrypt
+endif
 
 $(TARBALLS)/libgcrypt-$(GCRYPT_VERSION).tar.bz2:
 	$(call download_pkg,$(GCRYPT_URL),gcrypt)
 
 .sum-gcrypt: libgcrypt-$(GCRYPT_VERSION).tar.bz2
 
-libgcrypt: libgcrypt-$(GCRYPT_VERSION).tar.bz2 .sum-gcrypt
+gcrypt: libgcrypt-$(GCRYPT_VERSION).tar.bz2 .sum-gcrypt
 	$(UNPACK)
 	$(APPLY) $(SRC)/gcrypt/disable-tests-compilation.patch
+	$(APPLY) $(SRC)/gcrypt/fix-pthread-detection.patch
+	$(APPLY) $(SRC)/gcrypt/0001-random-Don-t-assume-that-_WIN64-implies-x86_64.patch
+	$(APPLY) $(SRC)/gcrypt/0002-aarch64-mpi-Fix-building-the-mpi-aarch64-assembly-fo.patch
 ifdef HAVE_WINSTORE
 	$(APPLY) $(SRC)/gcrypt/winrt.patch
 endif
@@ -33,8 +39,10 @@ GCRYPT_CONF = \
 	--enable-pubkey-ciphers=dsa,rsa,ecc \
 	--disable-docs
 
-ifdef HAVE_WIN64
+ifdef HAVE_WIN32
+ifeq ($(ARCH),x86_64)
 GCRYPT_CONF += --disable-asm --disable-padlock-support
+endif
 endif
 ifdef HAVE_IOS
 GCRYPT_EXTRA_CFLAGS = -fheinous-gnu-extensions
@@ -55,14 +63,22 @@ endif
 ifeq ($(ANDROID_ABI), x86_64)
 GCRYPT_CONF += ac_cv_sys_symbol_underscore=no
 endif
+ifeq ($(ARCH),aarch64)
+GCRYPT_CONF += --disable-arm-crypto-support
 endif
-ifdef HAVE_TIZEN
-ifeq ($(TIZEN_ABI), x86)
-GCRYPT_CONF += ac_cv_sys_symbol_underscore=no
 endif
+ifdef HAVE_NACL
+GCRYPT_CONF += --disable-asm --disable-aesni-support ac_cv_func_syslog=no --disable-sse41-support
+GCRYPT_CONF += --disable-avx-support --disable-avx2-support --disable-padlock-support
+GCRYPT_CONF += --disable-amd64-as-feature-detection --disable-drng-support
+GCRYPT_CONF += --disable-pclmul-support
 endif
 
-.gcrypt: libgcrypt
+.gcrypt: gcrypt
+	# Reconfiguring this requires a git repo to be available, to
+	# successfully produce a nonempty mym4_revision_dec.
+	cd $< && git init && git config --local user.email "cone@example.com" && git config --local user.name "Cony Cone" && \
+		git commit --allow-empty -m "dummy commit"
 	$(RECONF)
 	cd $< && $(HOSTVARS) CFLAGS="$(CFLAGS) $(GCRYPT_EXTRA_CFLAGS)" ./configure $(HOSTCONF) $(GCRYPT_CONF)
 	cd $< && $(MAKE) install

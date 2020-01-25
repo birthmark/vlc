@@ -30,12 +30,12 @@
 
 #include "v4l2.h"
 
-struct demux_sys_t
+typedef struct
 {
     int fd;
     vlc_v4l2_ctrl_t *controls;
-    mtime_t start;
-};
+    vlc_tick_t start;
+} demux_sys_t;
 
 static int RadioControl (demux_t *demux, int query, va_list args)
 {
@@ -50,12 +50,12 @@ static int RadioControl (demux_t *demux, int query, va_list args)
             break;
 
         case DEMUX_GET_PTS_DELAY:
-            *va_arg (args,int64_t *) = INT64_C(1000)
-                * var_InheritInteger (demux, "live-caching");
+            *va_arg (args,vlc_tick_t *) = VLC_TICK_FROM_MS(
+                var_InheritInteger (demux, "live-caching") );
             break;
 
         case DEMUX_GET_TIME:
-            *va_arg (args, int64_t *) = mdate () - sys->start;
+            *va_arg (args, vlc_tick_t *) = vlc_tick_now () - sys->start;
             break;
 
         /* TODO implement others */
@@ -68,6 +68,8 @@ static int RadioControl (demux_t *demux, int query, va_list args)
 int RadioOpen (vlc_object_t *obj)
 {
     demux_t *demux = (demux_t *)obj;
+    if (demux->out == NULL)
+        return VLC_EGENERIC;
 
     /* Parse MRL */
     size_t pathlen = strcspn (demux->psz_location, ":;");
@@ -98,15 +100,12 @@ int RadioOpen (vlc_object_t *obj)
         goto error;
 
     sys->fd = fd;
-    sys->controls = ControlsInit (VLC_OBJECT(demux), fd);
-    sys->start = mdate ();
+    sys->controls = ControlsInit(vlc_object_parent(obj), fd);
+    sys->start = vlc_tick_now ();
 
     demux->p_sys = sys;
     demux->pf_demux = NULL;
     demux->pf_control = RadioControl;
-    demux->info.i_update = 0;
-    demux->info.i_title = 0;
-    demux->info.i_seekpoint = 0;
     return VLC_SUCCESS;
 
 error:
@@ -119,7 +118,7 @@ void RadioClose (vlc_object_t *obj)
     demux_t *demux = (demux_t *)obj;
     demux_sys_t *sys = demux->p_sys;
 
-    ControlsDeinit (obj, sys->controls);
+    ControlsDeinit(vlc_object_parent(obj), sys->controls);
     v4l2_close (sys->fd);
     free (sys);
 }

@@ -2,7 +2,6 @@
  * epg.c: Electronic Program Guide
  *****************************************************************************
  * Copyright (C) 2007 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
@@ -34,6 +33,12 @@
 
 static void vlc_epg_event_Clean(vlc_epg_event_t *p_event)
 {
+    for(int i=0; i<p_event->i_description_items; i++)
+    {
+        free(p_event->description_items[i].psz_key);
+        free(p_event->description_items[i].psz_value);
+    }
+    free(p_event->description_items);
     free(p_event->psz_description);
     free(p_event->psz_short_description);
     free(p_event->psz_name);
@@ -52,6 +57,8 @@ static void vlc_epg_event_Init(vlc_epg_event_t *p_event, uint16_t i_id,
     p_event->i_start = i_start;
     p_event->i_id = i_id;
     p_event->i_duration = i_duration;
+    p_event->i_description_items = 0;
+    p_event->description_items = NULL;
 }
 
 vlc_epg_event_t * vlc_epg_event_New(uint16_t i_id,
@@ -76,6 +83,29 @@ vlc_epg_event_t * vlc_epg_event_Duplicate( const vlc_epg_event_t *p_src )
             p_evt->psz_name = strdup( p_src->psz_name );
         if( p_src->psz_short_description )
             p_evt->psz_short_description = strdup( p_src->psz_short_description );
+        if( p_src->i_description_items )
+        {
+            p_evt->description_items = malloc( sizeof(*p_evt->description_items) *
+                                               p_src->i_description_items );
+            if( p_evt->description_items )
+            {
+                for( int i=0; i<p_src->i_description_items; i++ )
+                {
+                    p_evt->description_items[i].psz_key =
+                            strdup( p_src->description_items[i].psz_key );
+                    p_evt->description_items[i].psz_value =
+                            strdup( p_src->description_items[i].psz_value );
+                    if(!p_evt->description_items[i].psz_value ||
+                       !p_evt->description_items[i].psz_key)
+                    {
+                        free(p_evt->description_items[i].psz_key);
+                        free(p_evt->description_items[i].psz_value);
+                        break;
+                    }
+                    p_evt->i_description_items++;
+                }
+            }
+        }
         p_evt->i_rating = p_src->i_rating;
     }
     return p_evt;
@@ -186,83 +216,6 @@ void vlc_epg_SetCurrent( vlc_epg_t *p_epg, int64_t i_start )
             break;
         }
     }
-}
-
-static void vlc_epg_Prune( vlc_epg_t *p_dst )
-{
-    /* Keep only 1 old event  */
-    if( p_dst->p_current )
-    {
-        while( p_dst->i_event > 1 && p_dst->pp_event[0] != p_dst->p_current && p_dst->pp_event[1] != p_dst->p_current )
-        {
-            vlc_epg_event_Delete( p_dst->pp_event[0] );
-            TAB_ERASE( p_dst->i_event, p_dst->pp_event, 0 );
-        }
-    }
-}
-
-void vlc_epg_Merge( vlc_epg_t *p_dst_epg, const vlc_epg_t *p_src_epg )
-{
-    if( p_src_epg->i_event == 0 )
-        return;
-
-    size_t i_dst=0;
-    size_t i_src=0;
-    for( ; i_src < p_src_epg->i_event; i_src++ )
-    {
-        bool b_current = ( p_src_epg->pp_event[i_src] == p_src_epg->p_current );
-
-        vlc_epg_event_t *p_src = vlc_epg_event_Duplicate( p_src_epg->pp_event[i_src] );
-        if( unlikely(!p_src) )
-            return;
-        const int64_t i_src_end = p_src->i_start + p_src->i_duration;
-
-        while( i_dst < p_dst_epg->i_event )
-        {
-            vlc_epg_event_t *p_dst = p_dst_epg->pp_event[i_dst];
-            const int64_t i_dst_end = p_dst->i_start + p_dst->i_duration;
-
-            /* appended is before current, no overlap */
-            if( p_dst->i_start >= i_src_end )
-            {
-                break;
-            }
-            /* overlap case: appended would contain current's start (or are identical) */
-            else if( ( p_dst->i_start >= p_src->i_start && p_dst->i_start < i_src_end ) ||
-            /* overlap case: appended would contain current's end */
-                    ( i_dst_end > p_src->i_start && i_dst_end <= i_src_end ) )
-            {
-                vlc_epg_event_Delete( p_dst );
-                if( p_dst_epg->p_current == p_dst )
-                {
-                    b_current |= true;
-                    p_dst_epg->p_current = NULL;
-                }
-                TAB_ERASE( p_dst_epg->i_event, p_dst_epg->pp_event, i_dst );
-            }
-            else
-            {
-                i_dst++;
-            }
-        }
-
-        TAB_INSERT( p_dst_epg->i_event, p_dst_epg->pp_event, p_src, i_dst );
-        if( b_current )
-            p_dst_epg->p_current = p_src;
-    }
-
-    /* Remaining/trailing ones */
-    for( ; i_src < p_src_epg->i_event; i_src++ )
-    {
-        vlc_epg_event_t *p_src = vlc_epg_event_Duplicate( p_src_epg->pp_event[i_src] );
-        if( unlikely(!p_src) )
-            return;
-        TAB_APPEND( p_dst_epg->i_event, p_dst_epg->pp_event, p_src );
-        if( p_src_epg->pp_event[i_src] == p_src_epg->p_current )
-            p_dst_epg->p_current = p_src;
-    }
-
-    vlc_epg_Prune( p_dst_epg );
 }
 
 vlc_epg_t * vlc_epg_Duplicate( const vlc_epg_t *p_src )

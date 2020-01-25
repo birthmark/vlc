@@ -2,7 +2,6 @@
  * x11_loop.hpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
- * $Id$
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -55,7 +54,7 @@ private:
     /// Flag set on exit
     bool m_exit;
     /// Date and position of the last left-click
-    mtime_t m_lastClickTime;
+    vlc_tick_t m_lastClickTime;
     int m_lastClickPosX, m_lastClickPosY;
     /// Maximum interval between clicks for a double-click (in microsec)
     static int m_dblClickDelay;

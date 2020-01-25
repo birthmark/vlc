@@ -2,7 +2,6 @@
  * chain.c : configuration module chain parsing stuff
  *****************************************************************************
  * Copyright (C) 2002-2007 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Christophe Massiot <massiot@via.ecp.fr>
  *          Laurent Aimar <fenrir@via.ecp.fr>
@@ -269,7 +268,7 @@ void config_ChainDestroy( config_chain_t *p_cfg )
 
 #undef config_ChainParse
 void config_ChainParse( vlc_object_t *p_this, const char *psz_prefix,
-                        const char *const *ppsz_options, config_chain_t *cfg )
+                        const char *const *ppsz_options, const config_chain_t *cfg )
 {
     if( psz_prefix == NULL ) psz_prefix = "";
     size_t plen = 1 + strlen( psz_prefix );
@@ -284,23 +283,23 @@ void config_ChainParse( vlc_object_t *p_this, const char *psz_prefix,
         char name[plen + strlen( optname )];
         snprintf( name, sizeof (name), "%s%s", psz_prefix, optname );
         if( var_Create( p_this, name,
-                        config_GetType( p_this, name ) | VLC_VAR_DOINHERIT ) )
+                        config_GetType( name ) | VLC_VAR_DOINHERIT ) )
             return /* VLC_xxx */;
 
-        module_config_t* p_conf = config_FindConfig( p_this, name );
+        module_config_t* p_conf = config_FindConfig( name );
         if( p_conf )
         {
             switch( CONFIG_CLASS( p_conf->i_type ) )
             {
                 case CONFIG_ITEM_INTEGER:
                     var_Change( p_this, name, VLC_VAR_SETMINMAX,
-                        &(vlc_value_t){ .i_int = p_conf->min.i },
-                        &(vlc_value_t){ .i_int = p_conf->max.i } );
+                        (vlc_value_t){ .i_int = p_conf->min.i },
+                        (vlc_value_t){ .i_int = p_conf->max.i } );
                     break;
                 case CONFIG_ITEM_FLOAT:
                     var_Change( p_this, name, VLC_VAR_SETMINMAX,
-                        &(vlc_value_t){ .f_float = p_conf->min.f },
-                        &(vlc_value_t){ .f_float = p_conf->max.f } );
+                        (vlc_value_t){ .f_float = p_conf->min.f },
+                        (vlc_value_t){ .f_float = p_conf->max.f } );
                     break;
             }
         }
@@ -356,7 +355,7 @@ void config_ChainParse( vlc_object_t *p_this, const char *psz_prefix,
                   b_once ? (ppsz_options[i] + 1) : ppsz_options[i] );
 
         /* Check if the option is deprecated */
-        p_conf = config_FindConfig( p_this, name );
+        p_conf = config_FindConfig( name );
 
         /* This is basically cut and paste from src/misc/configuration.c
          * with slight changes */
@@ -375,7 +374,7 @@ void config_ChainParse( vlc_object_t *p_this, const char *psz_prefix,
         /* </Check if the option is deprecated> */
 
         /* get the type of the variable */
-        i_type = config_GetType( p_this, psz_name );
+        i_type = config_GetType( psz_name );
         if( !i_type )
         {
             msg_Warn( p_this, "unknown option %s (value=%s)",
@@ -481,7 +480,11 @@ char *config_StringEscape( const char *str )
     for( const char *p = str; *p; p++ )
         length += IsEscapeNeeded( *p ) ? 2 : 1;
 
-    char *ret = xmalloc( length + 1 ), *dst = ret;
+    char *ret = malloc( length + 1 ), *dst = ret;
+
+    if( unlikely( !ret ) )
+        return NULL;
+
     for( const char *p = str; *p; p++ )
     {
         if( IsEscapeNeeded( *p ) )

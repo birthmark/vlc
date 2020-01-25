@@ -2,7 +2,6 @@
  * freetype.h : Put text on the video, using freetype2
  *****************************************************************************
  * Copyright (C) 2015 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Sigmund Augdal Helberg <dnumgis@videolan.org>
  *          Gildas Bazin <gbazin@videolan.org>
@@ -73,7 +72,7 @@ typedef uint32_t uni_char_t;
  * It describes the freetype specific properties of an output thread.
  *****************************************************************************/
 typedef struct vlc_family_t vlc_family_t;
-struct filter_sys_t
+typedef struct
 {
     FT_Library     p_library;       /* handle to library     */
     FT_Face        p_face;          /* handle to face object */
@@ -141,7 +140,7 @@ struct filter_sys_t
 #if defined( _WIN32 )
     void *p_dw_sys;
 #endif
-};
+} filter_sys_t;
 
 /**
  * Selects and loads the right font
@@ -152,5 +151,22 @@ struct filter_sys_t
  */
 FT_Face SelectAndLoadFace( filter_t *p_filter, const text_style_t *p_style,
                            uni_char_t codepoint );
+
+static inline void BBoxInit( FT_BBox *p_box )
+{
+    p_box->xMin = INT_MAX;
+    p_box->yMin = INT_MAX;
+    p_box->xMax = INT_MIN;
+    p_box->yMax = INT_MIN;
+}
+
+static inline void BBoxEnlarge( FT_BBox *p_max, const FT_BBox *p )
+{
+    p_max->xMin = __MIN(p_max->xMin, p->xMin);
+    p_max->yMin = __MIN(p_max->yMin, p->yMin);
+    p_max->xMax = __MAX(p_max->xMax, p->xMax);
+    p_max->yMax = __MAX(p_max->yMax, p->yMax);
+}
+
 
 #endif

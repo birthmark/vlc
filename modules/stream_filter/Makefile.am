@@ -9,7 +9,6 @@ libcache_block_plugin_la_SOURCES = stream_filter/cache_block.c
 stream_filter_LTLIBRARIES += libcache_block_plugin.la
 
 libdecomp_plugin_la_SOURCES = stream_filter/decomp.c
-libdecomp_plugin_la_LIBADD = $(LIBPTHREAD)
 if !HAVE_WIN32
 if !HAVE_TVOS
 stream_filter_LTLIBRARIES += libdecomp_plugin.la
@@ -23,7 +22,6 @@ stream_filter_LTLIBRARIES += libinflate_plugin.la
 endif
 
 libprefetch_plugin_la_SOURCES = stream_filter/prefetch.c
-libprefetch_plugin_la_LIBADD = $(LIBPTHREAD)
 if !HAVE_WINSTORE
 stream_filter_LTLIBRARIES += libprefetch_plugin.la
 endif
@@ -45,10 +43,11 @@ stream_filter_LTLIBRARIES += $(LTLIBaribcam)
 EXTRA_LTLIBRARIES += libaribcam_plugin.la
 
 libaccesstweaks_plugin_la_SOURCES = stream_filter/accesstweaks.c
-libaccesstweaks_plugin_la_CFLAGS = $(AM_CFLAGS)
 libaccesstweaks_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(stream_filterdir)'
-stream_filter_LTLIBRARIES += $(LTLIBaccesstweaks)
-EXTRA_LTLIBRARIES += libaccesstweaks_plugin.la
+check_LTLIBRARIES += libaccesstweaks_plugin.la
 
 libadf_plugin_la_SOURCES = stream_filter/adf.c
 stream_filter_LTLIBRARIES += libadf_plugin.la
+
+libskiptags_plugin_la_SOURCES = stream_filter/skiptags.c
+stream_filter_LTLIBRARIES += libskiptags_plugin.la

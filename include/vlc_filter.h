@@ -26,6 +26,10 @@
 #define VLC_FILTER_H 1
 
 #include <vlc_es.h>
+#include <vlc_picture.h>
+#include <vlc_codec.h>
+
+typedef struct vlc_video_context  vlc_video_context;
 
 /**
  * \defgroup filter Filters
@@ -36,23 +40,25 @@
  * Filter modules interface
  */
 
-typedef struct filter_owner_sys_t filter_owner_sys_t;
+struct filter_video_callbacks
+{
+    picture_t *(*buffer_new)(filter_t *);
+    vlc_decoder_device * (*hold_device)(vlc_object_t *, void *sys);
+};
+
+struct filter_subpicture_callbacks
+{
+    subpicture_t *(*buffer_new)(filter_t *);
+};
 
 typedef struct filter_owner_t
 {
-    void *sys;
-
     union
     {
-        struct
-        {
-            picture_t * (*buffer_new)( filter_t * );
-        } video;
-        struct
-        {
-            subpicture_t * (*buffer_new)( filter_t * );
-        } sub;
+        const struct filter_video_callbacks *video;
+        const struct filter_subpicture_callbacks *sub;
     };
+    void *sys;
 } filter_owner_t;
 
 struct vlc_mouse_t;
@@ -64,19 +70,23 @@ struct vlc_mouse_t;
  */
 struct filter_t
 {
-    VLC_COMMON_MEMBERS
+    struct vlc_object_t obj;
 
     /* Module properties */
     module_t *          p_module;
-    filter_sys_t *      p_sys;
+    void               *p_sys;
 
     /* Input format */
     es_format_t         fmt_in;
+    vlc_video_context   *vctx_in;  // video filter, set by owner
 
     /* Output format of filter */
     es_format_t         fmt_out;
+    vlc_video_context   *vctx_out; // video filter, handled by the filter
     bool                b_allow_fmt_out_change;
 
+    /* Name of the "video filter" shortcut that is requested, can be NULL */
+    const char *        psz_name;
     /* Filter configuration */
     config_chain_t *    p_cfg;
 
@@ -93,7 +103,7 @@ struct filter_t
                                  int, int, int );
 
         /** Generate a subpicture (sub source) */
-        subpicture_t *(*pf_sub_source)( filter_t *, mtime_t );
+        subpicture_t *(*pf_sub_source)( filter_t *, vlc_tick_t );
 
         /** Filter a subpicture (sub filter) */
         subpicture_t *(*pf_sub_filter)( filter_t *, subpicture_t * );
@@ -116,6 +126,14 @@ struct filter_t
      */
     void (*pf_flush)( filter_t * );
 
+    /** Change viewpoint
+     *
+     * Pass a new viewpoint to audio filters. Filters like the spatialaudio one
+     * used for Ambisonics rendering will change its output according to this
+     * viewpoint.
+     */
+    void (*pf_change_viewpoint)( filter_t *, const vlc_viewpoint_t * );
+
     union
     {
         /** Filter mouse state (video filter).
@@ -128,16 +146,13 @@ struct filter_t
         int (*pf_video_mouse)( filter_t *, struct vlc_mouse_t *,
                                const struct vlc_mouse_t *p_old,
                                const struct vlc_mouse_t *p_new );
-        int (*pf_sub_mouse)( filter_t *, const struct vlc_mouse_t *p_old,
-                             const struct vlc_mouse_t *p_new,
-                             const video_format_t * );
     };
 
     /* Input attachments
      * XXX use filter_GetInputAttachments */
     int (*pf_get_attachments)( filter_t *, input_attachment_t ***, int * );
 
-    /* Private structure for the owner of the decoder */
+    /** Private structure for the owner of the filter */
     filter_owner_t      owner;
 };
 
@@ -152,7 +167,14 @@ struct filter_t
  */
 static inline picture_t *filter_NewPicture( filter_t *p_filter )
 {
-    picture_t *pic = p_filter->owner.video.buffer_new( p_filter );
+    picture_t *pic = NULL;
+    if ( p_filter->owner.video != NULL && p_filter->owner.video->buffer_new != NULL)
+        pic = p_filter->owner.video->buffer_new( p_filter );
+    if ( pic == NULL )
+    {
+        // legacy filter owners not setting a default filter_allocator
+        pic = picture_NewFromFormat( &p_filter->fmt_out.video );
+    }
     if( pic == NULL )
         msg_Warn( p_filter, "can't get output picture" );
     return pic;
@@ -167,6 +189,38 @@ static inline void filter_Flush( filter_t *p_filter )
 {
     if( p_filter->pf_flush != NULL )
         p_filter->pf_flush( p_filter );
+}
+
+static inline void filter_ChangeViewpoint( filter_t *p_filter,
+                                           const vlc_viewpoint_t *vp)
+{
+    if( p_filter->pf_change_viewpoint != NULL )
+        p_filter->pf_change_viewpoint( p_filter, vp );
+}
+
+static inline vlc_decoder_device * filter_HoldDecoderDevice( filter_t *p_filter )
+{
+    if ( !p_filter->owner.video || !p_filter->owner.video->hold_device )
+        return NULL;
+
+    return p_filter->owner.video->hold_device( VLC_OBJECT(p_filter), p_filter->owner.sys );
+}
+
+static inline vlc_decoder_device * filter_HoldDecoderDeviceType( filter_t *p_filter,
+                                                                 enum vlc_decoder_device_type type )
+{
+    if ( !p_filter->owner.video || !p_filter->owner.video->hold_device )
+        return NULL;
+
+    vlc_decoder_device *dec_dev = p_filter->owner.video->hold_device( VLC_OBJECT(p_filter),
+                                                                      p_filter->owner.sys );
+    if ( dec_dev != NULL )
+    {
+        if ( dec_dev->type == type )
+            return dec_dev;
+        vlc_decoder_device_Release(dec_dev);
+    }
+    return NULL;
 }
 
 /**
@@ -191,7 +245,7 @@ static inline block_t *filter_DrainAudio( filter_t *p_filter )
  */
 static inline subpicture_t *filter_NewSubpicture( filter_t *p_filter )
 {
-    subpicture_t *subpic = p_filter->owner.sub.buffer_new( p_filter );
+    subpicture_t *subpic = p_filter->owner.sub->buffer_new( p_filter );
     if( subpic == NULL )
         msg_Warn( p_filter, "can't get output subpicture" );
     return subpic;
@@ -213,30 +267,55 @@ static inline int filter_GetInputAttachments( filter_t *p_filter,
 }
 
 /**
+ * This function duplicates every variables from the filter, and adds a proxy
+ * callback to trigger filter events from obj.
+ *
+ * \param restart_cb a vlc_callback_t to call if the event means restarting the
+ * filter (i.e. an event on a non-command variable)
+ */
+VLC_API void filter_AddProxyCallbacks( vlc_object_t *obj, filter_t *filter,
+                                       vlc_callback_t restart_cb );
+# define filter_AddProxyCallbacks(a, b, c) \
+    filter_AddProxyCallbacks(VLC_OBJECT(a), b, c)
+
+/**
+ * This function removes the callbacks previously added to every duplicated
+ * variables, and removes them afterward.
+ *
+ * \param restart_cb the same vlc_callback_t passed to filter_AddProxyCallbacks
+ */
+VLC_API void filter_DelProxyCallbacks( vlc_object_t *obj, filter_t *filter,
+                                       vlc_callback_t restart_cb);
+# define filter_DelProxyCallbacks(a, b, c) \
+    filter_DelProxyCallbacks(VLC_OBJECT(a), b, c)
+
+typedef filter_t vlc_blender_t;
+
+/**
  * It creates a blend filter.
  *
  * Only the chroma properties of the dest format is used (chroma
  * type, rgb masks and shifts)
  */
-VLC_API filter_t * filter_NewBlend( vlc_object_t *, const video_format_t *p_dst_chroma ) VLC_USED;
+VLC_API vlc_blender_t * filter_NewBlend( vlc_object_t *, const video_format_t *p_dst_chroma ) VLC_USED;
 
 /**
  * It configures blend filter parameters that are allowed to changed
  * after the creation.
  */
-VLC_API int filter_ConfigureBlend( filter_t *, int i_dst_width, int i_dst_height, const video_format_t *p_src );
+VLC_API int filter_ConfigureBlend( vlc_blender_t *, int i_dst_width, int i_dst_height, const video_format_t *p_src );
 
 /**
  * It blends a picture into another one.
  *
  * The input picture is not modified and not released.
  */
-VLC_API int filter_Blend( filter_t *, picture_t *p_dst, int i_dst_x, int i_dst_y, const picture_t *p_src, int i_alpha );
+VLC_API int filter_Blend( vlc_blender_t *, picture_t *p_dst, int i_dst_x, int i_dst_y, const picture_t *p_src, int i_alpha );
 
 /**
  * It destroys a blend filter created by filter_NewBlend.
  */
-VLC_API void filter_DeleteBlend( filter_t * );
+VLC_API void filter_DeleteBlend( vlc_blender_t * );
 
 /**
  * Create a picture_t *(*)( filter_t *, picture_t * ) compatible wrapper
@@ -269,13 +348,13 @@ typedef struct filter_chain_t filter_chain_t;
 /**
  * Create new filter chain
  *
- * \param p_object pointer to a vlc object
+ * \param obj pointer to a vlc object
  * \param psz_capability vlc capability of filters in filter chain
  * \return pointer to a filter chain
  */
-filter_chain_t * filter_chain_New( vlc_object_t *, const char * )
+filter_chain_t * filter_chain_NewSPU( vlc_object_t *obj, const char *psz_capability )
 VLC_USED;
-#define filter_chain_New( a, b ) filter_chain_New( VLC_OBJECT( a ), b )
+#define filter_chain_NewSPU( a, b ) filter_chain_NewSPU( VLC_OBJECT( a ), b )
 
 /**
  * Creates a new video filter chain.
@@ -305,34 +384,43 @@ VLC_API void filter_chain_Delete( filter_chain_t * );
  *
  * \param p_chain pointer to filter chain
  * \param p_fmt_in new fmt_in params
+ * \paramt vctx_in new input video context
  * \param p_fmt_out new fmt_out params
  */
-VLC_API void filter_chain_Reset( filter_chain_t *, const es_format_t *, const es_format_t * );
+VLC_API void filter_chain_Reset( filter_chain_t *p_chain,
+                                 const es_format_t *p_fmt_in,
+                                 vlc_video_context *vctx_in,
+                                 const es_format_t *p_fmt_out );
+
+/**
+ * Remove all existing filters
+ *
+ * \param p_chain pointer to filter chain
+ */
+VLC_API void filter_chain_Clear(filter_chain_t *);
 
 /**
  * Append a filter to the chain.
  *
  * \param chain filter chain to append a filter to
  * \param name filter name
- * \param fmt_in filter input format
  * \param fmt_out filter output format
  * \return a pointer to the filter or NULL on error
  */
 VLC_API filter_t *filter_chain_AppendFilter(filter_chain_t *chain,
-    const char *name, config_chain_t *cfg, const es_format_t *fmt_in,
+    const char *name, config_chain_t *cfg,
     const es_format_t *fmt_out);
 
 /**
  * Append a conversion to the chain.
  *
  * \param chain filter chain to append a filter to
- * \param fmt_in filter input format
  * \param fmt_out filter output format
  * \retval 0 on success
  * \retval -1 on failure
  */
 VLC_API int filter_chain_AppendConverter(filter_chain_t *chain,
-    const es_format_t *fmt_in, const es_format_t *fmt_out);
+    const es_format_t *fmt_out);
 
 /**
  * Append new filter to filter chain from string.
@@ -355,19 +443,27 @@ VLC_API void filter_chain_DeleteFilter(filter_chain_t *chain,
                                        filter_t *filter);
 
 /**
- * Get the number of filters in the filter chain.
+ * Checks if the filter chain is empty.
  *
  * \param chain pointer to filter chain
- * \return number of filters in this filter chain
+ * \return true if and only if there are no filters in this filter chain
  */
-VLC_API int filter_chain_GetLength(filter_chain_t *chain);
+VLC_API bool filter_chain_IsEmpty(const filter_chain_t *chain);
 
 /**
  * Get last output format of the last element in the filter chain.
  *
  * \param chain filter chain
  */
-VLC_API const es_format_t *filter_chain_GetFmtOut(filter_chain_t *chain);
+VLC_API const es_format_t *filter_chain_GetFmtOut(const filter_chain_t *chain);
+
+/**
+ * Get last output video context of the last element in the filter chain.
+ * \note doesn't create change the reference count
+ *
+ * \param chain filter chain
+ */
+VLC_API vlc_video_context *filter_chain_GetVideoCtxOut(const filter_chain_t *chain);
 
 /**
  * Apply the filter chain to a video picture.
@@ -391,7 +487,7 @@ VLC_API void filter_chain_VideoFlush( filter_chain_t * );
  * \param display_date of subpictures
  */
 void filter_chain_SubSource(filter_chain_t *chain, spu_t *,
-                            mtime_t display_date);
+                            vlc_tick_t display_date);
 
 /**
  * Apply filter chain to subpictures.
@@ -413,15 +509,6 @@ VLC_API subpicture_t *filter_chain_SubFilter(filter_chain_t *chain,
  */
 VLC_API int filter_chain_MouseFilter( filter_chain_t *, struct vlc_mouse_t *,
                                       const struct vlc_mouse_t * );
-
-/**
- * Inform the filter chain of mouse state.
- *
- * It makes sense only for a sub source chain.
- */
-VLC_API int filter_chain_MouseEvent( filter_chain_t *,
-                                     const struct vlc_mouse_t *,
-                                     const video_format_t * );
 
 int filter_chain_ForEach( filter_chain_t *chain,
                           int (*cb)( filter_t *, void * ), void *opaque );

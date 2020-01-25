@@ -29,9 +29,6 @@
 #ifdef HAVE_GETOPT_H
 # include <getopt.h>
 #endif
-#ifdef _WIN32
-# include <windows.h>
-#endif
 
 static void version (void)
 {
@@ -48,9 +45,6 @@ static void usage (const char *path)
 
 int main (int argc, char *argv[])
 {
-#ifdef _WIN32
-    SetErrorMode(SEM_FAILCRITICALERRORS);
-#endif
 #ifdef HAVE_GETOPT_H
     static const struct option opts[] =
     {
@@ -94,12 +88,9 @@ int main (int argc, char *argv[])
         vlc_argv[vlc_argc] = NULL;
 
         libvlc_instance_t *vlc = libvlc_new (vlc_argc, vlc_argv);
-        if (vlc != NULL)
-            libvlc_release (vlc);
-        if (vlc == NULL)
-            fprintf (stderr, "No plugins in %s\n", path);
         if (vlc == NULL)
             return 1;
+        libvlc_release(vlc);
     }
 
     return 0;

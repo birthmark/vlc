@@ -30,6 +30,7 @@ struct rtp_pt_t
 {
     void   *(*init) (demux_t *);
     void    (*destroy) (demux_t *, void *);
+    void    (*header) (demux_t *, void *, block_t *);
     void    (*decode) (demux_t *, void *, block_t *);
     uint32_t  frequency; /* RTP clock rate (Hz) */
     uint8_t   number;
@@ -53,7 +54,7 @@ void xiph_decode (demux_t *demux, void *data, block_t *block);
 rtp_session_t *rtp_session_create (demux_t *);
 void rtp_session_destroy (demux_t *, rtp_session_t *);
 void rtp_queue (demux_t *, rtp_session_t *, block_t *);
-bool rtp_dequeue (demux_t *, const rtp_session_t *, mtime_t *);
+bool rtp_dequeue (demux_t *, const rtp_session_t *, vlc_tick_t *);
 void rtp_dequeue_force (demux_t *, const rtp_session_t *);
 int rtp_add_type (demux_t *demux, rtp_session_t *ses, const rtp_pt_t *pt);
 
@@ -61,7 +62,7 @@ void *rtp_dgram_thread (void *data);
 void *rtp_stream_thread (void *data);
 
 /* Global data */
-struct demux_sys_t
+typedef struct
 {
     rtp_session_t *session;
     struct vlc_demux_chained_t *chained_demux;
@@ -72,11 +73,11 @@ struct demux_sys_t
     int           rtcp_fd;
     vlc_thread_t  thread;
 
-    mtime_t       timeout;
+    vlc_tick_t    timeout;
     uint16_t      max_dropout; /**< Max packet forward misordering */
     uint16_t      max_misorder; /**< Max packet backward misordering */
     uint8_t       max_src; /**< Max simultaneous RTP sources */
     bool          thread_ready;
     bool          autodetect; /**< Payload type autodetection pending */
-};
+} demux_sys_t;
 

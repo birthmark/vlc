@@ -1,6 +1,6 @@
 # libvorbis
 
-VORBIS_VERSION := 1.3.5
+VORBIS_VERSION := 1.3.6
 VORBIS_URL := http://downloads.xiph.org/releases/vorbis/libvorbis-$(VORBIS_VERSION).tar.xz
 
 ifdef HAVE_FPU
@@ -24,7 +24,7 @@ $(TARBALLS)/libvorbis-$(VORBIS_VERSION).tar.xz:
 
 libvorbis: libvorbis-$(VORBIS_VERSION).tar.xz .sum-vorbis
 	$(UNPACK)
-ifeq ($(CC), clang)
+ifdef HAVE_CLANG
 	$(APPLY) $(SRC)/vorbis/clang.patch
 endif
 	$(UPDATE_AUTOCONFIG)

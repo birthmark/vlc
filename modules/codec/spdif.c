@@ -34,22 +34,16 @@ vlc_module_begin()
     set_category(CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_ACODEC)
     set_description(N_("S/PDIF pass-through decoder"))
-    set_capability("decoder", 120)
-    set_callbacks(OpenDecoder, NULL)
+    set_capability("audio decoder", 120)
+    set_callback(OpenDecoder)
 vlc_module_end()
 
-static block_t *
-DecodeBlock(decoder_t *p_dec, block_t **pp_block)
+static int
+DecodeBlock(decoder_t *p_dec, block_t *p_block)
 {
-    (void) p_dec;
-    if (pp_block != NULL)
-    {
-        block_t *p_block = *pp_block;
-        *pp_block = NULL;
-        return p_block;
-    }
-    else
-        return NULL;
+    if (p_block != NULL)
+        decoder_QueueAudio( p_dec, p_block );
+    return VLCDEC_SUCCESS;
 }
 
 static int
@@ -79,20 +73,16 @@ OpenDecoder(vlc_object_t *p_this)
     }
 
     /* Set output properties */
-    p_dec->fmt_out.i_cat = AUDIO_ES;
     p_dec->fmt_out.i_codec = p_dec->fmt_in.i_codec;
     p_dec->fmt_out.audio = p_dec->fmt_in.audio;
+    p_dec->fmt_out.i_profile = p_dec->fmt_in.i_profile;
     p_dec->fmt_out.audio.i_format = p_dec->fmt_out.i_codec;
 
-    if (p_dec->fmt_out.audio.i_channels == 0
-     || decoder_UpdateAudioFormat(p_dec))
-    {
-        es_format_Init(&p_dec->fmt_out, UNKNOWN_ES, 0);
+    if (decoder_UpdateAudioFormat(p_dec))
         return VLC_EGENERIC;
-    }
 
-    p_dec->pf_decode_audio = DecodeBlock;
-    p_dec->pf_flush        = NULL;
+    p_dec->pf_decode = DecodeBlock;
+    p_dec->pf_flush  = NULL;
 
     return VLC_SUCCESS;
 }

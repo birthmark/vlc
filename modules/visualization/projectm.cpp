@@ -2,7 +2,6 @@
  * projectm.cpp: visualization module based on libprojectM
  *****************************************************************************
  * Copyright © 2009-2011 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Rémi Duraffort <ivoire@videolan.org>
  *          Laurent Aimar
@@ -35,6 +34,13 @@
 #include <vlc_rand.h>
 
 #include <libprojectM/projectM.hpp>
+
+#ifndef _WIN32
+# include <locale.h>
+#endif
+#ifdef HAVE_XLOCALE_H
+# include <xlocale.h>
+#endif
 
 /*****************************************************************************
  * Module descriptor
@@ -97,15 +103,15 @@ vlc_module_begin ()
     set_category( CAT_AUDIO )
     set_subcategory( SUBCAT_AUDIO_VISUAL )
 #ifndef HAVE_PROJECTM2
-    add_loadfile( "projectm-config", "/usr/share/projectM/config.inp",
-                  CONFIG_TEXT, CONFIG_LONGTEXT, true )
+    add_loadfile("projectm-config", "/usr/share/projectM/config.inp",
+                 CONFIG_TEXT, CONFIG_LONGTEXT)
 #else
-    add_directory( "projectm-preset-path", PRESET_PATH,
-                  PRESET_PATH_TXT, PRESET_PATH_LONGTXT, true )
-    add_loadfile( "projectm-title-font", FONT_PATH,
-                  TITLE_FONT_TXT, TITLE_FONT_LONGTXT, true )
-    add_loadfile( "projectm-menu-font", FONT_PATH_MENU,
-                  MENU_FONT_TXT, MENU_FONT_LONGTXT, true )
+    add_directory("projectm-preset-path", PRESET_PATH,
+                  PRESET_PATH_TXT, PRESET_PATH_LONGTXT)
+    add_loadfile("projectm-title-font", FONT_PATH,
+                 TITLE_FONT_TXT, TITLE_FONT_LONGTXT)
+    add_loadfile("projectm-menu-font", FONT_PATH_MENU,
+                 MENU_FONT_TXT, MENU_FONT_LONGTXT)
 #endif
     add_integer( "projectm-width", 800, WIDTH_TEXT, WIDTH_LONGTEXT,
                  false )
@@ -125,6 +131,8 @@ vlc_module_end ()
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
+namespace {
+
 struct filter_sys_t
 {
     /* */
@@ -144,6 +152,7 @@ struct filter_sys_t
     unsigned i_nb_samples;
 };
 
+} // namespace
 
 static block_t *DoWork( filter_t *, block_t * );
 static void *Thread( void * );
@@ -158,7 +167,7 @@ static int Open( vlc_object_t * p_this )
     filter_t     *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys;
 
-    p_sys = p_filter->p_sys = (filter_sys_t*)malloc( sizeof( *p_sys ) );
+    p_filter->p_sys = p_sys = (filter_sys_t*)malloc( sizeof( *p_sys ) );
     if( !p_sys )
         return VLC_ENOMEM;
 
@@ -208,7 +217,7 @@ error:
 static void Close( vlc_object_t *p_this )
 {
     filter_t  *p_filter = (filter_t *)p_this;
-    filter_sys_t *p_sys = p_filter->p_sys;
+    filter_sys_t *p_sys = reinterpret_cast<filter_sys_t *>( p_filter->p_sys );
 
     /* Stop the thread
      * XXX vlc_cleanup_push does not seems to work with C++ so no
@@ -236,7 +245,7 @@ static void Close( vlc_object_t *p_this )
  */
 static block_t *DoWork( filter_t *p_filter, block_t *p_in_buf )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
+    filter_sys_t *p_sys = reinterpret_cast<filter_sys_t *>( p_filter->p_sys );
 
     vlc_mutex_lock( &p_sys->lock );
     if( p_sys->i_buffer_size > 0 )
@@ -265,7 +274,7 @@ static block_t *DoWork( filter_t *p_filter, block_t *p_in_buf )
 static void *Thread( void *p_data )
 {
     filter_t  *p_filter = (filter_t*)p_data;
-    filter_sys_t *p_sys = p_filter->p_sys;
+    filter_sys_t *p_sys = reinterpret_cast<filter_sys_t *>( p_filter->p_sys );
     vlc_gl_t *gl = p_sys->gl;
     locale_t loc;
     locale_t oldloc;
@@ -280,7 +289,11 @@ static void *Thread( void *p_data )
     projectM::Settings settings;
 #endif
 
-    vlc_gl_MakeCurrent( gl );
+    if( vlc_gl_MakeCurrent( gl ) != VLC_SUCCESS )
+    {
+        msg_Err( p_filter, "Can't attach gl context" );
+        return NULL;
+    }
 
     /* Work-around the projectM locale bug */
     loc = newlocale (LC_NUMERIC_MASK, "C", NULL);
@@ -295,11 +308,7 @@ static void *Thread( void *p_data )
     psz_preset_path = var_InheritString( p_filter, "projectm-preset-path" );
 #ifdef _WIN32
     if ( psz_preset_path == NULL )
-    {
-        char *psz_data_path = config_GetDataDir();
-        asprintf( &psz_preset_path, "%s" DIR_SEP "visualization", psz_data_path );
-        free( psz_data_path );
-    }
+        psz_preset_path = config_GetSysPath(VLC_PKG_DATA_DIR, "visualization");
 #endif
 
     psz_title_font                = var_InheritString( p_filter, "projectm-title-font" );
@@ -340,7 +349,7 @@ static void *Thread( void *p_data )
     /* */
     for( ;; )
     {
-        const mtime_t i_deadline = mdate() + CLOCK_FREQ / 50; /* 50 fps max */
+        const vlc_tick_t i_deadline = vlc_tick_now() + VLC_TICK_FROM_MS(20); /* 50 fps max */
 
         /* Manage the events */
         unsigned width, height;
@@ -366,7 +375,7 @@ static void *Thread( void *p_data )
         p_projectm->renderFrame();
 
         /* */
-        mwait( i_deadline );
+        vlc_tick_wait( i_deadline );
 
         vlc_gl_Swap( gl );
     }

@@ -61,10 +61,15 @@ static void Close(vlc_object_t *);
 vlc_module_begin()
     set_description(N_("Media Foundation Transform decoder"))
     add_shortcut("mft")
-    set_capability("decoder", 1)
+    set_capability("video decoder", 1)
     set_callbacks(Open, Close)
     set_category(CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_VCODEC)
+
+    add_submodule()
+    add_shortcut("mft")
+    set_capability("audio decoder", 1)
+    set_callbacks(Open, Close)
 vlc_module_end()
 
 typedef struct
@@ -79,7 +84,7 @@ typedef struct
     HRESULT (STDCALL *fptr_MFCreateAlignedMemoryBuffer)(DWORD cbMaxLength, DWORD fAlignmentFlags, IMFMediaBuffer **ppBuffer);
 } MFHandle;
 
-struct decoder_sys_t
+typedef struct
 {
     MFHandle mf_handle;
 
@@ -87,6 +92,8 @@ struct decoder_sys_t
 
     const GUID* major_type;
     const GUID* subtype;
+    /* Container for a dynamically constructed subtype */
+    GUID custom_subtype;
 
     /* For asynchronous MFT */
     bool is_async;
@@ -105,7 +112,7 @@ struct decoder_sys_t
 
     /* H264 only. */
     uint8_t nal_length_size;
-};
+} decoder_sys_t;
 
 static const int pi_channels_maps[9] =
 {
@@ -178,6 +185,20 @@ static const pair_format_guid video_format_table[] =
     { 0, NULL }
 };
 
+// 8-bit luminance only
+DEFINE_MEDIATYPE_GUID (MFVideoFormat_L8, 50);
+
+/*
+ * Table to map MF Transform raw 3D3 output formats to native VLC FourCC
+ */
+static const pair_format_guid d3d_format_table[] = {
+    { VLC_CODEC_RGB32, &MFVideoFormat_RGB32  },
+    { VLC_CODEC_RGB24, &MFVideoFormat_RGB24  },
+    { VLC_CODEC_RGBA,  &MFVideoFormat_ARGB32 },
+    { VLC_CODEC_GREY,  &MFVideoFormat_L8     },
+    { 0, NULL }
+};
+
 #if defined(__MINGW64_VERSION_MAJOR) && __MINGW64_VERSION_MAJOR < 4
 DEFINE_GUID(MFAudioFormat_Dolby_AC3, 0xe06d802c, 0xdb46, 0x11cf, 0xb4, 0xd1, 0x00, 0x80, 0x5f, 0x6c, 0xbb, 0xea);
 #endif
@@ -203,6 +224,15 @@ static const GUID *FormatToGUID(const pair_format_guid table[], vlc_fourcc_t fou
             return table[i].guid;
 
     return NULL;
+}
+
+static vlc_fourcc_t GUIDToFormat(const pair_format_guid table[], const GUID* guid)
+{
+    for (int i = 0; table[i].fourcc; ++i)
+        if (IsEqualGUID(table[i].guid, guid))
+            return table[i].fourcc;
+
+    return 0;
 }
 
 /*
@@ -267,6 +297,16 @@ static int SetInputType(decoder_t *p_dec, DWORD stream_id, IMFMediaType **result
         hr = IMFMediaType_SetUINT64(input_media_type, &MF_MT_FRAME_SIZE, frame_size);
         if (FAILED(hr))
             goto error;
+
+        /* Some transforms like to know the frame rate and may reject the input type otherwise. */
+        UINT64 frame_ratio_num = p_dec->fmt_in.video.i_frame_rate;
+        UINT64 frame_ratio_dem = p_dec->fmt_in.video.i_frame_rate_base;
+        if(frame_ratio_num && frame_ratio_dem) {
+            UINT64 frame_rate = (frame_ratio_num << 32) | frame_ratio_dem;
+            hr = IMFMediaType_SetUINT64(input_media_type, &MF_MT_FRAME_RATE, frame_rate);
+            if(FAILED(hr))
+                goto error;
+        }
     }
     else
     {
@@ -351,7 +391,7 @@ static int SetOutputType(decoder_t *p_dec, DWORD stream_id, IMFMediaType **resul
      * preference thus we will use the first one unless YV12/I420 is
      * available for video or float32 for audio.
      */
-    int output_type_index = 0;
+    int output_type_index = -1;
     bool found = false;
     for (int i = 0; !found; ++i)
     {
@@ -375,6 +415,10 @@ static int SetOutputType(decoder_t *p_dec, DWORD stream_id, IMFMediaType **resul
         {
             if (IsEqualGUID(&subtype, &MFVideoFormat_YV12) || IsEqualGUID(&subtype, &MFVideoFormat_I420))
                 found = true;
+            /* Transform might offer output in a D3DFMT propietary FCC. If we can
+             * use it, fall back to it in case we do not find YV12 or I420 */
+            else if(output_type_index < 0 && GUIDToFormat(d3d_format_table, &subtype) > 0)
+                    output_type_index = i;
         }
         else
         {
@@ -394,9 +438,12 @@ static int SetOutputType(decoder_t *p_dec, DWORD stream_id, IMFMediaType **resul
     }
     /*
      * It's not an error if we don't find the output type we were
-     * looking for, in this case we use the first available type which
-     * is the "preferred" output type for this MFT.
+     * looking for, in this case we use the first available type.
      */
+    if(output_type_index < 0)
+        /* No output format found we prefer, just pick the first one preferred
+         * by the MFT */
+        output_type_index = 0;
 
     hr = IMFTransform_GetOutputAvailableType(p_sys->mft, stream_id, output_type_index, &output_media_type);
     if (FAILED(hr))
@@ -413,8 +460,18 @@ static int SetOutputType(decoder_t *p_dec, DWORD stream_id, IMFMediaType **resul
 
     if (p_dec->fmt_in.i_cat == VIDEO_ES)
     {
-        p_dec->fmt_out.video = p_dec->fmt_in.video;
-        p_dec->fmt_out.i_codec = vlc_fourcc_GetCodec(p_dec->fmt_in.i_cat, subtype.Data1);
+        video_format_Copy( &p_dec->fmt_out.video, &p_dec->fmt_in.video );
+
+        /* Transform might offer output in a D3DFMT propietary FCC */
+        vlc_fourcc_t fcc = GUIDToFormat(d3d_format_table, &subtype);
+        if(fcc) {
+            /* D3D formats are upside down */
+            p_dec->fmt_out.video.orientation = ORIENT_BOTTOM_LEFT;
+        } else {
+            fcc = vlc_fourcc_GetCodec(p_dec->fmt_in.i_cat, subtype.Data1);
+        }
+
+        p_dec->fmt_out.i_codec = fcc;
     }
     else
     {
@@ -440,7 +497,6 @@ static int SetOutputType(decoder_t *p_dec, DWORD stream_id, IMFMediaType **resul
         p_dec->fmt_out.i_codec = vlc_fourcc_GetCodecAudio(fourcc, p_dec->fmt_out.audio.i_bitspersample);
 
         p_dec->fmt_out.audio.i_physical_channels = pi_channels_maps[p_dec->fmt_out.audio.i_channels];
-        p_dec->fmt_out.audio.i_original_channels = p_dec->fmt_out.audio.i_physical_channels;
     }
 
     *result = output_media_type;
@@ -590,12 +646,10 @@ static int ProcessInputStream(decoder_t *p_dec, DWORD stream_id, block_t *p_bloc
     if (FAILED(hr))
         goto error;
 
-    LONGLONG ts = p_block->i_pts;
-    if (!ts && p_block->i_dts)
-        ts = p_block->i_dts;
+    vlc_tick_t ts = p_block->i_pts == VLC_TICK_INVALID ? p_block->i_dts : p_block->i_pts;
 
     /* Convert from microseconds to 100 nanoseconds unit. */
-    hr = IMFSample_SetSampleTime(input_sample, ts * 10);
+    hr = IMFSample_SetSampleTime(input_sample, MSFTIME_FROM_VLC_TICK(ts));
     if (FAILED(hr))
         goto error;
 
@@ -640,14 +694,12 @@ static void CopyPackedBufferToPicture(picture_t *p_pic, const uint8_t *p_src)
     }
 }
 
-static int ProcessOutputStream(decoder_t *p_dec, DWORD stream_id, void **result)
+static int ProcessOutputStream(decoder_t *p_dec, DWORD stream_id)
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
     HRESULT hr;
     picture_t *picture = NULL;
     block_t *aout_buffer = NULL;
-
-    *result = NULL;
 
     DWORD output_status = 0;
     MFT_OUTPUT_DATA_BUFFER output_buffer = { stream_id, p_sys->output_sample, 0, NULL };
@@ -667,7 +719,7 @@ static int ProcessOutputStream(decoder_t *p_dec, DWORD stream_id, void **result)
         if (FAILED(hr))
             goto error;
         /* Convert from 100 nanoseconds unit to microseconds. */
-        sample_time /= 10;
+        vlc_tick_t samp_time = VLC_TICK_FROM_MSFTIME(sample_time);
 
         DWORD total_length = 0;
         hr = IMFSample_GetTotalLength(output_sample, &total_length);
@@ -686,7 +738,7 @@ static int ProcessOutputStream(decoder_t *p_dec, DWORD stream_id, void **result)
             hr = IMFSample_GetUINT32(output_sample, &MFSampleExtension_Interlaced, &interlaced);
             picture->b_progressive = !interlaced;
 
-            picture->date = sample_time;
+            picture->date = samp_time;
         }
         else
         {
@@ -701,7 +753,7 @@ static int ProcessOutputStream(decoder_t *p_dec, DWORD stream_id, void **result)
             if (aout_buffer->i_buffer < total_length)
                 goto error;
 
-            aout_buffer->i_pts = sample_time;
+            aout_buffer->i_pts = samp_time;
         }
 
         IMFMediaBuffer *output_media_buffer = NULL;
@@ -762,9 +814,9 @@ static int ProcessOutputStream(decoder_t *p_dec, DWORD stream_id, void **result)
     }
 
     if (p_dec->fmt_in.i_cat == VIDEO_ES)
-        *result = picture;
+        decoder_QueueVideo(p_dec, picture);
     else
-        *result = aout_buffer;
+        decoder_QueueAudio(p_dec, aout_buffer);
 
     return VLC_SUCCESS;
 
@@ -777,42 +829,32 @@ error:
     return VLC_EGENERIC;
 }
 
-static void *DecodeSync(decoder_t *p_dec, block_t **pp_block)
+static int DecodeSync(decoder_t *p_dec, block_t *p_block)
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
 
-    if (!pp_block || !*pp_block)
-        return NULL;
+    if (!p_block) /* No Drain */
+        return VLCDEC_SUCCESS;
 
-    block_t *p_block = *pp_block;
     if (p_block->i_flags & (BLOCK_FLAG_CORRUPTED))
     {
         block_Release(p_block);
-        *pp_block = NULL;
-        return NULL;
+        return VLCDEC_SUCCESS;
     }
 
     /* Drain the output stream before sending the input packet. */
-    void *result = NULL;
-    if (ProcessOutputStream(p_dec, p_sys->output_stream_id, &result))
+    if (ProcessOutputStream(p_dec, p_sys->output_stream_id))
         goto error;
-    if (result)
-        return result;
-
     if (ProcessInputStream(p_dec, p_sys->input_stream_id, p_block))
         goto error;
-
     block_Release(p_block);
-    *pp_block = NULL;
 
-    return NULL;
+    return VLCDEC_SUCCESS;
 
 error:
     msg_Err(p_dec, "Error in DecodeSync()");
-    if (p_block)
-        block_Release(p_block);
-    *pp_block = NULL;
-    return NULL;
+    block_Release(p_block);
+    return VLCDEC_SUCCESS;
 }
 
 static HRESULT DequeueMediaEvent(decoder_t *p_dec)
@@ -840,20 +882,18 @@ static HRESULT DequeueMediaEvent(decoder_t *p_dec)
     return S_OK;
 }
 
-static void *DecodeAsync(decoder_t *p_dec, block_t **pp_block)
+static int DecodeAsync(decoder_t *p_dec, block_t *p_block)
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
     HRESULT hr;
 
-    if (!pp_block || !*pp_block)
-        return NULL;
+    if (!p_block) /* No Drain */
+        return VLCDEC_SUCCESS;
 
-    block_t *p_block = *pp_block;
     if (p_block->i_flags & (BLOCK_FLAG_CORRUPTED))
     {
         block_Release(p_block);
-        *pp_block = NULL;
-        return NULL;
+        return VLCDEC_SUCCESS;
     }
 
     /* Dequeue all pending media events. */
@@ -866,10 +906,8 @@ static void *DecodeAsync(decoder_t *p_dec, block_t **pp_block)
     if (p_sys->pending_output_events > 0)
     {
         p_sys->pending_output_events -= 1;
-        void *result = NULL;
-        if (ProcessOutputStream(p_dec, p_sys->output_stream_id, &result))
+        if (ProcessOutputStream(p_dec, p_sys->output_stream_id))
             goto error;
-        return result;
     }
 
     /* Poll the MFT and return decoded frames until the input stream is ready. */
@@ -888,10 +926,9 @@ static void *DecodeAsync(decoder_t *p_dec, block_t **pp_block)
         if (p_sys->pending_output_events > 0)
         {
             p_sys->pending_output_events -= 1;
-            void *result = NULL;
-            if (ProcessOutputStream(p_dec, p_sys->output_stream_id, &result))
+            if (ProcessOutputStream(p_dec, p_sys->output_stream_id))
                 goto error;
-            return result;
+            break;
         }
     }
 
@@ -900,15 +937,13 @@ static void *DecodeAsync(decoder_t *p_dec, block_t **pp_block)
         goto error;
 
     block_Release(p_block);
-    *pp_block = NULL;
 
-    return NULL;
+    return VLCDEC_SUCCESS;
 
 error:
     msg_Err(p_dec, "Error in DecodeAsync()");
     block_Release(p_block);
-    *pp_block = NULL;
-    return NULL;
+    return VLCDEC_SUCCESS;
 }
 
 static void DestroyMFT(decoder_t *p_dec);
@@ -1061,6 +1096,12 @@ static int FindMFT(decoder_t *p_dec)
         category = MFT_CATEGORY_VIDEO_DECODER;
         p_sys->major_type = &MFMediaType_Video;
         p_sys->subtype = FormatToGUID(video_format_table, p_dec->fmt_in.i_codec);
+        if(!p_sys->subtype) {
+            /* Codec is not well known. Construct a MF transform subtype from the fourcc */
+            p_sys->custom_subtype = MFVideoFormat_Base;
+            p_sys->custom_subtype.Data1 = p_dec->fmt_in.i_codec;
+            p_sys->subtype = &p_sys->custom_subtype;
+        }
     }
     else
     {
@@ -1105,7 +1146,7 @@ static int FindMFT(decoder_t *p_dec)
 
 static int LoadMFTLibrary(MFHandle *mf)
 {
-#if _WIN32_WINNT < _WIN32_WINNT_WIN7 || VLC_WINSTORE_APP
+#if _WIN32_WINNT < _WIN32_WINNT_WIN7 || VLC_WINSTORE_APP || __MINGW64_VERSION_MAJOR < 6
     mf->mfplat_dll = LoadLibrary(TEXT("mfplat.dll"));
     if (!mf->mfplat_dll)
         return VLC_EGENERIC;
@@ -1126,20 +1167,20 @@ static int LoadMFTLibrary(MFHandle *mf)
     return VLC_SUCCESS;
 }
 
-int Open(vlc_object_t *p_this)
+static int Open(vlc_object_t *p_this)
 {
     decoder_t *p_dec = (decoder_t *)p_this;
     decoder_sys_t *p_sys;
-
-    if (p_dec->fmt_in.i_cat != VIDEO_ES && p_dec->fmt_in.i_cat != AUDIO_ES)
-        return VLC_EGENERIC;
 
     p_sys = p_dec->p_sys = calloc(1, sizeof(*p_sys));
     if (!p_sys)
         return VLC_ENOMEM;
 
     if( FAILED(CoInitializeEx(NULL, COINIT_MULTITHREADED)) )
-        vlc_assert_unreachable();
+    {
+        free(p_sys);
+        return VLC_EGENERIC;
+    }
 
     if (LoadMFTLibrary(&p_sys->mf_handle))
     {
@@ -1157,18 +1198,7 @@ int Open(vlc_object_t *p_this)
     if (AllocateOutputSample(p_dec, 0, &p_sys->output_sample))
         goto error;
 
-    if (p_sys->is_async)
-    {
-        p_dec->pf_decode_video = (picture_t *(*)(decoder_t *, block_t **))DecodeAsync;
-        p_dec->pf_decode_audio = (block_t   *(*)(decoder_t *, block_t **))DecodeAsync;
-    }
-    else
-    {
-        p_dec->pf_decode_video = (picture_t *(*)(decoder_t *, block_t **))DecodeSync;
-        p_dec->pf_decode_audio = (block_t   *(*)(decoder_t *, block_t **))DecodeSync;
-    }
-
-    p_dec->fmt_out.i_cat = p_dec->fmt_in.i_cat;
+    p_dec->pf_decode = p_sys->is_async ? DecodeAsync : DecodeSync;
 
     return VLC_SUCCESS;
 
@@ -1177,7 +1207,7 @@ error:
     return VLC_EGENERIC;
 }
 
-void Close(vlc_object_t *p_this)
+static void Close(vlc_object_t *p_this)
 {
     decoder_t *p_dec = (decoder_t *)p_this;
     decoder_sys_t *p_sys = p_dec->p_sys;

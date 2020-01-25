@@ -504,12 +504,12 @@ int SetupFormat (vlc_object_t *obj, int fd, uint32_t fourcc,
                          fse.stepwise.step_width, fse.stepwise.step_height);
 
             /* FIXME: slow and dumb */
-            for (uint32_t width =  fse.stepwise.min_width;
-                          width <= fse.stepwise.max_width;
-                          width += fse.stepwise.step_width)
-                for (uint32_t height =  fse.stepwise.min_height;
-                              height <= fse.stepwise.max_height;
-                              height += fse.stepwise.step_height)
+            for (width =  fse.stepwise.min_width;
+                 width <= fse.stepwise.max_width;
+                 width += fse.stepwise.step_width)
+                for (height =  fse.stepwise.min_height;
+                     height <= fse.stepwise.max_height;
+                     height += fse.stepwise.step_height)
                 {
                     struct v4l2_fract cur_it;
 
@@ -560,20 +560,18 @@ int SetupFormat (vlc_object_t *obj, int fd, uint32_t fourcc,
     return 0;
 }
 
-mtime_t GetBufferPTS (const struct v4l2_buffer *buf)
+vlc_tick_t GetBufferPTS (const struct v4l2_buffer *buf)
 {
-    mtime_t pts;
+    vlc_tick_t pts;
 
     switch (buf->flags & V4L2_BUF_FLAG_TIMESTAMP_MASK)
     {
         case V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC:
-            pts = (buf->timestamp.tv_sec * CLOCK_FREQ)
-                 + buf->timestamp.tv_usec;
-            static_assert (CLOCK_FREQ == 1000000, "Clock unit mismatch");
+            pts = vlc_tick_from_timeval( &buf->timestamp );
             break;
         case V4L2_BUF_FLAG_TIMESTAMP_UNKNOWN:
         default:
-            pts = mdate ();
+            pts = vlc_tick_now ();
             break;
     }
     return pts;
@@ -673,7 +671,7 @@ struct buffer_t *StartMmap (vlc_object_t *obj, int fd, uint32_t *restrict n)
         return NULL;
     }
 
-    struct buffer_t *bufv = malloc (req.count * sizeof (*bufv));
+    struct buffer_t *bufv = vlc_alloc (req.count, sizeof (*bufv));
     if (unlikely(bufv == NULL))
         return NULL;
 

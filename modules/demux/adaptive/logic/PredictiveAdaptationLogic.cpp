@@ -34,6 +34,12 @@
 using namespace adaptive::logic;
 using namespace adaptive;
 
+/*
+ * Modified PBA algorithm (streaming for Cellular Networks) for multi streams
+ * Targets optimal quality
+ * https://www.cs.princeton.edu/~jrex/papers/hotmobile15.pdf
+ */
+
 PredictiveStats::PredictiveStats()
 {
     segments_count = 0;
@@ -48,10 +54,9 @@ bool PredictiveStats::starting() const
     return (segments_count < 3) || !last_download_rate;
 }
 
-PredictiveAdaptationLogic::PredictiveAdaptationLogic(vlc_object_t *p_obj_)
-    : AbstractAdaptationLogic()
+PredictiveAdaptationLogic::PredictiveAdaptationLogic(vlc_object_t *obj)
+    : AbstractAdaptationLogic(obj)
 {
-    p_obj = p_obj_;
     usedBps = 0;
     vlc_mutex_init(&lock);
 }
@@ -147,7 +152,7 @@ BaseRepresentation *PredictiveAdaptationLogic::getNextRepresentation(BaseAdaptat
     return rep;
 }
 
-void PredictiveAdaptationLogic::updateDownloadRate(const ID &id, size_t dlsize, mtime_t time)
+void PredictiveAdaptationLogic::updateDownloadRate(const ID &id, size_t dlsize, vlc_tick_t time)
 {
     vlc_mutex_lock(&lock);
     std::map<ID, PredictiveStats>::iterator it = streams.find(id);
@@ -162,10 +167,13 @@ void PredictiveAdaptationLogic::updateDownloadRate(const ID &id, size_t dlsize, 
 unsigned PredictiveAdaptationLogic::getAvailableBw(unsigned i_bw, const BaseRepresentation *curRep) const
 {
     unsigned i_remain = i_bw;
-    i_remain -= usedBps;
+    if(i_remain > usedBps)
+        i_remain -= usedBps;
+    else
+        i_remain = 0;
     if(curRep)
         i_remain += curRep->getBandwidth();
-    return i_remain;
+    return i_remain > i_bw ? i_remain : i_bw;
 }
 
 void PredictiveAdaptationLogic::trackerEvent(const SegmentTrackerEvent &event)
@@ -204,8 +212,8 @@ void PredictiveAdaptationLogic::trackerEvent(const SegmentTrackerEvent &event)
                     streams.erase(it);
             }
             vlc_mutex_unlock(&lock);
-            BwDebug(msg_Info(p_obj, "Stream %s is now known %sactive",
-                             (event.u.buffering.enabled) "" : "in"));
+            BwDebug(msg_Info(p_obj, "Stream %s is now known %sactive", id.str().c_str(),
+                             (event.u.buffering.enabled) ? "" : "in"));
         }
         break;
 

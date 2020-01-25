@@ -2,7 +2,6 @@
  * win32_loop.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
- * $Id$
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -34,7 +33,7 @@
 #include "../events/evt_mouse.hpp"
 #include "../events/evt_refresh.hpp"
 #include "../events/evt_scroll.hpp"
-#include <vlc_keys.h>
+#include <vlc_actions.h>
 
 
 // XXX: Cygwin (at least) doesn't define these macros. Too bad...

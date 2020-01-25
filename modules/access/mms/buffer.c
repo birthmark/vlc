@@ -2,7 +2,6 @@
  * buffer.c: MMS access plug-in
  *****************************************************************************
  * Copyright (C) 2001-2004 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
@@ -107,7 +106,7 @@ void var_buffer_addmemory( var_buffer_t *p_buf, void *p_mem, int i_mem )
     p_buf->i_data += i_mem;
 }
 
-void var_buffer_addUTF16( access_t  *p_access, var_buffer_t *p_buf, const char *p_str )
+void var_buffer_addUTF16( stream_t  *p_access, var_buffer_t *p_buf, const char *p_str )
 {
     uint16_t *p_out;
     size_t i_out;
@@ -213,7 +212,7 @@ int var_buffer_readempty( var_buffer_t *p_buf )
     return( ( p_buf->i_data >= p_buf->i_size ) ? 1 : 0 );
 }
 
-void var_buffer_getguid( var_buffer_t *p_buf, guid_t *p_guid )
+void var_buffer_getguid( var_buffer_t *p_buf, vlc_guid_t *p_guid )
 {
     p_guid->Data1 = var_buffer_get32( p_buf );
     p_guid->Data2 = var_buffer_get16( p_buf );

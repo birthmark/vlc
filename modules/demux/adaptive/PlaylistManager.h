@@ -41,21 +41,24 @@ namespace adaptive
 
     using namespace playlist;
     using namespace logic;
-    using namespace http;
 
     class PlaylistManager
     {
         public:
-            PlaylistManager( demux_t *, AbstractPlaylist *,
+            PlaylistManager( demux_t *,
+                             SharedResources *,
+                             AbstractPlaylist *,
                              AbstractStreamFactory *,
                              AbstractAdaptationLogic::LogicType type );
             virtual ~PlaylistManager    ();
 
+            bool    init();
             bool    start();
+            bool    started() const;
             void    stop();
 
-            AbstractStream::buffering_status bufferize(mtime_t, unsigned, unsigned);
-            AbstractStream::status dequeue(mtime_t, mtime_t *);
+            AbstractStream::buffering_status bufferize(vlc_tick_t, vlc_tick_t, vlc_tick_t);
+            AbstractStream::status dequeue(vlc_tick_t, vlc_tick_t *);
             void drain();
 
             virtual bool needsUpdate() const;
@@ -69,29 +72,26 @@ namespace adaptive
         protected:
             /* Demux calls */
             virtual int doControl(int, va_list);
-            virtual int doDemux(int64_t);
+            virtual int doDemux(vlc_tick_t);
 
-            virtual bool    setPosition(mtime_t);
-            virtual mtime_t getDuration() const;
-            mtime_t getPCR() const;
-            mtime_t getFirstDTS() const;
+            virtual bool    setPosition(vlc_tick_t);
+            vlc_tick_t getResumeTime() const;
+            vlc_tick_t getFirstDTS() const;
 
-            virtual mtime_t getFirstPlaybackTime() const;
-            mtime_t getCurrentPlaybackTime() const;
+            virtual vlc_tick_t getFirstPlaybackTime() const;
+            vlc_tick_t getCurrentDemuxTime() const;
 
-            void pruneLiveStream();
             virtual bool reactivateStream(AbstractStream *);
             bool setupPeriod();
             void unsetPeriod();
 
             void updateControlsPosition();
-            void updateControlsContentType();
 
             /* local factories */
             virtual AbstractAdaptationLogic *createLogic(AbstractAdaptationLogic::LogicType,
                                                          AbstractConnectionManager *);
 
-            AbstractConnectionManager           *conManager;
+            SharedResources                     *resources;
             AbstractAdaptationLogic::LogicType  logicType;
             AbstractAdaptationLogic             *logic;
             AbstractPlaylist                    *playlist;
@@ -103,9 +103,9 @@ namespace adaptive
             /* shared with demux/buffering */
             struct
             {
-                mtime_t     i_nzpcr;
-                mtime_t     i_firstpcr;
-                vlc_mutex_t lock;
+                vlc_tick_t  i_nzpcr;
+                vlc_tick_t  i_firstpcr;
+                mutable vlc_mutex_t lock;
                 vlc_cond_t  cond;
             } demux;
 
@@ -117,10 +117,13 @@ namespace adaptive
             struct
             {
                 bool        b_live;
-                mtime_t     i_length;
-                mtime_t     i_time;
+                vlc_tick_t  i_time;
                 double      f_position;
-                vlc_mutex_t lock;
+                mutable vlc_mutex_t lock;
+                vlc_tick_t  playlistStart;
+                vlc_tick_t  playlistEnd;
+                vlc_tick_t  playlistLength;
+                time_t      lastupdate;
             } cached;
 
         private:

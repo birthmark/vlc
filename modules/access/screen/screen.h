@@ -2,7 +2,6 @@
  * screen.h: Screen capture module.
  *****************************************************************************
  * Copyright (C) 2004-2008 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *          Antoine Cellerier <dionoea at videolan dot org>
@@ -39,16 +38,16 @@
 
 typedef struct screen_data_t screen_data_t;
 
-struct demux_sys_t
+typedef struct
 {
     es_format_t fmt;
     es_out_id_t *es;
 
     float f_fps;
-    mtime_t i_next_date;
-    int i_incr;
+    vlc_tick_t i_next_date;
+    vlc_tick_t i_incr;
 
-    mtime_t i_start;
+    vlc_tick_t i_start;
 
 #ifdef SCREEN_SUBSCREEN
     bool b_follow_mouse;
@@ -73,7 +72,7 @@ struct demux_sys_t
 #endif
 
     screen_data_t *p_data;
-};
+} demux_sys_t;
 
 int      screen_InitCapture ( demux_t * );
 int      screen_CloseCapture( demux_t * );

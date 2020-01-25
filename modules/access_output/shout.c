@@ -2,7 +2,6 @@
  * shout.c: This module forwards vorbis streams to an icecast server
  *****************************************************************************
  * Copyright (C) 2005 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Daniel Fischer <dan at subsignal dot org>
  *          Derk-Jan Hartman <hartman at videolan dot org>
@@ -80,26 +79,26 @@ static void Close( vlc_object_t * );
    are Alternative, Classical, Comedy, Country etc. */
 
 #define GENRE_TEXT N_("Genre description")
-#define GENRE_LONGTEXT N_("Genre of the content. " )
+#define GENRE_LONGTEXT N_("Genre of the content." )
 
 #define URL_TEXT N_("URL description")
-#define URL_LONGTEXT N_("URL with information about the stream or your channel. " )
+#define URL_LONGTEXT N_("URL with information about the stream or your channel." )
 
 /* The shout module only "transmits" data. It does not have direct access to
    "codec level" information. Stream information such as bitrate, samplerate,
    channel numbers and quality (in case of Ogg streaming) need to be set manually */
 
 #define BITRATE_TEXT N_("Bitrate")
-#define BITRATE_LONGTEXT N_("Bitrate information of the transcoded stream. " )
+#define BITRATE_LONGTEXT N_("Bitrate information of the transcoded stream." )
 
 #define SAMPLERATE_TEXT N_("Samplerate")
-#define SAMPLERATE_LONGTEXT N_("Samplerate information of the transcoded stream. " )
+#define SAMPLERATE_LONGTEXT N_("Samplerate information of the transcoded stream." )
 
 #define CHANNELS_TEXT N_("Number of channels")
-#define CHANNELS_LONGTEXT N_("Number of channels information of the transcoded stream. " )
+#define CHANNELS_LONGTEXT N_("Number of channels information of the transcoded stream." )
 
 #define QUALITY_TEXT N_("Ogg Vorbis Quality")
-#define QUALITY_LONGTEXT N_("Ogg Vorbis Quality information of the transcoded stream. " )
+#define QUALITY_LONGTEXT N_("Ogg Vorbis Quality information of the transcoded stream." )
 
 #define PUBLIC_TEXT N_("Stream public")
 #define PUBLIC_LONGTEXT N_("Make the server publicly available on the 'Yellow Pages' " \
@@ -150,13 +149,12 @@ static const char *const ppsz_sout_options[] = {
  * Exported prototypes
  *****************************************************************************/
 static ssize_t Write( sout_access_out_t *, block_t * );
-static int Seek ( sout_access_out_t *, off_t  );
 static int Control( sout_access_out_t *, int, va_list );
 
-struct sout_access_out_sys_t
+typedef struct
 {
     shout_t *p_shout;
-};
+} sout_access_out_sys_t;
 
 /*****************************************************************************
  * Open: open the shout connection
@@ -177,16 +175,18 @@ static int Open( vlc_object_t *p_this )
 
     config_ChainParse( p_access, SOUT_CFG_PREFIX, ppsz_sout_options, p_access->p_cfg );
 
-    if( !p_access->psz_path )
-    {
-        msg_Err( p_access,
-                 "please specify url=user:password@host:port/mountpoint" );
-        return VLC_EGENERIC;
-    }
-
     vlc_UrlParse( &url , p_access->psz_path );
     if( url.i_port <= 0 )
         url.i_port = 8000;
+
+    if( url.psz_host == NULL )
+    {   /* Backward compatibility with bind@path syntax */
+        vlc_UrlClean( &url );
+        if( unlikely(asprintf( &psz_url, "//%s", p_access->psz_path ) == -1) )
+            return VLC_ENOMEM;
+        vlc_UrlParse( &url, psz_url );
+        free( psz_url );
+    }
 
     p_sys = p_access->p_sys = malloc( sizeof( sout_access_out_sys_t ) );
     if( !p_sys )
@@ -366,7 +366,7 @@ static int Open( vlc_object_t *p_this )
         if ( i_ret != SHOUTERR_CONNECTED )
         {
             msg_Warn( p_access, "unable to establish connection, retrying..." );
-            msleep( 30000000 );
+            vlc_tick_sleep( VLC_TICK_FROM_SEC(30) );
         }
     }
 
@@ -378,7 +378,6 @@ static int Open( vlc_object_t *p_this )
     }
 
     p_access->pf_write = Write;
-    p_access->pf_seek  = Seek;
     p_access->pf_control = Control;
 
     msg_Dbg( p_access, "shout access output opened (%s@%s:%i/%s)",
@@ -482,14 +481,3 @@ static ssize_t Write( sout_access_out_t *p_access, block_t *p_buffer )
 
     return i_write;
 }
-
-/*****************************************************************************
- * Seek: seek to a specific location -- not supported
- *****************************************************************************/
-static int Seek( sout_access_out_t *p_access, off_t i_pos )
-{
-    VLC_UNUSED(i_pos);
-    msg_Err( p_access, "cannot seek on shout" );
-    return VLC_EGENERIC;
-}
-

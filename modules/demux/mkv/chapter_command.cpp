@@ -2,7 +2,6 @@
  * chapter_command.cpp : matroska demuxer
  *****************************************************************************
  * Copyright (C) 2003-2004 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Steve Lhomme <steve.lhomme@free.fr>
@@ -23,7 +22,10 @@
  *****************************************************************************/
 
 #include "chapter_command.hpp"
+#include "demux.hpp"
 #include <algorithm>
+
+namespace mkv {
 
 void chapter_codec_cmds_c::AddCommand( const KaxChapterProcessCommand & command )
 {
@@ -180,12 +182,12 @@ bool dvd_command_interpretor_c::Interpret( const binary * p_command, size_t i_si
         case 7:
             if ( ((p_command[1] >> 4) & 0x7) == 0)
             {
-                i_cr1 = p_command[2];
+                i_cr1 = p_command[4];
                 i_cr2 = (p_command[6] << 8) + p_command[7];
             }
             else
             {
-                i_cr1 = p_command[2];
+                i_cr1 = p_command[5];
                 i_cr2 = (p_command[6] << 8) + p_command[7];
             }
             break;
@@ -716,7 +718,7 @@ bool matroska_script_interpretor_c::Interpret( const binary * p_command, size_t 
         }
 
         std::string st = sz_command.substr( i+1, j-i-1 );
-        int64_t i_chapter_uid = atoi( st.c_str() );
+        int64_t i_chapter_uid = atoll( st.c_str() );
 
         virtual_segment_c *p_vsegment;
         virtual_chapter_c *p_vchapter = sys.FindChapter( i_chapter_uid, p_vsegment );
@@ -766,4 +768,4 @@ bool matroska_script_codec_c::Leave()
     return f_result;
 }
 
-
+} // namespace

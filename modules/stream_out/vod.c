@@ -2,7 +2,6 @@
  * vod.c: rtsp VoD server module
  *****************************************************************************
  * Copyright (C) 2003-2006, 2010 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Gildas Bazin <gbazin@videolan.org>
@@ -33,13 +32,14 @@
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
-#include <vlc_input.h>
+#include <vlc_input_item.h>
 #include <vlc_sout.h>
 #include <vlc_block.h>
 
 #include <vlc_vod.h>
 #include <vlc_url.h>
 #include <vlc_network.h>
+#include <vlc_memstream.h>
 
 #include <assert.h>
 
@@ -72,17 +72,17 @@ struct vod_media_t
     const char *psz_mux;
 
     /* Infos */
-    mtime_t i_length;
+    vlc_tick_t i_length;
 };
 
-struct vod_sys_t
+typedef struct
 {
     char *psz_rtsp_path;
 
     /* */
     vlc_thread_t thread;
     block_fifo_t *p_fifo_cmd;
-};
+} vod_sys_t;
 
 /* rtsp delayed command (to avoid deadlock between vlm/httpd) */
 typedef enum
@@ -340,7 +340,8 @@ static void CommandPush( vod_t *p_vod, rtsp_cmd_type_t i_type,
     p_cmd = block_Alloc( sizeof(rtsp_cmd_t) );
     memcpy( p_cmd->p_buffer, &cmd, sizeof(cmd) );
 
-    block_FifoPut( p_vod->p_sys->p_fifo_cmd, p_cmd );
+    vod_sys_t *p_sys = p_vod->p_sys;
+    block_FifoPut( p_sys->p_fifo_cmd, p_cmd );
 }
 
 static void* CommandThread( void *obj )
@@ -390,8 +391,6 @@ static void* CommandThread( void *obj )
  *****************************************************************************/
 char *SDPGenerateVoD( const vod_media_t *p_media, const char *rtsp_url )
 {
-    char *psz_sdp;
-
     assert(rtsp_url != NULL);
     /* Check against URL format rtsp://[<ipv6>]:<port>/<path> */
     bool ipv6 = strlen( rtsp_url ) > 7 && rtsp_url[7] == '[';
@@ -406,19 +405,20 @@ char *SDPGenerateVoD( const vod_media_t *p_media, const char *rtsp_url )
     dst.ss_len = dstlen;
 #endif
 
-    psz_sdp = vlc_sdp_Start( VLC_OBJECT( p_media->p_vod ), "sout-rtp-",
-                             NULL, 0, (struct sockaddr *)&dst, dstlen );
-    if( psz_sdp == NULL )
+    struct vlc_memstream sdp;
+
+    if( vlc_sdp_Start( &sdp, VLC_OBJECT( p_media->p_vod ), "sout-rtp-",
+                       NULL, 0, (struct sockaddr *)&dst, dstlen ) )
         return NULL;
 
     if( p_media->i_length > 0 )
     {
-        lldiv_t d = lldiv( p_media->i_length / 1000, 1000 );
-        sdp_AddAttribute( &psz_sdp, "range"," npt=0-%lld.%03u", d.quot,
+        lldiv_t d = lldiv( MS_FROM_VLC_TICK(p_media->i_length), 1000 );
+        sdp_AddAttribute( &sdp, "range"," npt=0-%lld.%03u", d.quot,
                           (unsigned)d.rem );
     }
 
-    sdp_AddAttribute ( &psz_sdp, "control", "%s", rtsp_url );
+    sdp_AddAttribute( &sdp, "control", "%s", rtsp_url );
 
     /* No locking needed, the ES table can't be modified now */
     for( int i = 0; i < p_media->i_es; i++ )
@@ -442,7 +442,7 @@ char *SDPGenerateVoD( const vod_media_t *p_media, const char *rtsp_url )
                 continue;
         }
 
-        sdp_AddMedia( &psz_sdp, mime_major, "RTP/AVP", 0,
+        sdp_AddMedia( &sdp, mime_major, "RTP/AVP", 0,
                       rtp_fmt->payload_type, false, 0,
                       rtp_fmt->ptname, rtp_fmt->clock_rate, rtp_fmt->channels,
                       rtp_fmt->fmtp );
@@ -450,12 +450,12 @@ char *SDPGenerateVoD( const vod_media_t *p_media, const char *rtsp_url )
         char *track_url = RtspAppendTrackPath( p_es->rtsp_id, rtsp_url );
         if( track_url != NULL )
         {
-            sdp_AddAttribute ( &psz_sdp, "control", "%s", track_url );
+            sdp_AddAttribute( &sdp, "control", "%s", track_url );
             free( track_url );
         }
     }
 
-    return psz_sdp;
+    return vlc_memstream_close( &sdp ) ? NULL : sdp.ptr;
 }
 
 int vod_check_range(vod_media_t *p_media, const char *psz_session,

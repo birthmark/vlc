@@ -3,7 +3,6 @@
  *****************************************************************************
  * Copyright (C) 2005-2009 VLC authors and VideoLAN
  * Copyright (C) 2013      Vianney Boyer
- * $Id$
  *
  * Authors: Antoine Cellerier <dionoea -at- videolan -dot- org>
  *          Vianney Boyer <vlcvboyer -at- gmail -dot- com>
@@ -71,15 +70,15 @@
 #define ROTATION_TEXT N_("Rotation")
 #define ROTATION_LONGTEXT N_("Rotation parameter: none;180;90-270;mirror")
 
-const int pi_mode_values[] = { (int) 0, (int) 1, (int) 2, (int) 3 };
-const char *const ppsz_mode_descriptions[] = { N_("jigsaw puzzle"), N_("sliding puzzle"), N_("swap puzzle"), N_("exchange puzzle") };
-const int pi_rotation_values[] = { (int) 0, (int) 1, (int) 2, (int) 3 };
-const char *const ppsz_rotation_descriptions[] = { N_("0"), N_("0/180"), N_("0/90/180/270"), N_("0/90/180/270/mirror") };
+static const int pi_mode_values[] = { (int) 0, (int) 1, (int) 2, (int) 3 };
+static const char *const ppsz_mode_descriptions[] = { N_("jigsaw puzzle"), N_("sliding puzzle"), N_("swap puzzle"), N_("exchange puzzle") };
+static const int pi_rotation_values[] = { (int) 0, (int) 1, (int) 2, (int) 3 };
+static const char *const ppsz_rotation_descriptions[] = { N_("0"), N_("0/180"), N_("0/90/180/270"), N_("0/90/180/270/mirror") };
 
 #define CFG_PREFIX "puzzle-"
 
-int  Open ( vlc_object_t * );
-void Close( vlc_object_t * );
+static int  Open ( vlc_object_t * );
+static void Close( vlc_object_t * );
 
 vlc_module_begin()
     set_description( N_("Puzzle interactive game video filter") )
@@ -88,9 +87,9 @@ vlc_module_begin()
     set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
 
-    add_integer_with_range( CFG_PREFIX "rows", 4, 2, 16,
+    add_integer_with_range( CFG_PREFIX "rows", 4, 2, 42,
                             ROWS_TEXT, ROWS_LONGTEXT, false )
-    add_integer_with_range( CFG_PREFIX "cols", 4, 2, 16,
+    add_integer_with_range( CFG_PREFIX "cols", 4, 2, 42,
                             COLS_TEXT, COLS_LONGTEXT, false )
     add_integer_with_range( CFG_PREFIX "border", 3, 0, 40,
               BORDER_TEXT, BORDER_LONGTEXT, false )
@@ -125,7 +124,7 @@ const char *const ppsz_filter_options[] = {
 /**
  * Open the filter
  */
-int Open( vlc_object_t *p_this )
+static int Open( vlc_object_t *p_this )
 {
     filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys;
@@ -138,7 +137,7 @@ int Open( vlc_object_t *p_this )
 
     const vlc_chroma_description_t *p_chroma =
         vlc_fourcc_GetChromaDescription( p_filter->fmt_in.video.i_chroma );
-    if( p_chroma == NULL || p_chroma->plane_count == 0 )
+    if( p_chroma == NULL || p_chroma->plane_count == 0 || p_chroma->pixel_size > 1 )
         return VLC_EGENERIC;
 
     /* Allocate structure */
@@ -212,7 +211,7 @@ int Open( vlc_object_t *p_this )
 /**
  * Close the filter
  */
-void Close( vlc_object_t *p_this ) {
+static void Close( vlc_object_t *p_this ) {
     filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
 

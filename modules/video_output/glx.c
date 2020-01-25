@@ -35,6 +35,10 @@
 #include <vlc_vout_window.h>
 #include <vlc_xlib.h>
 
+#ifndef GLX_ARB_get_proc_address
+#error GLX_ARB_get_proc_address extension missing
+#endif
+
 typedef struct vlc_gl_sys_t
 {
     Display *display;
@@ -68,11 +72,7 @@ static void SwapBuffers (vlc_gl_t *gl)
 static void *GetSymbol(vlc_gl_t *gl, const char *procname)
 {
     (void) gl;
-#ifdef GLX_ARB_get_proc_address
     return glXGetProcAddressARB ((const GLubyte *)procname);
-#else
-    return NULL;
-#endif
 }
 
 static bool CheckGLX (vlc_object_t *vd, Display *dpy)
@@ -113,9 +113,20 @@ static bool CheckGLXext (Display *dpy, unsigned snum, const char *ext)
     return false;
 }
 
-static int Open (vlc_object_t *obj)
+static void Close(vlc_gl_t *gl)
 {
-    vlc_gl_t *gl = (vlc_gl_t *)obj;
+    vlc_gl_sys_t *sys = gl->sys;
+    Display *dpy = sys->display;
+
+    glXDestroyContext(dpy, sys->ctx);
+    glXDestroyWindow(dpy, sys->win);
+    XCloseDisplay(dpy);
+    free(sys);
+}
+
+static int Open(vlc_gl_t *gl, unsigned width, unsigned height)
+{
+    vlc_object_t *obj = VLC_OBJECT(gl);
 
     if (gl->surface->type != VOUT_WINDOW_TYPE_XID || !vlc_xlib_init (obj))
         return VLC_EGENERIC;
@@ -208,8 +219,8 @@ static int Open (vlc_object_t *obj)
     gl->resize = NULL;
     gl->swap = SwapBuffers;
     gl->getProcAddress = GetSymbol;
+    gl->destroy = Close;
 
-#ifdef GLX_ARB_get_proc_address
     bool is_swap_interval_set = false;
 
     MakeCurrent (gl);
@@ -235,8 +246,18 @@ static int Open (vlc_object_t *obj)
     }
 # endif
     ReleaseCurrent (gl);
-#endif
 
+    /* XXX: Prevent other gl backends (like EGL) to be opened within the same
+     * X11 window instance. Indeed, using EGL after GLX on the same X11 window
+     * instance leads to an SEGFAULT in the libEGL_nvidia.so library. */
+    const char *vendor = glXGetClientString(dpy, GLX_VENDOR);
+    if (vendor && strncmp(vendor, "NVIDIA", sizeof("NVIDIA") - 1) == 0)
+    {
+        var_Create(gl->surface, "gl", VLC_VAR_STRING);
+        var_SetString(gl->surface, "gl", "glx");
+    }
+
+    (void) width; (void) height;
     return VLC_SUCCESS;
 
 error:
@@ -245,23 +266,11 @@ error:
     return VLC_EGENERIC;
 }
 
-static void Close (vlc_object_t *obj)
-{
-    vlc_gl_t *gl = (vlc_gl_t *)obj;
-    vlc_gl_sys_t *sys = gl->sys;
-    Display *dpy = sys->display;
-
-    glXDestroyContext (dpy, sys->ctx);
-    glXDestroyWindow (dpy, sys->win);
-    XCloseDisplay (dpy);
-    free (sys);
-}
-
 vlc_module_begin ()
     set_shortname (N_("GLX"))
     set_description (N_("GLX extension for OpenGL"))
     set_category (CAT_VIDEO)
     set_subcategory (SUBCAT_VIDEO_VOUT)
     set_capability ("opengl", 20)
-    set_callbacks (Open, Close)
+    set_callback(Open)
 vlc_module_end ()

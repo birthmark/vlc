@@ -26,7 +26,7 @@
 #include <vlc_atomic.h>
 #include <vlc_modules.h>
 #include <vlc_arrays.h>
-#include <vlc_events.h>
+#include <vlc_interrupt.h>
 #include "libvlc.h"
 
 #include <vlc_addons.h>
@@ -38,7 +38,7 @@
 typedef struct addon_entry_owner
 {
     addon_entry_t entry;
-    atomic_uint refs;
+    vlc_atomic_rc_t rc;
 } addon_entry_owner_t;
 
 struct addons_manager_private_t
@@ -51,6 +51,7 @@ struct addons_manager_private_t
         vlc_cond_t waitcond;
         bool b_live;
         vlc_mutex_t lock;
+        vlc_interrupt_t *p_interrupt;
         DECL_ARRAY(char*) uris;
         DECL_ARRAY(addon_entry_t*) entries;
     } finder;
@@ -61,6 +62,7 @@ struct addons_manager_private_t
         vlc_cond_t waitcond;
         bool b_live;
         vlc_mutex_t lock;
+        vlc_interrupt_t *p_interrupt;
         DECL_ARRAY(addon_entry_t*) entries;
     } installer;
 };
@@ -72,13 +74,13 @@ static void LoadLocalStorage( addons_manager_t *p_manager );
  * Public functions
  *****************************************************************************/
 
-addon_entry_t * addon_entry_New()
+addon_entry_t * addon_entry_New(void)
 {
     addon_entry_owner_t *owner = calloc( 1, sizeof(addon_entry_owner_t) );
     if( unlikely(owner == NULL) )
         return NULL;
 
-    atomic_init( &owner->refs, 1 );
+    vlc_atomic_rc_init( &owner->rc );
 
     addon_entry_t *p_entry = &owner->entry;
     vlc_mutex_init( &p_entry->lock );
@@ -90,7 +92,7 @@ addon_entry_t * addon_entry_Hold( addon_entry_t * p_entry )
 {
     addon_entry_owner_t *owner = (addon_entry_owner_t *) p_entry;
 
-    atomic_fetch_add( &owner->refs, 1 );
+    vlc_atomic_rc_inc( &owner->rc );
     return p_entry;
 }
 
@@ -98,7 +100,7 @@ void addon_entry_Release( addon_entry_t * p_entry )
 {
     addon_entry_owner_t *owner = (addon_entry_owner_t *) p_entry;
 
-    if( atomic_fetch_sub(&owner->refs, 1) != 1 )
+    if( !vlc_atomic_rc_dec( &owner->rc ) )
         return;
 
     free( p_entry->psz_name );
@@ -114,17 +116,20 @@ void addon_entry_Release( addon_entry_t * p_entry )
     free( p_entry->p_custom );
 
     addon_file_t *p_file;
-    FOREACH_ARRAY( p_file, p_entry->files )
-    free( p_file->psz_filename );
-    free( p_file->psz_download_uri );
-    FOREACH_END()
+    ARRAY_FOREACH( p_file, p_entry->files )
+    {
+        free( p_file->psz_filename );
+        free( p_file->psz_download_uri );
+        free( p_file );
+    }
     ARRAY_RESET( p_entry->files );
 
     vlc_mutex_destroy( &p_entry->lock );
     free( owner );
 }
 
-addons_manager_t *addons_manager_New( vlc_object_t *p_this )
+addons_manager_t *addons_manager_New( vlc_object_t *p_this,
+    const struct addons_manager_owner *restrict owner )
 {
     addons_manager_t *p_manager = malloc( sizeof(addons_manager_t) );
     if ( !p_manager ) return NULL;
@@ -136,15 +141,22 @@ addons_manager_t *addons_manager_New( vlc_object_t *p_this )
         return NULL;
     }
 
-    p_manager->p_event_manager = malloc( sizeof(vlc_event_manager_t) );
-    if ( !p_manager->p_event_manager )
+    p_manager->owner = *owner;
+    p_manager->p_priv->p_parent = p_this;
+
+    p_manager->p_priv->finder.p_interrupt = vlc_interrupt_create();
+    p_manager->p_priv->installer.p_interrupt = vlc_interrupt_create();
+    if ( !p_manager->p_priv->finder.p_interrupt ||
+         !p_manager->p_priv->installer.p_interrupt )
     {
+        if( p_manager->p_priv->finder.p_interrupt )
+            vlc_interrupt_destroy( p_manager->p_priv->finder.p_interrupt );
+        if( p_manager->p_priv->installer.p_interrupt )
+            vlc_interrupt_destroy( p_manager->p_priv->installer.p_interrupt );
         free( p_manager->p_priv );
         free( p_manager );
         return NULL;
     }
-
-    p_manager->p_priv->p_parent = p_this;
 
 #define INIT_QUEUE( name ) \
     p_manager->p_priv->name.b_live = false;\
@@ -155,12 +167,6 @@ addons_manager_t *addons_manager_New( vlc_object_t *p_this )
     INIT_QUEUE( finder )
     INIT_QUEUE( installer )
     ARRAY_INIT( p_manager->p_priv->finder.uris );
-
-    vlc_event_manager_t *em = p_manager->p_event_manager;
-    vlc_event_manager_init( em, p_manager );
-    vlc_event_manager_register_event_type(em, vlc_AddonFound);
-    vlc_event_manager_register_event_type(em, vlc_AddonsDiscoveryEnded);
-    vlc_event_manager_register_event_type(em, vlc_AddonChanged);
 
     return p_manager;
 }
@@ -174,7 +180,7 @@ void addons_manager_Delete( addons_manager_t *p_manager )
     vlc_mutex_unlock( &p_manager->p_priv->finder.lock );
     if ( b_live )
     {
-        vlc_cancel( p_manager->p_priv->finder.thread );
+        vlc_interrupt_kill( p_manager->p_priv->finder.p_interrupt );
         vlc_join( p_manager->p_priv->finder.thread, NULL );
     }
 
@@ -183,29 +189,29 @@ void addons_manager_Delete( addons_manager_t *p_manager )
     vlc_mutex_unlock( &p_manager->p_priv->installer.lock );
     if ( b_live )
     {
-        vlc_cancel( p_manager->p_priv->installer.thread );
+        vlc_interrupt_kill( p_manager->p_priv->installer.p_interrupt );
         vlc_join( p_manager->p_priv->installer.thread, NULL );
     }
 
-    vlc_event_manager_fini( p_manager->p_event_manager );
+    addon_entry_t *p_entry;
 
 #define FREE_QUEUE( name ) \
-    FOREACH_ARRAY( addon_entry_t *p_entry, p_manager->p_priv->name.entries )\
+    ARRAY_FOREACH( p_entry, p_manager->p_priv->name.entries )\
         addon_entry_Release( p_entry );\
-    FOREACH_END();\
     ARRAY_RESET( p_manager->p_priv->name.entries );\
     vlc_mutex_destroy( &p_manager->p_priv->name.lock );\
-    vlc_cond_destroy( &p_manager->p_priv->name.waitcond );
+    vlc_cond_destroy( &p_manager->p_priv->name.waitcond );\
+    vlc_interrupt_destroy( p_manager->p_priv->name.p_interrupt );
 
     FREE_QUEUE( finder )
     FREE_QUEUE( installer )
-    FOREACH_ARRAY( char *psz_uri, p_manager->p_priv->finder.uris )
+
+    char *psz_uri;
+    ARRAY_FOREACH( psz_uri, p_manager->p_priv->finder.uris )
        free( psz_uri );
-    FOREACH_END();
     ARRAY_RESET( p_manager->p_priv->finder.uris );
 
     free( p_manager->p_priv );
-    free( p_manager->p_event_manager );
     free( p_manager );
 }
 
@@ -244,14 +250,16 @@ static addon_entry_t * getHeldEntryByUUID( addons_manager_t *p_manager,
 {
     addon_entry_t *p_return = NULL;
     vlc_mutex_lock( &p_manager->p_priv->finder.lock );
-    FOREACH_ARRAY( addon_entry_t *p_entry, p_manager->p_priv->finder.entries )
-    if ( !memcmp( p_entry->uuid, uuid, sizeof( addon_uuid_t ) ) )
+    addon_entry_t *p_entry;
+    ARRAY_FOREACH( p_entry, p_manager->p_priv->finder.entries )
     {
-        p_return = p_entry;
-        addon_entry_Hold( p_return );
-        break;
+        if ( !memcmp( p_entry->uuid, uuid, sizeof( addon_uuid_t ) ) )
+        {
+            p_return = p_entry;
+            addon_entry_Hold( p_return );
+            break;
+        }
     }
-    FOREACH_END()
     vlc_mutex_unlock( &p_manager->p_priv->finder.lock );
     return p_return;
 }
@@ -273,10 +281,7 @@ static void MergeSources( addons_manager_t *p_manager,
         if ( !p_manager_entry )
         {
             ARRAY_APPEND( p_manager->p_priv->finder.entries, p_entry );
-            vlc_event_t event;
-            event.type = vlc_AddonFound;
-            event.u.addon_generic_event.p_entry = p_entry;
-            vlc_event_send( p_manager->p_event_manager, &event );
+            p_manager->owner.addon_found( p_manager, p_entry );
         }
         else
         {
@@ -299,7 +304,7 @@ static void LoadLocalStorage( addons_manager_t *p_manager )
 {
     addons_finder_t *p_finder =
         vlc_custom_create( p_manager->p_priv->p_parent, sizeof( *p_finder ), "entries finder" );
-    p_finder->obj.flags |= OBJECT_FLAGS_NOINTERACT;
+    p_finder->obj.no_interact = true;
 
     module_t *p_module = module_need( p_finder, "addons finder",
                                       "addons.store.list", true );
@@ -314,37 +319,50 @@ static void LoadLocalStorage( addons_manager_t *p_manager )
 
         ARRAY_RESET( p_finder->entries );
     }
-    vlc_object_release( p_finder );
+    vlc_object_delete(p_finder);
+}
+
+static void finder_thread_interrupted( void* p_data )
+{
+    addons_manager_t *p_manager = p_data;
+    vlc_mutex_lock( &p_manager->p_priv->finder.lock );
+    p_manager->p_priv->finder.b_live = false;
+    vlc_cond_signal( &p_manager->p_priv->finder.waitcond );
+    vlc_mutex_unlock( &p_manager->p_priv->finder.lock );
 }
 
 static void *FinderThread( void *p_data )
 {
     addons_manager_t *p_manager = p_data;
+    int i_cancel = vlc_savecancel();
+    vlc_interrupt_set( p_manager->p_priv->finder.p_interrupt );
 
-    for( ;; )
+    vlc_mutex_lock( &p_manager->p_priv->finder.lock );
+    while( p_manager->p_priv->finder.b_live )
     {
         char *psz_uri;
 
-        vlc_mutex_lock( &p_manager->p_priv->finder.lock );
-        mutex_cleanup_push( &p_manager->p_priv->finder.lock );
-        while( p_manager->p_priv->finder.uris.i_size == 0 )
+        vlc_interrupt_register( finder_thread_interrupted, p_data );
+        while( p_manager->p_priv->finder.uris.i_size == 0 &&
+               p_manager->p_priv->finder.b_live )
         {
             vlc_cond_wait( &p_manager->p_priv->finder.waitcond,
                            &p_manager->p_priv->finder.lock );
         }
+        vlc_interrupt_unregister();
+        if( !p_manager->p_priv->finder.b_live )
+            break;
         psz_uri = p_manager->p_priv->finder.uris.p_elems[0];
         ARRAY_REMOVE( p_manager->p_priv->finder.uris, 0 );
-        vlc_cleanup_pop();
-        vlc_mutex_unlock( &p_manager->p_priv->finder.lock );
 
-        int i_cancel = vlc_savecancel();
+        vlc_mutex_unlock( &p_manager->p_priv->finder.lock );
 
         addons_finder_t *p_finder =
                 vlc_custom_create( p_manager->p_priv->p_parent, sizeof( *p_finder ), "entries finder" );
 
         if( p_finder != NULL )
         {
-            p_finder->obj.flags |= OBJECT_FLAGS_NOINTERACT;
+            p_finder->obj.no_interact = true;
             module_t *p_module;
             ARRAY_INIT( p_finder->entries );
             p_finder->psz_uri = psz_uri;
@@ -358,18 +376,15 @@ static void *FinderThread( void *p_data )
             }
             ARRAY_RESET( p_finder->entries );
             free( psz_uri );
-            vlc_object_release( p_finder );
+            vlc_object_delete(p_finder);
         }
 
-        vlc_event_t event;
-        event.type = vlc_AddonsDiscoveryEnded;
-        event.u.addon_generic_event.p_entry = NULL;
-        vlc_event_send( p_manager->p_event_manager, &event );
-
-        vlc_restorecancel( i_cancel );
-        vlc_testcancel();
+        p_manager->owner.discovery_ended( p_manager );
+        vlc_mutex_lock( &p_manager->p_priv->finder.lock );
     }
 
+    vlc_mutex_unlock( &p_manager->p_priv->finder.lock );
+    vlc_restorecancel( i_cancel );
     return NULL;
 }
 
@@ -379,7 +394,7 @@ static int addons_manager_WriteCatalog( addons_manager_t *p_manager )
 
     addons_storage_t *p_storage =
         vlc_custom_create( p_manager->p_priv->p_parent, sizeof( *p_storage ), "entries storage" );
-    p_storage->obj.flags |= OBJECT_FLAGS_NOINTERACT;
+    p_storage->obj.no_interact = true;
 
     module_t *p_module = module_need( p_storage, "addons storage",
                                       "addons.store.install", true );
@@ -391,7 +406,7 @@ static int addons_manager_WriteCatalog( addons_manager_t *p_manager )
         vlc_mutex_unlock( &p_manager->p_priv->finder.lock );
         module_unneed( p_storage, p_module );
     }
-    vlc_object_release( p_storage );
+    vlc_object_delete(p_storage);
 
     return i_return;
 }
@@ -408,7 +423,7 @@ static int installOrRemoveAddon( addons_manager_t *p_manager, addon_entry_t *p_e
 
     addons_storage_t *p_storage =
         vlc_custom_create( p_manager->p_priv->p_parent, sizeof( *p_storage ), "entries storage" );
-    p_storage->obj.flags |= OBJECT_FLAGS_NOINTERACT;
+    p_storage->obj.no_interact = true;
 
     module_t *p_module = module_need( p_storage, "addons storage",
                                       "addons.store.install", true );
@@ -428,36 +443,47 @@ static int installOrRemoveAddon( addons_manager_t *p_manager, addon_entry_t *p_e
             vlc_mutex_unlock( &p_entry->lock );
         }
     }
-    vlc_object_release( p_storage );
+    vlc_object_delete(p_storage);
 
     return i_return;
+}
+
+static void installer_thread_interrupted( void* p_data )
+{
+    addons_manager_t *p_manager = p_data;
+    vlc_mutex_lock( &p_manager->p_priv->installer.lock );
+    p_manager->p_priv->installer.b_live = false;
+    vlc_cond_signal( &p_manager->p_priv->installer.waitcond );
+    vlc_mutex_unlock( &p_manager->p_priv->installer.lock );
 }
 
 static void *InstallerThread( void *p_data )
 {
     addons_manager_t *p_manager = p_data;
+    int i_cancel = vlc_savecancel();
+    vlc_interrupt_set( p_manager->p_priv->installer.p_interrupt );
     int i_ret;
-    vlc_event_t event;
-    event.type = vlc_AddonChanged;
 
-    for( ;; )
+    vlc_mutex_lock( &p_manager->p_priv->installer.lock );
+    while( p_manager->p_priv->installer.b_live )
     {
-        vlc_mutex_lock( &p_manager->p_priv->installer.lock );
-        mutex_cleanup_push( &p_manager->p_priv->installer.lock );
-        while ( !p_manager->p_priv->installer.entries.i_size )
+        vlc_interrupt_register( installer_thread_interrupted, p_data );
+        while ( !p_manager->p_priv->installer.entries.i_size &&
+                p_manager->p_priv->installer.b_live )
         {
             /* No queued addons */
             vlc_cond_wait( &p_manager->p_priv->installer.waitcond,
                            &p_manager->p_priv->installer.lock );
         }
-        vlc_cleanup_pop();
+        vlc_interrupt_unregister();
+        if( !p_manager->p_priv->installer.b_live )
+            break;
 
         addon_entry_t *p_entry = p_manager->p_priv->installer.entries.p_elems[0];
         ARRAY_REMOVE( p_manager->p_priv->installer.entries, 0 );
         addon_entry_Hold( p_entry );
         vlc_mutex_unlock( &p_manager->p_priv->installer.lock );
 
-        int i_cancel = vlc_savecancel();
         vlc_mutex_lock( &p_entry->lock );
         /* DO WORK */
         if ( p_entry->e_state == ADDON_INSTALLED )
@@ -466,8 +492,7 @@ static void *InstallerThread( void *p_data )
             vlc_mutex_unlock( &p_entry->lock );
 
             /* notify */
-            event.u.addon_generic_event.p_entry = p_entry;
-            vlc_event_send( p_manager->p_event_manager, &event );
+            p_manager->owner.addon_changed( p_manager, p_entry );
 
             i_ret = installOrRemoveAddon( p_manager, p_entry, false );
 
@@ -481,8 +506,7 @@ static void *InstallerThread( void *p_data )
             vlc_mutex_unlock( &p_entry->lock );
 
             /* notify */
-            event.u.addon_generic_event.p_entry = p_entry;
-            vlc_event_send( p_manager->p_event_manager, &event );
+            p_manager->owner.addon_changed( p_manager, p_entry );
 
             i_ret = installOrRemoveAddon( p_manager, p_entry, true );
 
@@ -493,15 +517,15 @@ static void *InstallerThread( void *p_data )
         vlc_mutex_unlock( &p_entry->lock );
         /* !DO WORK */
 
-        event.u.addon_generic_event.p_entry = p_entry;
-        vlc_event_send( p_manager->p_event_manager, &event );
+        p_manager->owner.addon_changed( p_manager, p_entry );
 
         addon_entry_Release( p_entry );
 
         addons_manager_WriteCatalog( p_manager );
-        vlc_restorecancel( i_cancel );
+        vlc_mutex_lock( &p_manager->p_priv->installer.lock );
     }
-
+    vlc_mutex_unlock( &p_manager->p_priv->installer.lock );
+    vlc_restorecancel( i_cancel );
     return NULL;
 }
 

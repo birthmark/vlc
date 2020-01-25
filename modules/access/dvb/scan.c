@@ -421,7 +421,7 @@ scan_t *scan_New( vlc_object_t *p_obj, const scan_parameter_t *p_parameter,
     p_scan->b_multiplexes_from_nit = false;
     scan_parameter_Init( &p_scan->parameter );
     scan_parameter_Copy( p_parameter, &p_scan->parameter );
-    p_scan->i_time_start = mdate();
+    p_scan->i_time_start = vlc_tick_now();
     p_scan->p_scanlist = NULL;
     p_scan->i_scanlist = 0;
 
@@ -693,7 +693,7 @@ static int Scan_Next_DVBT( const scan_parameter_t *p_params, scan_enumeration_t 
             p_cfg->i_bandwidth = i_bandwidth;
 
             int i_current = 0, i_total = 0;
-            for( int i = 0; i < i_band_count; i++ )
+            for( i = 0; i < i_band_count; i++ )
             {
                 const int i_frag = band[i].i_max-band[i].i_min;
 
@@ -812,7 +812,7 @@ static int scan_Next( scan_t *p_scan, scan_tuner_config_t *p_cfg )
     //while( !scan_tuner_config_ParametersValidate( &p_scan->parameter, p_cfg ) );
 
     const size_t i_total_services = scan_CountServices( p_scan );
-    const mtime_t i_eta = f_position > 0.005 ? (mdate() - p_scan->i_time_start) * ( 1.0 / f_position - 1.0 ) : -1;
+    const vlc_tick_t i_eta = f_position > 0.005 ? (vlc_tick_now() - p_scan->i_time_start) * ( 1.0 / f_position - 1.0 ) : -1;
     char psz_eta[MSTRTIME_MAX_SIZE];
     const char *psz_fmt = _("%.1f MHz (%d services)\n~%s remaining");
 
@@ -871,12 +871,12 @@ int scan_Run( scan_t *p_scan )
 
     /* */
     uint8_t packet[TS_PACKET_SIZE * SCAN_READ_BUFFER_COUNT];
-    int64_t i_scan_start = mdate();
+    int64_t i_scan_start = vlc_tick_now();
 
     for( ;; )
     {
         unsigned i_timeout = scan_session_GetTablesTimeout( session );
-        mtime_t i_remaining = mdate() - i_scan_start;
+        vlc_tick_t i_remaining = vlc_tick_now() - i_scan_start;
         if( i_remaining > i_timeout )
             break;
 
@@ -1385,7 +1385,7 @@ static void ParseNIT( vlc_object_t *p_obj, scan_t *p_scan,
                 msg_Dbg( p_obj, "           * service_id=%" PRIu16 " type=%" PRIu8,
                                 i_service_id, i_service_type );
 
-                if( p_cfg->i_frequency == 0 )
+                if( !p_cfg || p_cfg->i_frequency == 0 )
                 {
                     msg_Warn( p_obj, "cannot create service_id=%" PRIu16 " ts_id=%" PRIu16 " (no config)",
                                      i_service_id, p_ts->i_ts_id );
@@ -1411,7 +1411,7 @@ static void ParseNIT( vlc_object_t *p_obj, scan_t *p_scan,
                 }
 
                 if ( s->psz_original_network_name == NULL && p_nn )
-                    s->psz_original_network_name = strndup( (const char*) p_nn->p_data, p_dsc->i_length );
+                    s->psz_original_network_name = strndup( (const char*) p_nn->p_data, p_nn->i_length );
 
                 scan_NotifyService( p_scan, s, !b_newservice );
             }
@@ -1607,11 +1607,11 @@ static void scan_session_Destroy( scan_t *p_scan, scan_session_t *p_session )
 
     /* Do the same for all other networks */
     for( size_t i=0; i<p_session->others.i_nit; i++ )
-        ParseNIT( p_scan->p_obj, p_scan, p_nit, NULL );
+        ParseNIT( p_scan->p_obj, p_scan, p_session->others.pp_nit[i], NULL );
 
     /* Map service name for all other ts/networks */
     for( size_t i=0; i<p_session->others.i_sdt; i++ )
-        ParseSDT( p_scan->p_obj, p_scan, p_sdt );
+        ParseSDT( p_scan->p_obj, p_scan, p_session->others.pp_sdt[i] );
 
     /* */
     scan_session_Delete( p_session );
@@ -1712,7 +1712,7 @@ block_t *scan_GetM3U( scan_t *p_scan )
 
     const size_t i_total_services = scan_CountServices( p_scan );
     size_t i_filtered_count = 0;
-    const scan_service_t **pp_filtered_list = malloc( sizeof(scan_service_t *) * i_total_services );
+    const scan_service_t **pp_filtered_list = vlc_alloc( i_total_services, sizeof(scan_service_t *) );
     if( !pp_filtered_list )
     {
         block_Release( p_playlist );

@@ -2,7 +2,6 @@
  * input.h
  *****************************************************************************
  * Copyright (C) 2007-2008 the VideoLAN team
- * $Id$
  *
  * Authors: Antoine Cellerier <dionoea at videolan tod org>
  *
@@ -26,6 +25,8 @@
 
 #include "../vlc.h"
 
-input_thread_t * vlclua_get_input_internal( lua_State * );
+vlc_player_t *vlclua_get_player_internal(lua_State *);
+vout_thread_t *vlclua_get_vout_internal(lua_State *L);
+audio_output_t *vlclua_get_aout_internal(lua_State *L);
 
 #endif

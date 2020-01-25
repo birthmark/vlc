@@ -2,7 +2,6 @@
  * stream_io_callback.cpp : matroska demuxer
  *****************************************************************************
  * Copyright (C) 2003-2004, 2010 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Steve Lhomme <steve.lhomme@free.fr>
@@ -24,8 +23,7 @@
 
 #include "stream_io_callback.hpp"
 
-#include "matroska_segment.hpp"
-#include "demux.hpp"
+namespace mkv {
 
 /*****************************************************************************
  * Stream managment
@@ -64,7 +62,16 @@ void vlc_stream_io_callback::setFilePointer(int64_t i_offset, seek_mode mode )
     }
 
     if(i_pos == i_current)
+    {
+        if (mb_eof)
+        {
+            // if previous setFilePointer() failed we may be back in the available data
+            i_size = stream_Size( s );
+            if ( i_size != 0 && i_pos < i_size )
+                mb_eof = vlc_stream_Seek( s, i_pos ) != VLC_SUCCESS;
+        }
         return;
+    }
 
     if( i_pos < 0 || ( ( i_size = stream_Size( s ) ) != 0 && i_pos >= i_size ) )
     {
@@ -107,3 +114,4 @@ uint64 vlc_stream_io_callback::toRead( void )
     return static_cast<uint64>( i_size - vlc_stream_Tell( s ) );
 }
 
+} // namespace

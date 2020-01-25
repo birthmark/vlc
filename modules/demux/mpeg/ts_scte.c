@@ -55,13 +55,13 @@ void SCTE18_Section_Callback( dvbpsi_t *p_handle, const dvbpsi_psi_section_t* p_
         if( i_priority != EAS_PRIORITY_HIGH && i_priority != EAS_PRIORITY_MAX )
             continue;
 
-        for( ts_pes_es_t *p_es = p_psip->p_eas_es; p_es; p_es = p_es->p_next )
+        for( ts_es_t *p_es = p_psip->p_eas_es; p_es; p_es = p_es->p_next )
         {
             if( !p_es->id && !(p_es->id = es_out_Add( p_demux->out, &p_es->fmt )) )
                 continue;
 
             const ts_pmt_t *p_pmt = p_es->p_program;
-            const mtime_t i_date = TimeStampWrapAround( p_pmt->pcr.i_first, p_pmt->pcr.i_current );
+            const stime_t i_date = TimeStampWrapAround( p_pmt->pcr.i_first, p_pmt->pcr.i_current );
             block_t *p_block = block_Alloc( p_section->p_payload_end - p_section->p_payload_start );
             memcpy( p_block->p_buffer, p_section->p_payload_start, i_payload );
             p_block->i_dts = p_block->i_pts = FROM_SCALE( i_date );
@@ -78,10 +78,10 @@ void SCTE27_Section_Callback( demux_t *p_demux,
                               void *p_pes_cb_data )
 {
     VLC_UNUSED(p_payloaddata); VLC_UNUSED(i_payloaddata);
-    ts_pes_t *p_pes = (ts_pes_t *) p_pes_cb_data;
+    ts_stream_t *p_pes = (ts_stream_t *) p_pes_cb_data;
     assert( p_pes->p_es->fmt.i_codec == VLC_CODEC_SCTE_27 );
     ts_pmt_t *p_pmt = p_pes->p_es->p_program;
-    mtime_t i_date = p_pmt->pcr.i_current;
+    stime_t i_date = p_pmt->pcr.i_current;
 
     block_t *p_content = block_Alloc( i_sectiondata );
     if( unlikely(!p_content) || unlikely(!p_pes->p_es->id) )
@@ -102,7 +102,7 @@ void SCTE27_Section_Callback( demux_t *p_demux,
         bool is_immediate = p_content->p_buffer[i_offset + 3] & 0x40;
         if( !is_immediate )
         {
-            mtime_t i_display_in = GetDWBE( &p_content->p_buffer[i_offset + 4] );
+            stime_t i_display_in = GetDWBE( &p_content->p_buffer[i_offset + 4] );
             if( i_display_in < i_date )
                 i_date = i_display_in + (1ll << 32);
             else
@@ -111,7 +111,7 @@ void SCTE27_Section_Callback( demux_t *p_demux,
 
     }
 
-    p_content->i_dts = p_content->i_pts = VLC_TS_0 + i_date * 100 / 9;
+    p_content->i_dts = p_content->i_pts = FROM_SCALE(i_date);
     //PCRFixHandle( p_demux, p_pmt, p_content );
 
     if( p_pes->p_es->id )

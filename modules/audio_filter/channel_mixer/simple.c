@@ -2,7 +2,6 @@
  * simple.c : simple channel mixer plug-in
  *****************************************************************************
  * Copyright (C) 2002, 2004, 2006-2009 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *
@@ -44,7 +43,7 @@ vlc_module_begin ()
     set_category( CAT_AUDIO )
     set_subcategory( SUBCAT_AUDIO_MISC )
     set_capability( "audio converter", 10 )
-    set_callbacks( OpenFilter, NULL );
+    set_callback( OpenFilter );
 vlc_module_end ()
 
 static block_t *Filter( filter_t *, block_t * );
@@ -258,7 +257,7 @@ static void DoWork_6_1_to_5_x( filter_t * p_filter,  block_t * p_in_buf, block_t
     }
 }
 
-#if defined (CAN_COMPILE_ARM)
+#if defined (CAN_COMPILE_NEON)
 #include "simple_neon.h"
 #define GET_WORK(in, out) GET_WORK_##in##_to_##out##_neon()
 #else
@@ -283,9 +282,7 @@ static int OpenFilter( vlc_object_t *p_this )
     uint32_t output = p_filter->fmt_out.audio.i_physical_channels;
 
     /* Short circuit the common case of not remixing */
-    if( input == output
-     && p_filter->fmt_in.audio.i_original_channels
-            == p_filter->fmt_out.audio.i_original_channels )
+    if( input == output )
         return VLC_EGENERIC;
 
     const bool b_input_6_1 = input == AOUT_CHANS_6_1_MIDDLE;

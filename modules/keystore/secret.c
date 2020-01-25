@@ -37,7 +37,7 @@ static void Close(vlc_object_t *);
 
 vlc_module_begin()
     set_shortname(N_("libsecret keystore"))
-    set_description(N_("secrets are stored via libsecret"))
+    set_description(N_("Secrets are stored via libsecret"))
     set_category(CAT_ADVANCED)
     set_subcategory(SUBCAT_ADVANCED_MISC)
     set_capability("keystore", 100)
@@ -293,7 +293,7 @@ dbus_vanished_cb(GDBusConnection *connection, const gchar *name,
 static int
 Open(vlc_object_t *p_this)
 {
-    if (!p_this->obj.force)
+    if (!p_this->force)
     {
         /* First, check if secrets service is running using g_bus_watch_name().
          * Indeed, secret_service_get_sync will spawn a service if it's not

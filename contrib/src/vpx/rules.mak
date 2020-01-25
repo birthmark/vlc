@@ -1,29 +1,33 @@
 # libvpx
 
-VPX_VERSION := 1.6.0
-VPX_URL := http://storage.googleapis.com/downloads.webmproject.org/releases/webm/libvpx-$(VPX_VERSION).tar.bz2
+VPX_VERSION := 1.8.2
+VPX_URL := http://github.com/webmproject/libvpx/archive/v${VPX_VERSION}.tar.gz
 
 PKGS += vpx
 ifeq ($(call need_pkg,"vpx >= 1.5.0"),)
 PKGS_FOUND += vpx
 endif
 
-$(TARBALLS)/libvpx-$(VPX_VERSION).tar.bz2:
-	$(call download,$(VPX_URL))
+$(TARBALLS)/libvpx-$(VPX_VERSION).tar.gz:
+	$(call download_pkg,$(VPX_URL),vpx)
 
-.sum-vpx: libvpx-$(VPX_VERSION).tar.bz2
+.sum-vpx: libvpx-$(VPX_VERSION).tar.gz
 
-libvpx: libvpx-$(VPX_VERSION).tar.bz2 .sum-vpx
+libvpx: libvpx-$(VPX_VERSION).tar.gz .sum-vpx
 	$(UNPACK)
-	$(APPLY) $(SRC)/vpx/libvpx-mac.patch
 	$(APPLY) $(SRC)/vpx/libvpx-ios.patch
-	$(APPLY) $(SRC)/vpx/libvpx-arm.patch
 ifdef HAVE_ANDROID
 	$(APPLY) $(SRC)/vpx/libvpx-android.patch
+	cp "${ANDROID_NDK}"/sources/android/cpufeatures/cpu-features.c $(UNPACK_DIR)/vpx_ports
+	cp "${ANDROID_NDK}"/sources/android/cpufeatures/cpu-features.h $(UNPACK_DIR)
 endif
 	$(MOVE)
 
 DEPS_vpx =
+
+ifdef HAVE_WIN32
+DEPS_vpx += pthreads $(DEPS_pthreads)
+endif
 
 ifdef HAVE_CROSS_COMPILE
 VPX_CROSS := $(HOST)-
@@ -47,6 +51,8 @@ else ifeq ($(ARCH),sparc)
 VPX_ARCH := sparc
 else ifeq ($(ARCH),x86_64)
 VPX_ARCH := x86_64
+else ifeq ($(ARCH),aarch64)
+VPX_ARCH := arm64
 endif
 
 ifdef HAVE_ANDROID
@@ -54,13 +60,16 @@ VPX_OS := android
 else ifdef HAVE_LINUX
 VPX_OS := linux
 else ifdef HAVE_MACOSX
-ifeq ($(OSX_VERSION),10.5)
-VPX_OS := darwin9
-else
 VPX_OS := darwin10
-endif
+VPX_CROSS :=
 else ifdef HAVE_IOS
+VPX_CROSS :=
+ifeq ($(ARCH),$(filter $(ARCH), arm aarch64))
+VPX_OS := darwin
+else
 VPX_OS := darwin11
+VPX_CROSS :=
+endif
 else ifdef HAVE_SOLARIS
 VPX_OS := solaris
 else ifdef HAVE_WIN64 # must be before WIN32
@@ -79,14 +88,26 @@ endif
 endif
 
 VPX_CONF := \
-	--enable-runtime-cpu-detect \
 	--disable-docs \
 	--disable-examples \
 	--disable-unit-tests \
 	--disable-install-bins \
 	--disable-install-docs \
 	--disable-dependency-tracking \
-	--enable-vp9-highbitdepth
+	--enable-vp9-highbitdepth \
+	--disable-tools
+
+ifndef HAVE_WIN32
+ifndef HAVE_IOS
+VPX_CONF += --enable-runtime-cpu-detect
+endif
+else
+# WIN32
+ifeq ($(filter arm aarch64, $(ARCH)),)
+# Only enable runtime cpu detect on architectures other than arm/aarch64
+VPX_CONF += --enable-runtime-cpu-detect
+endif
+endif
 
 ifndef BUILD_ENCODERS
 VPX_CONF += --disable-vp8-encoder --disable-vp9-encoder
@@ -98,39 +119,49 @@ else
 VPX_CONF += --extra-cflags="-mstackrealign"
 endif
 ifdef HAVE_MACOSX
-VPX_CONF += --sdk-path=$(MACOSX_SDK) --extra-cflags="$(EXTRA_CFLAGS)"
+VPX_CONF += --extra-cflags="$(CFLAGS) $(EXTRA_CFLAGS)"
 endif
 ifdef HAVE_IOS
-VPX_CONF += --sdk-path=$(IOS_SDK) --enable-vp8-decoder
+VPX_CONF += --enable-vp8-decoder --disable-tools
+VPX_CONF += --extra-cflags="$(CFLAGS) $(EXTRA_CFLAGS)"
 ifdef HAVE_TVOS
 VPX_LDFLAGS := -L$(IOS_SDK)/usr/lib -isysroot $(IOS_SDK) -mtvos-version-min=9.0
 else
-VPX_LDFLAGS := -L$(IOS_SDK)/usr/lib -isysroot $(IOS_SDK) -miphoneos-version-min=6.1
+VPX_LDFLAGS := -L$(IOS_SDK)/usr/lib -isysroot $(IOS_SDK) -miphoneos-version-min=8.4
 endif
 ifeq ($(ARCH),aarch64)
 VPX_LDFLAGS += -arch arm64
 else
+ifndef HAVE_IOS
 VPX_LDFLAGS += -arch $(ARCH)
 endif
 endif
-ifdef HAVE_ANDROID
-# vpx configure.sh overrides our sysroot and it looks for it itself, and
-# uses that path to look for the compiler (which we already know)
-VPX_CONF += --sdk-path=$(shell dirname $(shell which $(HOST)-clang))
-# broken text relocations
-ifeq ($(ARCH),x86_64)
-VPX_CONF += --disable-mmx
 endif
+
+ifneq ($(filter i386 x86_64,$(ARCH)),)
+# broken text relocations or invalid register for .seh_savexmm with gcc8
+VPX_CONF += --disable-mmx
 endif
 
 ifndef WITH_OPTIMIZATION
 VPX_CONF += --enable-debug --disable-optimizations
 endif
 
+ifdef HAVE_ANDROID
+# Starting NDK19, standalone toolchains are deprecated and gcc is not shipped.
+# The presence of gcc can be used to detect if we are using an old standalone
+# toolchain. Unfortunately, libvpx buildsystem only work with standalone
+# toolchains, therefore pass the HOSTVARS directly to bypass any detection.
+ifneq ($(shell $(VPX_CROSS)gcc -v >/dev/null 2>&1 || echo FAIL),)
+VPX_HOSTVARS = $(HOSTVARS)
+endif
+endif
+
 .vpx: libvpx
-	cd $< && LDFLAGS="$(VPX_LDFLAGS)" CROSS=$(VPX_CROSS) ./configure --target=$(VPX_TARGET) \
+	rm -rf $(PREFIX)/include/vpx
+	cd $< && LDFLAGS="$(VPX_LDFLAGS)" CROSS=$(VPX_CROSS) $(VPX_HOSTVARS) ./configure --target=$(VPX_TARGET) \
 		$(VPX_CONF) --prefix=$(PREFIX)
 	cd $< && $(MAKE)
-	cd $< && ../../../contrib/src/pkg-static.sh vpx.pc
+	$(call pkg_static,"vpx.pc")
 	cd $< && $(MAKE) install
 	touch $@

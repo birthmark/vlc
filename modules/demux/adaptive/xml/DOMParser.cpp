@@ -66,11 +66,11 @@ bool    DOMParser::parse                    (bool b)
     if(!vlc_reader && !(vlc_reader = xml_ReaderCreate(stream, stream)))
         return false;
 
-    const int i_flags = vlc_reader->obj.flags;
+    struct vlc_logger *const logger = vlc_reader->obj.logger;
     if(!b)
-        vlc_reader->obj.flags |= OBJECT_FLAGS_QUIET;
+        vlc_reader->obj.logger = NULL;
     root = processNode(b);
-    vlc_reader->obj.flags = i_flags;
+    vlc_reader->obj.logger = logger;
     if ( root == NULL )
         return false;
 
@@ -84,7 +84,9 @@ bool DOMParser::reset(stream_t *s)
         return true;
     delete root;
     root = NULL;
-    vlc_reader = xml_ReaderReset(vlc_reader, s);
+
+    xml_ReaderDelete(vlc_reader);
+    vlc_reader = xml_ReaderCreate(s, s);
     return !!vlc_reader;
 }
 
@@ -112,7 +114,7 @@ Node* DOMParser::processNode(bool b_strict)
                     addAttributesToNode(node);
                 }
 
-                if(empty)
+                if(empty && lifo.size() > 1)
                     lifo.pop();
                 break;
             }

@@ -24,23 +24,42 @@
 
 #include <vlc_es.h>
 #include <vlc_codecs.h>
+#include "coreaudio.h"
 
 /* Use alias for scaled time */
 typedef int64_t stime_t;
 
 #define BLOCK16x16 (1<<16)
 
-#define MAJOR_3gp4 VLC_FOURCC( '3', 'g', 'p', '4' )
-#define MAJOR_3gp5 VLC_FOURCC( '3', 'g', 'p', '5' )
-#define MAJOR_3gp6 VLC_FOURCC( '3', 'g', 'p', '6' )
-#define MAJOR_3gp7 VLC_FOURCC( '3', 'g', 'p', '7' )
-#define MAJOR_isml VLC_FOURCC( 'i', 's', 'm', 'l' )
-#define MAJOR_isom VLC_FOURCC( 'i', 's', 'o', 'm' )
-#define MAJOR_qt__ VLC_FOURCC( 'q', 't', ' ', ' ' )
-#define MAJOR_dash VLC_FOURCC( 'd', 'a', 's', 'h' )
-#define MAJOR_mp41 VLC_FOURCC( 'm', 'p', '4', '1' )
-#define MAJOR_avc1 VLC_FOURCC( 'a', 'v', 'c', '1' )
-#define MAJOR_M4A  VLC_FOURCC( 'M', '4', 'A', ' ' )
+#define BRAND_3gp4 VLC_FOURCC( '3', 'g', 'p', '4' )
+#define BRAND_3gp5 VLC_FOURCC( '3', 'g', 'p', '5' )
+#define BRAND_3gp6 VLC_FOURCC( '3', 'g', 'p', '6' )
+#define BRAND_3gp7 VLC_FOURCC( '3', 'g', 'p', '7' )
+#define BRAND_isml VLC_FOURCC( 'i', 's', 'm', 'l' )
+#define BRAND_isom VLC_FOURCC( 'i', 's', 'o', 'm' )
+#define BRAND_iso2 VLC_FOURCC( 'i', 's', 'o', '2' )
+#define BRAND_iso6 VLC_FOURCC( 'i', 's', 'o', '6' )
+#define BRAND_qt__ VLC_FOURCC( 'q', 't', ' ', ' ' )
+#define BRAND_f4v  VLC_FOURCC( 'f', '4', 'v', ' ' ) /* Adobe Flash */
+#define BRAND_dash VLC_FOURCC( 'd', 'a', 's', 'h' )
+#define BRAND_smoo VLC_FOURCC( 's', 'm', 'o', 'o' ) /* Internal use */
+#define BRAND_mp41 VLC_FOURCC( 'm', 'p', '4', '1' )
+#define BRAND_av01 VLC_FOURCC( 'a', 'v', '0', '1' )
+#define BRAND_avc1 VLC_FOURCC( 'a', 'v', 'c', '1' )
+#define BRAND_M4A  VLC_FOURCC( 'M', '4', 'A', ' ' )
+#define BRAND_piff VLC_FOURCC( 'p', 'i', 'f', 'f' )
+#define BRAND_mif1 VLC_FOURCC( 'm', 'i', 'f', '1' ) /* heif */
+#define BRAND_msf1 VLC_FOURCC( 'm', 's', 'f', '1' ) /* heif */
+#define BRAND_heic VLC_FOURCC( 'h', 'e', 'i', 'c' ) /* heif */
+#define BRAND_heix VLC_FOURCC( 'h', 'e', 'i', 'x' ) /* heif */
+#define BRAND_hevc VLC_FOURCC( 'h', 'e', 'v', 'c' ) /* heif */
+#define BRAND_hevx VLC_FOURCC( 'h', 'e', 'v', 'x' ) /* heif */
+#define BRAND_jpeg VLC_FOURCC( 'j', 'p', 'e', 'g' ) /* heif */
+#define BRAND_jpgs VLC_FOURCC( 'j', 'p', 'g', 's' ) /* heif */
+#define BRAND_avci VLC_FOURCC( 'a', 'v', 'c', 'i' ) /* heif */
+#define BRAND_avcs VLC_FOURCC( 'a', 'v', 'c', 's' ) /* heif */
+#define BRAND_avif VLC_FOURCC( 'a', 'v', 'i', 'f' ) /* heif AV1 AVIF */
+#define BRAND_avis VLC_FOURCC( 'a', 'v', 'i', 's' ) /* heig AV1 AVIF */
 
 #define ATOM_root VLC_FOURCC( 'r', 'o', 'o', 't' )
 #define ATOM_uuid VLC_FOURCC( 'u', 'u', 'i', 'd' )
@@ -87,6 +106,7 @@ typedef int64_t stime_t;
 #define ATOM_stbl VLC_FOURCC( 's', 't', 'b', 'l' )
 #define ATOM_stts VLC_FOURCC( 's', 't', 't', 's' )
 #define ATOM_ctts VLC_FOURCC( 'c', 't', 't', 's' )
+#define ATOM_cslg VLC_FOURCC( 'c', 's', 'l', 'g' )
 #define ATOM_stsd VLC_FOURCC( 's', 't', 's', 'd' )
 #define ATOM_stsz VLC_FOURCC( 's', 't', 's', 'z' )
 #define ATOM_stz2 VLC_FOURCC( 's', 't', 'z', '2' )
@@ -98,7 +118,6 @@ typedef int64_t stime_t;
 #define ATOM_stss VLC_FOURCC( 's', 't', 's', 's' )
 #define ATOM_stsh VLC_FOURCC( 's', 't', 's', 'h' )
 #define ATOM_stdp VLC_FOURCC( 's', 't', 'd', 'p' )
-#define ATOM_padb VLC_FOURCC( 'p', 'a', 'd', 'b' )
 #define ATOM_edts VLC_FOURCC( 'e', 'd', 't', 's' )
 #define ATOM_elst VLC_FOURCC( 'e', 'l', 's', 't' )
 #define ATOM_mvex VLC_FOURCC( 'm', 'v', 'e', 'x' )
@@ -137,10 +156,6 @@ typedef int64_t stime_t;
 #define ATOM_hdv2 VLC_FOURCC( 'h', 'd', 'v', '2' )
 #define ATOM_rrtp VLC_FOURCC( 'r', 'r', 't', 'p' )
 
-#define ATOM_dpnd VLC_FOURCC( 'd', 'p', 'n', 'd' )
-#define ATOM_cdsc VLC_FOURCC( 'c', 'd', 's', 'c' )
-#define ATOM_ipir VLC_FOURCC( 'i', 'p', 'i', 'r' )
-#define ATOM_mpod VLC_FOURCC( 'm', 'p', 'o', 'd' )
 #define ATOM_hnti VLC_FOURCC( 'h', 'n', 't', 'i' )
 #define ATOM_rtp  VLC_FOURCC( 'r', 't', 'p', ' ' )
 #define ATOM_btrt VLC_FOURCC( 'b', 't', 'r', 't' )
@@ -176,10 +191,18 @@ typedef int64_t stime_t;
 #define ATOM_OggS VLC_FOURCC( 'O', 'g', 'g', 'S' )
 #define ATOM_agsm VLC_FOURCC( 'a', 'g', 's', 'm' )
 #define ATOM_alac VLC_FOURCC( 'a', 'l', 'a', 'c' )
+#define ATOM_AC3  VLC_FOURCC( 'A', 'C', '-', '3' )
 #define ATOM_ac3  VLC_FOURCC( 'a', 'c', '-', '3' )
 #define ATOM_eac3 VLC_FOURCC( 'e', 'c', '-', '3' )
 #define ATOM_dac3 VLC_FOURCC( 'd', 'a', 'c', '3' )
 #define ATOM_dec3 VLC_FOURCC( 'd', 'e', 'c', '3' )
+#define ATOM_ddts VLC_FOURCC( 'd', 'd', 't', 's' ) /* DTS formats */
+#define ATOM_dtsc VLC_FOURCC( 'd', 't', 's', 'c' )
+#define ATOM_dtsh VLC_FOURCC( 'd', 't', 's', 'h' )
+#define ATOM_dtsl VLC_FOURCC( 'd', 't', 's', 'l' )
+#define ATOM_dtse VLC_FOURCC( 'd', 't', 's', 'e' )
+#define ATOM_dtsm VLC_FOURCC( 'd', 't', 's', '-' )
+#define ATOM_dtsp VLC_FOURCC( 'd', 't', 's', '+' )
 #define ATOM_vc1  VLC_FOURCC( 'v', 'c', '-', '1' )
 #define ATOM_dvc1 VLC_FOURCC( 'd', 'v', 'c', '1' )
 #define ATOM_WMA2 VLC_FOURCC( 'W', 'M', 'A', '2' )
@@ -193,6 +216,8 @@ typedef int64_t stime_t;
 #define ATOM_fl32 VLC_FOURCC( 'f', 'l', '3', '2' )
 #define ATOM_fl64 VLC_FOURCC( 'f', 'l', '6', '4' )
 #define ATOM_Opus VLC_FOURCC( 'O', 'p', 'u', 's' )
+#define ATOM_fLaC VLC_FOURCC( 'f', 'L', 'a', 'C' )
+#define ATOM_dfLa VLC_FOURCC( 'd', 'f', 'L', 'a' )
 
 /* XiphQT */
 #define ATOM_fCtS VLC_FOURCC( 'f', 'C', 't', 'S' )
@@ -225,14 +250,18 @@ typedef int64_t stime_t;
 #define ATOM_VP31 VLC_FOURCC( 'V', 'P', '3', '1' )
 #define ATOM_vp31 VLC_FOURCC( 'v', 'p', '3', '1' )
 #define ATOM_h264 VLC_FOURCC( 'h', '2', '6', '4' )
+#define ATOM_H264 VLC_FOURCC( 'H', '2', '6', '4' )
 #define ATOM_qdrw VLC_FOURCC( 'q', 'd', 'r', 'w' )
 #define ATOM_vp08 VLC_FOURCC( 'v', 'p', '0', '8' )
 #define ATOM_vp09 VLC_FOURCC( 'v', 'p', '0', '9' )
 #define ATOM_vp10 VLC_FOURCC( 'v', 'p', '1', '0' )
 #define ATOM_WMV3 VLC_FOURCC( 'W', 'M', 'V', '3' )
+#define ATOM_WVC1 VLC_FOURCC( 'W', 'V', 'C', '1' )
 
+#define ATOM_av01 VLC_FOURCC( 'a', 'v', '0', '1' )
 #define ATOM_avc1 VLC_FOURCC( 'a', 'v', 'c', '1' )
 #define ATOM_avc3 VLC_FOURCC( 'a', 'v', 'c', '3' )
+#define ATOM_av1C VLC_FOURCC( 'a', 'v', '1', 'C' )
 #define ATOM_avcC VLC_FOURCC( 'a', 'v', 'c', 'C' )
 #define ATOM_vpcC VLC_FOURCC( 'v', 'p', 'c', 'C' )
 #define ATOM_m4ds VLC_FOURCC( 'm', '4', 'd', 's' )
@@ -240,6 +269,7 @@ typedef int64_t stime_t;
 #define ATOM_fiel VLC_FOURCC( 'f', 'i', 'e', 'l' )
 #define ATOM_glbl VLC_FOURCC( 'g', 'l', 'b', 'l' )
 #define ATOM_hvcC VLC_FOURCC( 'h', 'v', 'c', 'C' )
+#define ATOM_jpeC VLC_FOURCC( 'j', 'p', 'e', 'C' )
 
 #define ATOM_dvc  VLC_FOURCC( 'd', 'v', 'c', ' ' )
 #define ATOM_dvp  VLC_FOURCC( 'd', 'v', 'p', ' ' )
@@ -273,6 +303,7 @@ typedef int64_t stime_t;
 #define ATOM_user VLC_FOURCC( 'u', 's', 'e', 'r' )
 #define ATOM_key  VLC_FOURCC( 'k', 'e', 'y', ' ' )
 #define ATOM_iviv VLC_FOURCC( 'i', 'v', 'i', 'v' )
+#define ATOM_mean VLC_FOURCC( 'm', 'e', 'a', 'n' )
 #define ATOM_name VLC_FOURCC( 'n', 'a', 'm', 'e' )
 #define ATOM_priv VLC_FOURCC( 'p', 'r', 'i', 'v' )
 #define ATOM_drmi VLC_FOURCC( 'd', 'r', 'm', 'i' )
@@ -350,8 +381,11 @@ typedef int64_t stime_t;
 #define ATOM_aART VLC_FOURCC( 'a', 'A', 'R', 'T' )
 #define ATOM_chpl VLC_FOURCC( 'c', 'h', 'p', 'l' )
 #define ATOM_HMMT VLC_FOURCC( 'H', 'M', 'M', 'T' )
+#define ATOM_desc VLC_FOURCC( 'd', 'e', 's', 'c' )
 #define ATOM_disk VLC_FOURCC( 'd', 'i', 's', 'k' )
+#define ATOM_ID32 VLC_FOURCC( 'I', 'D', '3', '2' )
 #define ATOM_WLOC VLC_FOURCC( 'W', 'L', 'O', 'C' )
+#define ATOM_ITUN VLC_FOURCC( '-', '-', '-', '-' )
 
 #define ATOM_meta VLC_FOURCC( 'm', 'e', 't', 'a' )
 #define ATOM_atID VLC_FOURCC( 'a', 't', 'I', 'D' )
@@ -360,6 +394,7 @@ typedef int64_t stime_t;
 #define ATOM_covr VLC_FOURCC( 'c', 'o', 'v', 'r' )
 #define ATOM_flvr VLC_FOURCC( 'f', 'l', 'v', 'r' )
 #define ATOM_rtng VLC_FOURCC( 'r', 't', 'n', 'g' )
+#define ATOM_thum VLC_FOURCC( 't', 'h', 'u', 'm' )
 #define ATOM_tsel VLC_FOURCC( 't', 's', 'e', 'l' )
 #define ATOM_xid_ VLC_FOURCC( 'x', 'i', 'd', ' ' )
 #define ATOM_gshh VLC_FOURCC( 'g', 's', 'h', 'h' )
@@ -369,18 +404,50 @@ typedef int64_t stime_t;
 #define ATOM_gsst VLC_FOURCC( 'g', 's', 's', 't' )
 #define ATOM_gstd VLC_FOURCC( 'g', 's', 't', 'd' )
 #define ATOM_colr VLC_FOURCC( 'c', 'o', 'l', 'r' )
+#define ATOM_irot VLC_FOURCC( 'i', 'r', 'o', 't' )
+#define ATOM_SmDm VLC_FOURCC( 'S', 'm', 'D', 'm' )
+#define ATOM_CoLL VLC_FOURCC( 'C', 'o', 'L', 'L' )
+#define ATOM_mdcv VLC_FOURCC( 'm', 'd', 'c', 'v' )
+#define ATOM_clli VLC_FOURCC( 'c', 'l', 'l', 'i' )
+#define ATOM_purl VLC_FOURCC( 'p', 'u', 'r', 'l' )
 
 #define ATOM_0x40PRM VLC_FOURCC( '@', 'P', 'R', 'M' )
 #define ATOM_0x40PRQ VLC_FOURCC( '@', 'P', 'R', 'Q' )
-#define ATOM_chap VLC_FOURCC( 'c', 'h', 'a', 'p' )
 #define ATOM_MCPS VLC_FOURCC( 'M', 'C', 'P', 'S' )
 #define ATOM_SDLN VLC_FOURCC( 'S', 'D', 'L', 'N' )
 #define ATOM_vndr VLC_FOURCC( 'v', 'n', 'd', 'r' )
 
+#define ATOM_SA3D VLC_FOURCC( 'S', 'A', '3', 'D' )
+
+/* iso4 meta references */
+#define ATOM_idat VLC_FOURCC('i','d','a','t')
+#define ATOM_iloc VLC_FOURCC('i','l','o','c')
+#define ATOM_iinf VLC_FOURCC('i','i','n','f')
+#define ATOM_infe VLC_FOURCC('i','n','f','e')
+#define ATOM_iref VLC_FOURCC('i','r','e','f')
+#define ATOM_pitm VLC_FOURCC('p','i','t','m')
+/* HEIF specific meta */
+#define ATOM_iprp VLC_FOURCC('i','p','r','p')
+#define ATOM_ipco VLC_FOURCC('i','p','c','o')
+#define ATOM_ispe VLC_FOURCC('i','s','p','e')
+#define ATOM_ipma VLC_FOURCC('i','p','m','a')
+
 #define HANDLER_mdta VLC_FOURCC('m', 'd', 't', 'a')
 #define HANDLER_mdir VLC_FOURCC('m', 'd', 'i', 'r')
+#define HANDLER_ID32 ATOM_ID32
 
 #define SAMPLEGROUP_rap  VLC_FOURCC('r', 'a', 'p', ' ')
+
+/* tref reference type boxes */
+#define ATOM_chap VLC_FOURCC( 'c', 'h', 'a', 'p' )
+#define ATOM_dpnd VLC_FOURCC( 'd', 'p', 'n', 'd' )
+#define ATOM_hint VLC_FOURCC( 'h', 'i', 'n', 't' )
+#define ATOM_ipir VLC_FOURCC( 'i', 'p', 'i', 'r' )
+#define ATOM_mpod VLC_FOURCC( 'm', 'p', 'o', 'd' )
+#define ATOM_cdsc VLC_FOURCC( 'c', 'd', 's', 'c' )
+
+/* HEIF Specific */
+#define HANDLER_pict VLC_FOURCC('p', 'i', 'c', 't')
 
 /* Do you want some debug information on all read boxes ? */
 #ifndef NDEBUG
@@ -481,6 +548,7 @@ typedef struct MP4_Box_data_tkhd_s
     int32_t  i_width;
     int32_t  i_height;
     float    f_rotation;
+    int      i_flip;
 
 } MP4_Box_data_tkhd_t;
 
@@ -607,6 +675,16 @@ typedef struct MP4_Box_data_ctts_s
 
 } MP4_Box_data_ctts_t;
 
+typedef struct MP4_Box_data_cslg_s
+{
+    int64_t ct_to_dts_shift;
+    int64_t i_least_delta;
+    int64_t i_max_delta;
+    int64_t i_composition_starttime;
+    int64_t i_composition_endtime;
+
+} MP4_Box_data_cslg_t;
+
 // https://developer.apple.com/library/mac/documentation/QuickTime/QTFF/QTFFChap3/qtff3.html#//apple_ref/doc/uid/TP40000939-CH205-125526
 typedef struct MP4_Box_data_colr_s
 {
@@ -623,6 +701,11 @@ typedef struct MP4_Box_data_colr_s
     };
 } MP4_Box_data_colr_t;
 
+typedef struct
+{
+    uint16_t i_ccw_degrees;
+} MP4_Box_data_irot_t;
+
 typedef struct MP4_Box_data_sample_soun_s
 {
     uint8_t  i_reserved1[6];
@@ -637,8 +720,8 @@ typedef struct MP4_Box_data_sample_soun_s
     uint16_t i_samplesize;
     uint16_t i_compressionid;
     uint16_t i_reserved3;
-    uint16_t i_sampleratehi; /* timescale of track */
-    uint16_t i_sampleratelo;
+    uint32_t i_sampleratehi; /* timescale of track */
+    uint32_t i_sampleratelo;
 
     /* for version 1 (i_reserved1[0] == 1) */
     uint32_t i_sample_per_packet;
@@ -716,26 +799,9 @@ typedef struct
 
     uint16_t i_data_reference_index;
 
-    uint32_t i_display_flags;   // TextDescription and Tx3gDescription
+    uint8_t *p_data;
+    size_t   i_data;
 
-    int8_t i_justification_horizontal; // left(0), centered(1), right(-1)
-    int8_t i_justification_vertical;   // top(0), centered(1), bottom(-1)
-
-    uint16_t i_background_color[4];
-
-    uint16_t i_text_box_top;
-    uint16_t i_text_box_left;
-    uint16_t i_text_box_bottom;
-    uint16_t i_text_box_right;
-
-    uint32_t i_reserved3;
-
-    uint16_t i_font_id;
-    uint8_t  i_font_face;
-    uint8_t  i_font_size;
-    uint32_t i_font_color; //RGBA
-
-    // TODO to complete
 } MP4_Box_data_sample_text_t;
 
 typedef struct
@@ -785,7 +851,7 @@ typedef struct MP4_Box_data_timestampsynchrony_s
 typedef struct MP4_Box_data_moviehintinformation_rtp_s
 {
     uint32_t i_description_format;
-    unsigned char *psz_text;
+    char *psz_text;
 
 } MP4_Box_data_moviehintinformation_rtp_t;
 
@@ -908,22 +974,6 @@ typedef struct MP4_Box_data_stdp_s
 
 } MP4_Box_data_stdp_t;
 
-typedef struct MP4_Box_data_padb_s
-{
-    uint8_t  i_version;
-    uint32_t i_flags;
-
-    uint32_t i_sample_count;
-
-    uint16_t *i_reserved1;   /* 1bit  */
-    uint16_t *i_pad2;        /* 3bits */
-    uint16_t *i_reserved2;   /* 1bit  */
-    uint16_t *i_pad1;        /* 3bits */
-
-
-} MP4_Box_data_padb_t;
-
-
 typedef struct MP4_Box_data_elst_s
 {
     uint8_t  i_version;
@@ -931,8 +981,8 @@ typedef struct MP4_Box_data_elst_s
 
     uint32_t i_entry_count;
 
-    uint64_t *i_segment_duration;
-    int64_t  *i_media_time;
+    uint64_t *i_segment_duration; /* movie timescale */
+    int64_t  *i_media_time; /* media(track) timescale */
     uint16_t *i_media_rate_integer;
     uint16_t *i_media_rate_fraction;
 
@@ -974,7 +1024,7 @@ typedef struct MP4_descriptor_SL_config_s
 } MP4_descriptor_SL_config_t;
 
 
-typedef struct MP4_descriptor_ES_s
+typedef struct MP4_descriptor_ES_s /* ISO/IEC 14496-1 8.3.3 ES_DescrTag */
 {
     uint16_t i_ES_ID;
     int      b_stream_dependence;
@@ -1097,10 +1147,10 @@ typedef struct MP4_Box_data_mfhd_s
 
 typedef struct MP4_Box_sidx_item_s
 {
-    bool     b_reference_type;
     uint32_t i_referenced_size;
     uint32_t i_subsegment_duration;
-    bool     b_starts_with_SAP;
+    uint8_t  b_reference_type;
+    uint8_t  b_starts_with_SAP;
     uint8_t  i_SAP_type;
     uint32_t i_SAP_delta_time;
 
@@ -1155,7 +1205,11 @@ typedef struct MP4_descriptor_trun_sample_t
     uint32_t i_duration;
     uint32_t i_size;
     uint32_t i_flags;
-    uint32_t i_composition_time_offset; /* version == 0 ? signed : unsigned */
+    union
+    {
+        uint32_t v0;
+        int32_t  v1; /* version == 1 ? signed : unsigned */
+    } i_composition_time_offset;
 } MP4_descriptor_trun_sample_t;
 
 typedef struct MP4_Box_data_trun_s
@@ -1205,7 +1259,7 @@ typedef struct
     uint32_t i_entry_count;
     uint32_t *i_track_ID;
 
-} MP4_Box_data_tref_generic_t;
+} MP4_Box_data_trak_reference_t;
 
 typedef struct
 {
@@ -1234,20 +1288,7 @@ typedef struct
     uint8_t i_profile_compatibility;
     uint8_t i_level;
 
-    uint8_t i_reserved1;     /* 6 bits */
-    uint8_t i_length_size;
-
-    uint8_t i_reserved2;    /* 3 bits */
-    uint8_t  i_sps;
-    uint16_t *i_sps_length;
-    uint8_t  **sps;
-
-    uint8_t  i_pps;
-    uint16_t *i_pps_length;
-    uint8_t  **pps;
-
-    /* XXX: Hack raw avcC atom payload */
-    int     i_avcC;
+    size_t   i_avcC;
     uint8_t *p_avcC;
 
 } MP4_Box_data_avcC_t;
@@ -1256,10 +1297,23 @@ typedef struct
 {
     uint8_t i_profile;
     uint8_t i_level;
+    uint8_t i_presentation_delay;
+
+    size_t   i_av1C;
+    uint8_t *p_av1C;
+
+} MP4_Box_data_av1C_t;
+
+typedef struct
+{
+    uint8_t i_version;
+    uint8_t i_profile;
+    uint8_t i_level;
     uint8_t i_bit_depth;
-    uint8_t i_color_space;
     uint8_t i_chroma_subsampling;
+    uint8_t i_color_primaries;
     uint8_t i_xfer_function;
+    uint8_t i_matrix_coeffs;
     uint8_t i_fullrange;
     uint16_t i_codec_init_datasize;
     uint8_t *p_codec_init_data;
@@ -1267,16 +1321,30 @@ typedef struct
 
 typedef struct
 {
+    uint16_t primaries[3*2]; /* G,B,R / x,y */
+    uint16_t white_point[2]; /* x,y */
+    uint32_t i_luminanceMax;
+    uint32_t i_luminanceMin;
+} MP4_Box_data_SmDm_t;
+
+typedef struct
+{
+    uint16_t i_maxCLL;
+    uint16_t i_maxFALL;
+} MP4_Box_data_CoLL_t;
+
+typedef struct
+{
     WAVEFORMATEX Format;
     uint32_t i_extra;
-    char    *p_extra;
+    uint8_t *p_extra;
 } MP4_Box_data_WMA2_t;
 
 typedef struct
 {
     VLC_BITMAPINFOHEADER bmiHeader;
     uint32_t i_extra;
-    char    *p_extra;
+    uint8_t *p_extra;
 } MP4_Box_data_strf_t;
 
 typedef struct
@@ -1313,71 +1381,11 @@ typedef struct
     } entries;
 } MP4_Box_data_sbgp_t;
 
-/* According to Apple's CoreAudio/CoreAudioTypes.h */
-#define MP4_CHAN_USE_CHANNELS_DESC           0
-#define MP4_CHAN_USE_CHANNELS_BITMAP         (1<<16)
-
-#define MP4_CHAN_BITMAP_LEFT                 (1<<0)
-#define MP4_CHAN_BITMAP_RIGHT                (1<<1)
-#define MP4_CHAN_BITMAP_CENTER               (1<<2)
-#define MP4_CHAN_BITMAP_LFESCREEN            (1<<3)
-#define MP4_CHAN_BITMAP_BACKLEFT             (1<<4)
-#define MP4_CHAN_BITMAP_BACKRIGHT            (1<<5)
-#define MP4_CHAN_BITMAP_LEFTCENTER           (1<<6)
-#define MP4_CHAN_BITMAP_RIGHTCENTER          (1<<7)
-#define MP4_CHAN_BITMAP_BACKCENTER           (1<<8)
-#define MP4_CHAN_BITMAP_SIDELEFT             (1<<9)
-#define MP4_CHAN_BITMAP_SIDERIGHT            (1<<10)
-#define MP4_CHAN_BITMAP_TOPCENTER            (1<<11)
-#define MP4_CHAN_BITMAP_TOPFRONTLEFT         (1<<12)
-#define MP4_CHAN_BITMAP_TOPFRONTENTER        (1<<13)
-#define MP4_CHAN_BITMAP_TOPFRONTRIGHT        (1<<14)
-#define MP4_CHAN_BITMAP_TOPBACKLEFT          (1<<15)
-#define MP4_CHAN_BITMAP_TOPBACKCENTER        (1<<16)
-#define MP4_CHAN_BITMAP_TOPBACKRIGHT         (1<<17)
-
-#define MP4_CHAN_BITMAP_MAPPING_COUNT 18
-static const struct
-{
-    uint32_t i_bitmap;
-    uint32_t i_vlc;
-} chan_bitmap_mapping[MP4_CHAN_BITMAP_MAPPING_COUNT] = {
-    { MP4_CHAN_BITMAP_LEFT,         AOUT_CHAN_LEFT },
-    { MP4_CHAN_BITMAP_RIGHT,        AOUT_CHAN_RIGHT },
-    { MP4_CHAN_BITMAP_CENTER,       AOUT_CHAN_CENTER },
-    { MP4_CHAN_BITMAP_LFESCREEN,    AOUT_CHAN_LFE },
-    { MP4_CHAN_BITMAP_BACKLEFT,     AOUT_CHAN_REARLEFT },
-    { MP4_CHAN_BITMAP_BACKRIGHT,    AOUT_CHAN_REARRIGHT },
-    { MP4_CHAN_BITMAP_LEFTCENTER,   AOUT_CHAN_MIDDLELEFT },
-    { MP4_CHAN_BITMAP_RIGHTCENTER,  AOUT_CHAN_MIDDLERIGHT },
-    { MP4_CHAN_BITMAP_BACKCENTER,   AOUT_CHAN_REARCENTER },
-    { MP4_CHAN_BITMAP_SIDELEFT,     AOUT_CHAN_LEFT },
-    { MP4_CHAN_BITMAP_SIDERIGHT,    AOUT_CHAN_RIGHT },
-    { MP4_CHAN_BITMAP_TOPCENTER,    AOUT_CHAN_CENTER },
-    { MP4_CHAN_BITMAP_TOPFRONTLEFT, AOUT_CHAN_LEFT },
-    { MP4_CHAN_BITMAP_TOPFRONTENTER,AOUT_CHAN_CENTER },
-    { MP4_CHAN_BITMAP_TOPFRONTRIGHT,AOUT_CHAN_RIGHT },
-    { MP4_CHAN_BITMAP_TOPBACKLEFT,  AOUT_CHAN_REARLEFT },
-    { MP4_CHAN_BITMAP_TOPBACKCENTER,AOUT_CHAN_REARCENTER },
-    { MP4_CHAN_BITMAP_TOPBACKRIGHT, AOUT_CHAN_REARRIGHT },
-};
-
 typedef struct
 {
     uint8_t i_version;
     uint32_t i_channels_flags; /* 24 bits */
-    struct
-    {
-        uint32_t i_channels_layout_tag;
-        uint32_t i_channels_bitmap;
-        uint32_t i_channels_description_count;
-        struct
-        {
-            uint32_t i_channel_label;
-            uint32_t i_channel_flags;
-            float    f_coordinates[3];
-        } *p_descriptions;
-    } layout;
+    struct CoreAudio_layout_s layout;
 } MP4_Box_data_chan_t;
 
 typedef struct
@@ -1556,6 +1564,11 @@ typedef struct
 typedef struct
 {
     uint32_t i_projection_mode;
+    enum {
+        XML360_MONOSCOPIC = 0,
+        XML360_STEREOSCOPIC_TOP_BOTTOM = 1,
+        XML360_STEREOSCOPIC_LEFT_RIGHT = 2,
+    } e_stereo_mode;
 } MP4_Box_data_360_t;
 
 
@@ -1590,6 +1603,97 @@ typedef struct
     uint32_t i_padding;
 } MP4_Box_data_cbmp_t;
 
+typedef struct
+{
+    uint8_t i_ambisonic_type;
+    uint32_t i_ambisonic_order;
+    uint8_t i_ambisonic_channel_ordering;
+    uint8_t i_ambisonic_normalization;
+    uint32_t i_num_channels;
+} MP4_Box_data_SA3D_t;
+
+typedef struct
+{
+    uint32_t i_from_item_id;
+    uint16_t i_reference_count;
+    struct
+    {
+        uint32_t i_to_item_id;
+    } *p_references;
+} MP4_Box_data_refbox_t;
+
+typedef struct
+{
+    uint8_t i_version;
+    uint32_t i_flags;
+} MP4_Box_data_iref_t;
+
+typedef struct
+{
+    uint8_t i_offset_size;
+    uint8_t i_length_size;
+    uint8_t i_base_offset_size;
+    uint8_t i_index_size;
+    uint32_t i_item_count;
+    struct
+    {
+        uint32_t i_item_id;
+        uint8_t  i_construction_method;
+        uint16_t i_data_reference_index;
+        uint64_t i_base_offset;
+        uint16_t i_extent_count;
+        struct
+        {
+            uint64_t i_extent_index;
+            uint64_t i_extent_offset;
+            uint64_t i_extent_length;
+        } *p_extents;
+    } *p_items;
+} MP4_Box_data_iloc_t;
+
+typedef struct
+{
+    uint32_t i_entry_count;
+} MP4_Box_data_iinf_t;
+
+typedef struct
+{
+    uint32_t i_flags;
+    uint32_t i_item_id;
+    uint16_t i_item_protection_index;
+    vlc_fourcc_t item_type;
+    char *psz_item_name;
+    char *psz_content_type;
+    char *psz_content_encoding;
+    char *psz_item_uri_type;
+} MP4_Box_data_infe_t;
+
+typedef struct
+{
+    uint32_t i_item_id;
+} MP4_Box_data_pitm_t;
+
+typedef struct
+{
+    uint32_t i_width;
+    uint32_t i_height;
+} MP4_Box_data_ispe_t;
+
+typedef struct
+{
+    uint32_t i_entry_count;
+    struct
+    {
+        uint32_t i_item_id;
+        uint8_t  i_association_count;
+        struct
+        {
+            uint8_t b_essential;
+            uint16_t i_property_index;
+        } *p_assocs;
+    } *p_entries;
+} MP4_Box_data_ipma_t;
+
 /*
 typedef struct MP4_Box_data__s
 {
@@ -1620,7 +1724,9 @@ typedef union MP4_Box_data_s
     MP4_Box_data_lcont_t *p_lcont;
     MP4_Box_data_stts_t *p_stts;
     MP4_Box_data_ctts_t *p_ctts;
+    MP4_Box_data_cslg_t *p_cslg;
     MP4_Box_data_colr_t *p_colr;
+    MP4_Box_data_irot_t *p_irot;
 
     MP4_Box_data_sbgp_t *p_sbgp;
     MP4_Box_data_sgpd_t *p_sgpd;
@@ -1632,6 +1738,7 @@ typedef union MP4_Box_data_s
     MP4_Box_data_sample_hint_t *p_sample_hint;
 
     MP4_Box_data_esds_t *p_esds;
+    MP4_Box_data_av1C_t *p_av1C;
     MP4_Box_data_avcC_t *p_avcC;
     MP4_Box_data_dac3_t *p_dac3;
     MP4_Box_data_dec3_t *p_dec3;
@@ -1649,6 +1756,8 @@ typedef union MP4_Box_data_s
     MP4_Box_data_tsel_t *p_tsel;
     MP4_Box_data_load_t *p_load;
     MP4_Box_data_vpcC_t *p_vpcC;
+    MP4_Box_data_SmDm_t *p_SmDm;
+    MP4_Box_data_CoLL_t *p_CoLL;
 
     MP4_Box_data_tfra_t *p_tfra;
     MP4_Box_data_mfro_t *p_mfro;
@@ -1666,7 +1775,6 @@ typedef union MP4_Box_data_s
     MP4_Box_data_stss_t *p_stss;
     MP4_Box_data_stsh_t *p_stsh;
     MP4_Box_data_stdp_t *p_stdp;
-    MP4_Box_data_padb_t *p_padb;
     MP4_Box_data_elst_t *p_elst;
     MP4_Box_data_cprt_t *p_cprt;
 
@@ -1687,7 +1795,7 @@ typedef union MP4_Box_data_s
     MP4_Box_data_pnot_t *p_pnot;
     MP4_Box_data_chpl_t *p_chpl;
     MP4_Box_data_HMMT_t *p_hmmt;
-    MP4_Box_data_tref_generic_t *p_tref_generic;
+    MP4_Box_data_trak_reference_t *p_track_reference;
 
     MP4_Box_data_tfrf_t *p_tfrf;
     MP4_Box_data_tfxd_t *p_tfxd;
@@ -1700,6 +1808,16 @@ typedef union MP4_Box_data_s
     MP4_Box_data_prhd_t *p_prhd;
     MP4_Box_data_equi_t *p_equi;
     MP4_Box_data_cbmp_t *p_cbmp;
+    MP4_Box_data_SA3D_t *p_SA3D;
+
+    MP4_Box_data_refbox_t *p_refbox;
+    MP4_Box_data_iref_t *p_iref;
+    MP4_Box_data_iloc_t *p_iloc;
+    MP4_Box_data_iinf_t *p_iinf;
+    MP4_Box_data_infe_t *p_infe;
+    MP4_Box_data_pitm_t *p_pitm;
+    MP4_Box_data_ispe_t *p_ispe; /* heif */
+    MP4_Box_data_ipma_t *p_ipma; /* heif */
 
     /* for generic handlers */
     MP4_Box_data_binary_t *p_binary;
@@ -1749,102 +1867,6 @@ static inline size_t mp4_box_headersize( MP4_Box_t *p_box )
         + ( p_box->i_type == ATOM_uuid ? 16 : 0 );
 }
 
-#define MP4_GETX_PRIVATE(dst, code, size) do { \
-    if( (i_read) >= (size) ) { dst = (code); p_peek += (size); } \
-    else { dst = 0; }   \
-    i_read -= (size);   \
-  } while(0)
-
-#define MP4_GET1BYTE( dst )  MP4_GETX_PRIVATE( dst, *p_peek, 1 )
-#define MP4_GET2BYTES( dst ) MP4_GETX_PRIVATE( dst, GetWBE(p_peek), 2 )
-#define MP4_GET3BYTES( dst ) MP4_GETX_PRIVATE( dst, Get24bBE(p_peek), 3 )
-#define MP4_GET4BYTES( dst ) MP4_GETX_PRIVATE( dst, GetDWBE(p_peek), 4 )
-#define MP4_GET8BYTES( dst ) MP4_GETX_PRIVATE( dst, GetQWBE(p_peek), 8 )
-#define MP4_GETFOURCC( dst ) MP4_GETX_PRIVATE( dst, \
-                VLC_FOURCC(p_peek[0],p_peek[1],p_peek[2],p_peek[3]), 4)
-
-#define MP4_GET2BYTESLE( dst ) MP4_GETX_PRIVATE( dst, GetWLE(p_peek), 2 )
-#define MP4_GET4BYTESLE( dst ) MP4_GETX_PRIVATE( dst, GetDWLE(p_peek), 4 )
-#define MP4_GET8BYTESLE( dst ) MP4_GETX_PRIVATE( dst, GetQWLE(p_peek), 8 )
-
-#define MP4_GETVERSIONFLAGS( p_void ) \
-    MP4_GET1BYTE( p_void->i_version ); \
-    MP4_GET3BYTES( p_void->i_flags )
-
-#define MP4_GETSTRINGZ( p_str )         \
-    if( (i_read > 0) && (p_peek[0]) )   \
-    {       \
-        const int __i_copy__ = strnlen( (char*)p_peek, i_read-1 );  \
-        p_str = malloc( __i_copy__+1 );               \
-        if( p_str ) \
-        { \
-             memcpy( p_str, p_peek, __i_copy__ ); \
-             p_str[__i_copy__] = 0; \
-        } \
-        p_peek += __i_copy__ + 1;   \
-        i_read -= __i_copy__ + 1;   \
-    }       \
-    else    \
-    {       \
-        p_str = NULL; \
-    }
-
-#define MP4_READBOX_ENTER_PARTIAL( MP4_Box_data_TYPE_t, maxread, release ) \
-    int64_t i_read = p_box->i_size; \
-    if( maxread < (uint64_t)i_read ) i_read = maxread;\
-    uint8_t *p_peek, *p_buff; \
-    ssize_t i_actually_read; \
-    if( !( p_peek = p_buff = malloc( i_read ) ) ) \
-    { \
-        return( 0 ); \
-    } \
-    i_actually_read = vlc_stream_Read( p_stream, p_peek, i_read ); \
-    if( i_actually_read < 0 || i_actually_read < i_read )\
-    { \
-        msg_Warn( p_stream, "MP4_READBOX_ENTER: I got %zd bytes, "\
-        "but I requested %" PRId64, i_actually_read, i_read );\
-        free( p_buff ); \
-        return( 0 ); \
-    } \
-    p_peek += mp4_box_headersize( p_box ); \
-    i_read -= mp4_box_headersize( p_box ); \
-    if( !( p_box->data.p_payload = calloc( 1, sizeof( MP4_Box_data_TYPE_t ) ) ) ) \
-    { \
-        free( p_buff ); \
-        return( 0 ); \
-    }\
-    p_box->pf_free = release;
-
-#define MP4_READBOX_ENTER( MP4_Box_data_TYPE_t, release ) \
-    MP4_READBOX_ENTER_PARTIAL( MP4_Box_data_TYPE_t, p_box->i_size, release )
-
-#define MP4_READBOX_EXIT( i_code ) \
-    do \
-    { \
-        free( p_buff ); \
-        if( i_read < 0 ) \
-            msg_Warn( p_stream, "Not enough data" ); \
-        return( i_code ); \
-    } while (0)
-
-
-/* This macro is used when we want to printf the box type
- * APPLE annotation box is :
- *  either 0xA9 + 24-bit ASCII text string (and 0xA9 isn't printable)
- *  either 32-bit ASCII text string
- */
-#define MP4_BOX_TYPE_ASCII() ( ((char*)&p_box->i_type)[0] != (char)0xA9 )
-
-static inline uint32_t Get24bBE( const uint8_t *p )
-{
-    return( ( p[0] <<16 ) + ( p[1] <<8 ) + p[2] );
-}
-
-static inline void GetUUID( UUID_t *p_uuid, const uint8_t *p_buff )
-{
-    memcpy( p_uuid, p_buff, 16 );
-}
-
 static inline int CmpUUID( const UUID_t *u1, const UUID_t *u2 )
 {
     return memcmp( u1, u2, 16 );
@@ -1861,6 +1883,16 @@ static const UUID_t TfxdBoxUUID = {
 static const UUID_t XML360BoxUUID = {
                 { 0xff, 0xcc, 0x82, 0x63, 0xf8, 0x55, 0x4a, 0x93,
                   0x88, 0x14, 0x58, 0x7a, 0x02, 0x52, 0x1f, 0xdd } };
+
+/* PS3 3D by HMMP video encoder */
+static const UUID_t PS3DDSBoxUUID = {
+                { 0x33, 0x44, 0x44, 0x53, 0x21, 0xd2, 0x4f, 0xce,
+                  0xbb, 0x88, 0x69, 0x5c, 0xfa, 0xc9, 0xc7, 0x40 } };
+
+/*****************************************************************************
+ * MP4_Seek : non seekable stream safe seek
+ ****************************************************************************/
+int MP4_Seek( stream_t *p_stream, uint64_t i_pos );
 
 /*****************************************************************************
  * MP4_BoxGetNextChunk : Parse the entire moof box.
@@ -1927,6 +1959,10 @@ MP4_Box_t * MP4_BoxExtract( MP4_Box_t **pp_chain, uint32_t i_type );
 /* Internal functions exposed for demuxers */
 int MP4_ReadBoxContainerChildren( stream_t *p_stream, MP4_Box_t *p_container,
                                   const uint32_t stoplist[] );
+int MP4_ReadBoxContainerRestricted( stream_t *p_stream, MP4_Box_t *p_container,
+                                    const uint32_t stoplist[],
+                                    const uint32_t excludelist[] );
+
 int MP4_ReadBox_sample_vide( stream_t *p_stream, MP4_Box_t *p_box );
 
 #endif

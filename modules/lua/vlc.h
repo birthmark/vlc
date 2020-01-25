@@ -2,7 +2,6 @@
  * vlc.h: VLC specific lua library functions.
  *****************************************************************************
  * Copyright (C) 2007-2008 the VideoLAN team
- * $Id$
  *
  * Authors: Antoine Cellerier <dionoea at videolan tod org>
  *          Pierre d'Herbemont <pdherbemont # videolan.org>
@@ -105,6 +104,12 @@ static inline void lua_Dbg( vlc_object_t * p_this, const char * ppz_fmt, ... )
     va_end( ap );
 }
 
+static inline bool lua_Disabled( vlc_object_t *p_this )
+{
+    return !var_InheritBool( p_this, "lua" );
+}
+#define lua_Disabled( x ) lua_Disabled( VLC_OBJECT( x ) )
+
 /*****************************************************************************
  * Functions that should be in lua ... but aren't for some obscure reason
  *****************************************************************************/
@@ -137,8 +142,8 @@ void vlclua_set_this( lua_State *, vlc_object_t * );
 #define vlclua_set_this(a, b) vlclua_set_this(a, VLC_OBJECT(b))
 vlc_object_t * vlclua_get_this( lua_State * );
 
-void vlclua_set_playlist_internal( lua_State *, playlist_t * );
-playlist_t * vlclua_get_playlist_internal( lua_State * );
+void vlclua_set_playlist_internal( lua_State *, vlc_playlist_t * );
+vlc_playlist_t * vlclua_get_playlist_internal( lua_State * );
 
 /*****************************************************************************
  * Lua function bridge
@@ -180,9 +185,8 @@ void vlclua_read_meta_data( vlc_object_t *, lua_State *, input_item_t * );
 void vlclua_read_custom_meta_data( vlc_object_t *, lua_State *,
                                    input_item_t *);
 #define vlclua_read_custom_meta_data( a, b, c ) vlclua_read_custom_meta_data( VLC_OBJECT( a ), b, c )
-int vlclua_playlist_add_internal( vlc_object_t *, lua_State *, playlist_t *,
-                                  input_item_t *, bool );
-#define vlclua_playlist_add_internal( a, b, c, d, e ) vlclua_playlist_add_internal( VLC_OBJECT( a ), b, c, d, e )
+
+input_item_t *vlclua_read_input_item(vlc_object_t *, lua_State *);
 
 int vlclua_add_modules_path( lua_State *, const char *psz_filename );
 

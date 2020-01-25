@@ -24,16 +24,16 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-struct vlc_object_t;
 struct vlc_tls;
-struct vlc_tls_creds;
+struct vlc_tls_client;
 
-struct vlc_tls *vlc_https_connect(struct vlc_tls_creds *creds,
+struct vlc_tls *vlc_https_connect(struct vlc_tls_client *creds,
                                   const char *name, unsigned port,
                                   bool *restrict two);
-struct vlc_tls *vlc_http_connect(struct vlc_object_t *obj,
-                                 const char *name, unsigned port);
-struct vlc_tls *vlc_https_connect_proxy(struct vlc_tls_creds *creds,
+struct vlc_tls *vlc_https_connect_proxy(void *ctx,
+                                        struct vlc_tls_client *creds,
                                         const char *name, unsigned port,
                                         bool *restrict two, const char *proxy);
+bool vlc_http_port_blocked(unsigned port);
+
 #endif

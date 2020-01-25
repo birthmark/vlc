@@ -2,7 +2,6 @@
  * cmdline.c: command line parsing
  *****************************************************************************
  * Copyright (C) 2001-2007 VLC authors and VideoLAN
- * $Id$
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *
@@ -27,7 +26,7 @@
 
 #include <vlc_common.h>
 #include "../libvlc.h"
-#include <vlc_keys.h>
+#include <vlc_actions.h>
 #include <vlc_charset.h>
 #include <vlc_modules.h>
 #include <vlc_plugin.h>
@@ -78,7 +77,7 @@ int config_LoadCmdLine( vlc_object_t *p_this, int i_argc,
          * dealing with boolean to allow for --foo and --no-foo */
         i_opts += p->conf.count + 2 * p->conf.booleans;
 
-    p_longopts = malloc( sizeof(*p_longopts) * (i_opts + 1) );
+    p_longopts = vlc_alloc( i_opts + 1, sizeof(*p_longopts)  );
     if( p_longopts == NULL )
         return -1;
 
@@ -94,7 +93,7 @@ int config_LoadCmdLine( vlc_object_t *p_this, int i_argc,
      * us, ignoring the arity of the options */
     if( b_ignore_errors )
     {
-        argv_copy = (const char**)malloc( i_argc * sizeof(char *) );
+        argv_copy = vlc_alloc( i_argc, sizeof(char *) );
         if( argv_copy == NULL )
         {
             free( psz_shortopts );
@@ -198,7 +197,7 @@ int config_LoadCmdLine( vlc_object_t *p_this, int i_argc,
             if( flag ) psz_name += psz_name[2] == '-' ? 3 : 2;
 
             /* Store the configuration option */
-            p_conf = config_FindConfig( p_this, psz_name );
+            p_conf = config_FindConfig( psz_name );
             if( p_conf )
             {
                 /* Check if the option is deprecated */
@@ -219,16 +218,16 @@ int config_LoadCmdLine( vlc_object_t *p_this, int i_argc,
                     case CONFIG_ITEM_INTEGER:
                         var_Create( p_this, psz_name, VLC_VAR_INTEGER );
                         var_Change( p_this, psz_name, VLC_VAR_SETMINMAX,
-                            &(vlc_value_t){ .i_int = p_conf->min.i },
-                            &(vlc_value_t){ .i_int = p_conf->max.i } );
+                            (vlc_value_t){ .i_int = p_conf->min.i },
+                            (vlc_value_t){ .i_int = p_conf->max.i } );
                         var_SetInteger( p_this, psz_name,
                                         strtoll(state.arg, NULL, 0));
                         break;
                     case CONFIG_ITEM_FLOAT:
                         var_Create( p_this, psz_name, VLC_VAR_FLOAT );
                         var_Change( p_this, psz_name, VLC_VAR_SETMINMAX,
-                            &(vlc_value_t){ .f_float = p_conf->min.f },
-                            &(vlc_value_t){ .f_float = p_conf->max.f } );
+                            (vlc_value_t){ .f_float = p_conf->min.f },
+                            (vlc_value_t){ .f_float = p_conf->max.f } );
                         var_SetFloat( p_this, psz_name, us_atof(state.arg) );
                         break;
                     case CONFIG_ITEM_BOOL:

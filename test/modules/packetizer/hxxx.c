@@ -18,9 +18,14 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
+#ifdef HAVE_CONFIG_H
+# include "config.h"
+#endif
+
 #ifdef NDEBUG
  #undef NDEBUG
 #endif
+
 #include <assert.h>
 #include <vlc_common.h>
 #include <vlc_block.h>
@@ -57,6 +62,10 @@ static void test_iterators( const uint8_t *p_ab, size_t i_ab, /* AnnexB */
         int i_nal = 0;
         while(b1 && b2)
         {
+            /* hxxx_*_iterate_next can potentially not set these pointers. */
+            p_start_ab = NULL;
+            p_start_prefix = NULL;
+
             b1 = hxxx_annexb_iterate_next( &it_ab, &p_start_ab, &i_size_ab );
             b2 = hxxx_iterate_next( &it_prefix, &p_start_prefix, &i_size_prefix );
             printf("NAL %d ", i_nal++);
